@@ -188,7 +188,8 @@ BOOST_AUTO_TEST_CASE(tx_invalid)
     // or [[[prevout hash, prevout index, prevout scriptPubKey], [input 2], ...],"], serializedTransaction, verifyFlags
     // ... where all scripts are stringified scripts.
     //
-    // verifyFlags is a comma separated list of script verification flags to apply, or "NONE"
+    // verifyFlags is a comma separated list of MINIMAL script verification flags to apply,
+    // or "NONE" to not apply any, or "BADTX" if it is expected to fail CheckTransaction().
     UniValue tests = read_json(std::string(json_tests::tx_invalid, json_tests::tx_invalid + sizeof(json_tests::tx_invalid)));
 
     // Initialize to SCRIPT_ERR_OK. The tests expect err to be changed to a
@@ -240,6 +241,10 @@ BOOST_AUTO_TEST_CASE(tx_invalid)
 
             TxValidationState state;
             fValid = CheckTransaction(tx, state) && state.IsValid();
+            if (!fValid) {
+                BOOST_CHECK_MESSAGE(test[2].get_str() == "BADTX", strTest);
+                continue;
+            }
 
             PrecomputedTransactionData txdata(tx);
             for (unsigned int i = 0; i < tx.vin.size() && fValid; i++)
