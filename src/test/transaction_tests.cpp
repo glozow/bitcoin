@@ -22,6 +22,7 @@
 #include <streams.h>
 #include <test/util/transaction_utils.h>
 #include <util/strencodings.h>
+#include <util/string.h>
 #include <validation.h>
 
 #include <map>
@@ -128,6 +129,36 @@ bool CheckTxScripts(const CTransaction& tx, const std::map<COutPoint, CScript>& 
     return (tx_valid == expect_valid);
 }
 
+/*
+ * Trim or fill flags to make the combination valid:
+ * ** WITNESS must be used with P2SH
+ * ** CLEANSTACK must be used WITNESS and P2SH
+ * */
+
+unsigned int TrimFlags(unsigned int flags)
+{
+    if (!(flags & SCRIPT_VERIFY_WITNESS)) {
+        flags &= ~(unsigned int)SCRIPT_VERIFY_CLEANSTACK;
+    }
+    else if (!(flags & SCRIPT_VERIFY_P2SH)) {
+        flags &= ~(unsigned int)SCRIPT_VERIFY_WITNESS;
+        flags &= ~(unsigned int)SCRIPT_VERIFY_CLEANSTACK;
+    }
+    return flags;
+}
+
+unsigned int FillFlags(unsigned int flags)
+{
+    if (flags & SCRIPT_VERIFY_WITNESS) {
+        flags |= SCRIPT_VERIFY_P2SH;
+    }
+    else if (flags & SCRIPT_VERIFY_CLEANSTACK) {
+        flags |= SCRIPT_VERIFY_P2SH;
+        flags |= SCRIPT_VERIFY_WITNESS;
+    }
+    return flags;
+}
+
 BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
 
 BOOST_AUTO_TEST_CASE(tx_valid)
@@ -192,20 +223,25 @@ BOOST_AUTO_TEST_CASE(tx_valid)
             PrecomputedTransactionData txdata(tx);
             std::vector<unsigned int> verify_flags = ParseScriptFlags(test[2].get_str());
 
+            // Do not use TrimFlags() in the main test in order to detect invalid verifyFlags combination in the test file.
             if (!CheckTxScripts(tx, mapprevOutScriptPubKeys, mapprevOutValues, ~verify_flags[0], txdata, strTest, /* expect_valid */ true))
                 BOOST_ERROR("Tx unexpectedly failed: " << strTest);
             // Check that flags are maximal: transaction should fail if any unset flags are set.
+            for (size_t i = 0; i < mapFlagNames.size(); i++)
+            {
+                // Backwards compatibility: Removing a flag should not invalidate a valid transaction
+                unsigned int flags = TrimFlags(~(verify_flags[0] | (1U << i)));
+                if (!CheckTxScripts(tx, mapprevOutScriptPubKeys, mapprevOutValues, flags, txdata, strTest, /* expect_valid */ true))
+                    BOOST_ERROR("Tx unexpectedly failed with flag " << ToString(i) << " unset: " << strTest);
+                // Backwards compatibility: Removing some random flags should not invalidate a valid transaction
+                flags = TrimFlags(~(verify_flags[0] | (unsigned int)InsecureRandBits(mapFlagNames.size())));
+                if (!CheckTxScripts(tx, mapprevOutScriptPubKeys, mapprevOutValues, flags, txdata, strTest, /* expect_valid */ true))
+                    BOOST_ERROR("Tx unexpectedly failed with random flags " << ToString(flags) << ": " << strTest);
+            }
             for (size_t f = 1; f < verify_flags.size(); f++)
             {
-                unsigned int flags = ~verify_flags[f];
-                if (flags & SCRIPT_VERIFY_WITNESS) {
-                    flags |= SCRIPT_VERIFY_P2SH;
-                }
-                else if (flags & SCRIPT_VERIFY_CLEANSTACK) {
-                    flags |= SCRIPT_VERIFY_P2SH;
-                    flags |= SCRIPT_VERIFY_WITNESS;
-                }
-                if (!CheckTxScripts(tx, mapprevOutScriptPubKeys, mapprevOutValues, flags, txdata, strTest, /* expect_valid */ false))
+                // Setting any unset flag should make the transaction invalid.
+                if (!CheckTxScripts(tx, mapprevOutScriptPubKeys, mapprevOutValues, FillFlags(~verify_flags[f]), txdata, strTest, /* expect_valid */ false))
                     BOOST_ERROR("Too many flags unset: " << strTest);
             }
         }
@@ -277,19 +313,25 @@ BOOST_AUTO_TEST_CASE(tx_invalid)
 
             PrecomputedTransactionData txdata(tx);
             std::vector<unsigned int> verify_flags = ParseScriptFlags(test[2].get_str());
+
+            // Not using FillFlags() in the main test, in order to detect invalid verifyFlags combination
             if (!CheckTxScripts(tx, mapprevOutScriptPubKeys, mapprevOutValues, verify_flags[0], txdata, strTest, /* expect_valid */ false))
                 BOOST_ERROR("Tx unexpectedly passed: " << strTest);
             // Check that flags are minimal: transaction should succeed if any set flags are unset.
+            for (size_t i = 0; i < mapFlagNames.size(); i++)
+            {
+                // Backwards compatibility: Adding a flag should not validate an invalid transaction
+                unsigned int flags = FillFlags(verify_flags[0] | (1U << i));
+                if (!CheckTxScripts(tx, mapprevOutScriptPubKeys, mapprevOutValues, flags, txdata, strTest, /* expect_valid */ false))
+                    BOOST_ERROR("Tx unexpectedly passed with flag " << ToString(i) << " set: " << strTest);
+                // Backwards compatibility: Adding some random flags should not validate an invalid transaction
+                flags = FillFlags(verify_flags[0] | (unsigned int)InsecureRandBits(mapFlagNames.size()));
+                if (!CheckTxScripts(tx, mapprevOutScriptPubKeys, mapprevOutValues, flags, txdata, strTest, /* expect_valid */ false))
+                    BOOST_ERROR("Tx unexpectedly passed with random flags " << ToString(flags) << ": " << strTest);
+            }
             for (size_t f = 1; f < verify_flags.size(); f++) {
-                unsigned int flags = verify_flags[f];
-                if (!(flags & SCRIPT_VERIFY_WITNESS)) {
-                    flags &= ~(unsigned int)SCRIPT_VERIFY_CLEANSTACK;
-                }
-                else if (!(flags & SCRIPT_VERIFY_P2SH)) {
-                    flags &= ~(unsigned int)SCRIPT_VERIFY_WITNESS;
-                    flags &= ~(unsigned int)SCRIPT_VERIFY_CLEANSTACK;
-                }
-                if (!CheckTxScripts(tx, mapprevOutScriptPubKeys, mapprevOutValues, flags, txdata, strTest, /* expect_valid */ true))
+                // Unsetting any set flag should make the transaction valid
+                if (!CheckTxScripts(tx, mapprevOutScriptPubKeys, mapprevOutValues, TrimFlags(verify_flags[f]), txdata, strTest, /* expect_valid */ true))
                     BOOST_ERROR("Too many flags set: " << strTest);
             }
         }
