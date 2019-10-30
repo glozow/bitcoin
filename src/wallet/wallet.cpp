@@ -2398,9 +2398,6 @@ bool CWallet::SelectCoinsMinConf(const CAmount& nTargetValue, const CoinEligibil
     setCoinsRet.clear();
     nValueRet = 0;
 
-    // Calculate the fees for things that aren't inputs
-    const CAmount not_input_fees = coin_selection_params.m_effective_feerate.GetFee(coin_selection_params.tx_noinputs_size);
-
     // Get the feerate for effective value.
     // When subtracting the fee from the outputs, we want the effective feerate to be 0
     CFeeRate effective_feerate{0};
@@ -2416,12 +2413,12 @@ bool CWallet::SelectCoinsMinConf(const CAmount& nTargetValue, const CoinEligibil
     const CAmount cost_of_change = coin_selection_params.m_discard_feerate.GetFee(coin_selection_params.change_spend_size) + change_fee;
 
     std::vector<OutputGroup> positive_groups = GroupOutputs(coins, !coin_selection_params.m_avoid_partial_spends, effective_feerate, coin_selection_params.m_long_term_feerate, eligibility_filter, true /* positive_only */);
-    if (SelectCoinsBnB(positive_groups, nTargetValue, cost_of_change, setCoinsRet, nValueRet, not_input_fees)) {
+    if (SelectCoinsBnB(positive_groups, nTargetValue, cost_of_change, setCoinsRet, nValueRet)) {
         return true;
     }
     // The knapsack solver has some legacy behavior where it will spend dust outputs. We retain this behavior, so don't filter for positive only here.
     std::vector<OutputGroup> all_groups = GroupOutputs(coins, !coin_selection_params.m_avoid_partial_spends, effective_feerate, coin_selection_params.m_long_term_feerate, eligibility_filter, false /* positive_only */);
-    return KnapsackSolver(nTargetValue + not_input_fees + change_fee, all_groups, setCoinsRet, nValueRet);
+    return KnapsackSolver(nTargetValue + change_fee, all_groups, setCoinsRet, nValueRet);
 }
 
 bool CWallet::SelectCoins(const std::vector<COutput>& vAvailableCoins, const CAmount& nTargetValue, std::set<CInputCoin>& setCoinsRet, CAmount& nValueRet, const CCoinControl& coin_control, CoinSelectionParams& coin_selection_params) const
@@ -2960,7 +2957,11 @@ bool CWallet::CreateTransactionInternal(
                     } else {
                         coin_selection_params.change_spend_size = (size_t)change_spend_size;
                     }
-                    if (!SelectCoins(vAvailableCoins, nValueToSelect, setCoins, nValueIn, coin_control, coin_selection_params))
+
+                    // Calculate the fees for things that aren't inputs
+                    const CAmount not_input_fees = coin_selection_params.m_effective_feerate.GetFee(coin_selection_params.tx_noinputs_size);
+
+                    if (!SelectCoins(vAvailableCoins, /* nTargetValue */ nValueToSelect + not_input_fees, setCoins, nValueIn, coin_control, coin_selection_params))
                     {
                         error = _("Insufficient funds");
                         return false;
