@@ -2398,28 +2398,32 @@ bool CWallet::SelectCoinsMinConf(const CAmount& nTargetValue, const CoinEligibil
     setCoinsRet.clear();
     nValueRet = 0;
 
+    // Calculate the fees for things that aren't inputs
+    const CAmount not_input_fees = coin_selection_params.m_effective_feerate.GetFee(coin_selection_params.tx_noinputs_size);
+
+    // Get the feerate for effective value.
+    // When subtracting the fee from the outputs, we want the effective feerate to be 0
+    CFeeRate effective_feerate{0};
+    if (!coin_selection_params.m_subtract_fee_outputs) {
+        effective_feerate = coin_selection_params.m_effective_feerate;
+    }
+
+    // Cost of change is the cost of creating the change output + cost of spending the change output in the future.
+    // For creating the change output now, we use the effective feerate.
+    // For spending the change output in the future, we use the discard feerate for now.
+    // So cost of change = (change output size * effective feerate) + (size of spending change output * discard feerate)
+    const CAmount change_fee = coin_selection_params.m_effective_feerate.GetFee(coin_selection_params.change_output_size);
+    const CAmount cost_of_change = coin_selection_params.m_discard_feerate.GetFee(coin_selection_params.change_spend_size) + change_fee;
+
     if (coin_selection_params.use_bnb) {
-        // Get the feerate for effective value.
-        // When subtracting the fee from the outputs, we want the effective feerate to be 0
-        CFeeRate effective_feerate{0};
-        if (!coin_selection_params.m_subtract_fee_outputs) {
-            effective_feerate = coin_selection_params.m_effective_feerate;
-        }
-
-        std::vector<OutputGroup> groups = GroupOutputs(coins, !coin_selection_params.m_avoid_partial_spends, effective_feerate, coin_selection_params.m_long_term_feerate, eligibility_filter, true /* positive_only */);
-
-        // Calculate cost of change
-        CAmount cost_of_change = coin_selection_params.m_discard_feerate.GetFee(coin_selection_params.change_spend_size) + coin_selection_params.m_effective_feerate.GetFee(coin_selection_params.change_output_size);
-
-        // Calculate the fees for things that aren't inputs
-        CAmount not_input_fees = coin_selection_params.m_effective_feerate.GetFee(coin_selection_params.tx_noinputs_size);
+        std::vector<OutputGroup> positive_groups = GroupOutputs(coins, !coin_selection_params.m_avoid_partial_spends, effective_feerate, coin_selection_params.m_long_term_feerate, eligibility_filter, true /* positive_only */);
         bnb_used = true;
-        return SelectCoinsBnB(groups, nTargetValue, cost_of_change, setCoinsRet, nValueRet, not_input_fees);
+        return SelectCoinsBnB(positive_groups, nTargetValue, cost_of_change, setCoinsRet, nValueRet, not_input_fees);
     } else {
-        std::vector<OutputGroup> groups = GroupOutputs(coins, !coin_selection_params.m_avoid_partial_spends, CFeeRate(0), CFeeRate(0), eligibility_filter, false /* positive_only */);
-
+        // The knapsack solver has some legacy behavior where it will spend dust outputs. We retain this behavior, so don't filter for positive only here.
+        std::vector<OutputGroup> all_groups = GroupOutputs(coins, !coin_selection_params.m_avoid_partial_spends, effective_feerate, coin_selection_params.m_long_term_feerate, eligibility_filter, false /* positive_only */);
         bnb_used = false;
-        return KnapsackSolver(nTargetValue, groups, setCoinsRet, nValueRet);
+        return KnapsackSolver(nTargetValue + not_input_fees, all_groups, setCoinsRet, nValueRet);
     }
 }
 
@@ -2467,10 +2471,10 @@ bool CWallet::SelectCoins(const std::vector<COutput>& vAvailableCoins, const CAm
                 return false; // Not solvable, can't estimate size for fee
             }
             coin.effective_value = coin.txout.nValue - coin_selection_params.m_effective_feerate.GetFee(coin.m_input_bytes);
-            if (coin_selection_params.use_bnb) {
-                value_to_select -= coin.effective_value;
-            } else {
+            if (coin_selection_params.m_subtract_fee_outputs) {
                 value_to_select -= coin.txout.nValue;
+            } else {
+                value_to_select -= coin.effective_value;
             }
             setPresetCoins.insert(coin);
         } else {
