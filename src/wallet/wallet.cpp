@@ -39,6 +39,7 @@
 
 #include <algorithm>
 #include <assert.h>
+#include <numeric>
 #include <optional>
 
 #include <boost/algorithm/string/replace.hpp>
@@ -2935,6 +2936,9 @@ bool CWallet::CreateTransactionInternal(
                 return false;
             }
 
+            const CAmount selected_eff = std::accumulate(setCoins.cbegin(), setCoins.cend(), CAmount(0),
+                [](CAmount sum, const auto& coin) { return sum + coin.effective_value; });
+
             const CAmount nChange = input_sum - nValue;
             if (nChange > 0)
             {
@@ -2948,11 +2952,11 @@ bool CWallet::CreateTransactionInternal(
                 const CAmount change_fee = coin_selection_params.m_effective_feerate.GetFee(coin_selection_params.change_output_size);
                 const CAmount cost_of_change = coin_selection_params.m_discard_feerate.GetFee(coin_selection_params.change_spend_size) + change_fee;
 
-                // Never create dust outputs; if we would, just
-                // add the dust to the fee.
-                // When nChange is less than the cost of the change output,
-                // send it to fees (this means BnB was used)
-                if (IsDust(newTxOut, coin_selection_params.m_discard_feerate) || nChange <= cost_of_change)
+                // We want to drop the change to fees if:
+                // 1. The change output would be dust
+                // 2. The "change" is within the (almost) exact match window, i.e. the difference between the selected effective value
+                //    and the selection target (nValue + not_input_fees) is less than or equal to the cost of the change output (cost_of_change)
+                if (IsDust(newTxOut, coin_selection_params.m_discard_feerate) || selected_eff <= nValue + not_input_fees + cost_of_change)
                 {
                     nChangePosInOut = -1;
                     assert(nFeeRet == 0);
