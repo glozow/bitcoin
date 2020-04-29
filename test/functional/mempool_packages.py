@@ -140,6 +140,7 @@ class MempoolPackagesTest(BitcoinTestFramework):
                     assert_equal(ainfo['depends'], [])
 
 
+
         # Check that getmempoolancestors/getmempooldescendants correctly handle verbose=true
         v_ancestors = self.nodes[0].getmempoolancestors(chain[-1], True)
         assert_equal(len(v_ancestors), len(chain)-1)
@@ -212,6 +213,10 @@ class MempoolPackagesTest(BitcoinTestFramework):
         for tx in chain[:MAX_ANCESTORS_CUSTOM]:
             assert tx in mempool1
         # TODO: more detailed check of node1's mempool (fees etc.)
+        # check transaction unbroadcast info (should be false if in both mempools)
+        mempool = self.nodes[0].getrawmempool(True)
+        for tx in mempool:
+            assert_equal(mempool[tx]['unbroadcast'], False)
 
         # TODO: test ancestor size limits
 
