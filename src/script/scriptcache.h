@@ -11,6 +11,9 @@
 #include <random.h>
 #include <uint256.h>
 
+#include <mutex>
+#include <shared_mutex>
+
 namespace {
 /**
  * Valid script cache used to avoid doing expensive script checks twice for
@@ -23,6 +26,7 @@ class CScriptCache
         //! Entries are SHA256(nonce || transaction witness hash || script verification flags):
         CSHA256 m_salted_hasher;
         CuckooCache::cache<uint256, SignatureCacheHasher> m_set_scripts;
+        std::shared_mutex cs_scriptcache;
 
     public:
         CScriptCache()
@@ -45,11 +49,13 @@ class CScriptCache
 
         bool Get(const uint256& entry, const bool erase)
         {
+            std::shared_lock<std::shared_mutex> lock(cs_scriptcache);
             return m_set_scripts.contains(entry, erase);
         }
 
         void Add(const uint256& entry)
         {
+            std::unique_lock<std::shared_mutex> lock(cs_scriptcache);
             m_set_scripts.insert(entry);
         }
 
