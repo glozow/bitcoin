@@ -1481,10 +1481,10 @@ void InitScriptExecutionCache() {
  *
  * Non-static (and re-declared) in src/test/txvalidationcache_tests.cpp
  */
-bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
-                       const CCoinsViewCache& inputs, unsigned int flags, bool cacheSigStore,
+bool CheckInputScripts(const CTransaction& tx, TxValidationState &state,
+                       const CCoinsViewCache &inputs, unsigned int flags, bool cacheSigStore,
                        bool cacheFullScriptStore, PrecomputedTransactionData& txdata,
-                       std::vector<CScriptCheck>* pvChecks)
+                       std::vector<CScriptCheck> *pvChecks)
 {
     if (tx.IsCoinBase()) return true;
 
@@ -1498,7 +1498,6 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
     // properly commits to the scriptPubKey in the inputs view of that
     // transaction).
     uint256 hashCacheEntry = g_scriptExecutionCache.ComputeEntry(tx.GetWitnessHash(), flags);
-    AssertLockHeld(cs_main); //TODO: Remove this requirement by making CuckooCache not require external locks
     if (g_scriptExecutionCache.Get(hashCacheEntry, !cacheFullScriptStore)) {
         return true;
     }
