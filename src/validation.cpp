@@ -463,6 +463,111 @@ static bool CheckInputsFromMempoolAndCache(const CTransaction& tx, TxValidationS
     return CheckInputScripts(tx, state, view, flags, /* cacheSigStore = */ true, /* cacheFullSciptStore = */ true, txdata);
 }
 
+/**
+ * A CoinsView that adds a memory cache to another CoinsView and serves as temporary scratch space.
+ * Used by MemPoolAccept class to validate transactions and packages before submitting to mempool.
+ * A backend can be set to provide read access to chainstate and/or mempool coins, but writing to
+ * the backend is disabled. Avoid using a CoinsViewTemporary in consensus-critical paths such
+ * as writing to the script cache. See CheckInputsFromMempoolAndCache as an example. When not being
+ * used to validate a package (m_temp_added and m_temp_spent are empty), a CoinsViewTemporary
+ * behaves exactly like a CCoinsViewCache.
+ */
+class CoinsViewTemporary : public CCoinsViewCache
+{
+    /**
+    * Coins made available by transactions being validated. Tracking these allows for package
+    * validation, since we can access transaction outputs without submitting them to mempool.
+    */
+    std::map<COutPoint, Coin> m_temp_added;
+
+    /**
+    * Coins spent by transactions being validated. When validating a package, we need to track
+    * these in order to distinguish between missing/spent coins and conflicts within a package.
+    */
+    std::set<COutPoint> m_temp_spent;
+
+    /** An empty coin used as a placeholder for a spent coin.*/
+    inline static const Coin s_coin_spent;
+
+public:
+
+    CoinsViewTemporary(CCoinsView* baseIn) : CCoinsViewCache(baseIn) {}
+
+    // Delete the copy constructor to prevent accidentally using it when one intends to create a
+    // CoinsViewTemporary on top of a base cache.
+    CoinsViewTemporary(const CoinsViewTemporary &) = delete;
+
+    bool GetCoin(const COutPoint& outpoint, Coin& coin) const override {
+        coin = AccessCoin(outpoint);
+        return !coin.IsSpent();
+    }
+
+    const Coin& AccessCoin(const COutPoint& outpoint) const override {
+        // Check to see if another tx in the package has already spent this coin (conflict-in-package).
+        // Coins spent by others in the package are only tracked in m_temp_spent.
+        if (m_temp_spent.count(outpoint)) {
+            return s_coin_spent;
+        }
+
+        // Check to see if the inputs are made available by another tx in the package.
+        // These Coins would not be available in the underlying CoinsView.
+        if (auto it = m_temp_added.find(outpoint); it != m_temp_added.end()) {
+            assert(!it->second.IsSpent());
+            return it->second;
+        }
+        return CCoinsViewCache::AccessCoin(outpoint);
+    }
+
+    bool HaveCoin(const COutPoint& outpoint) const override {
+        Coin coin;
+        return GetCoin(outpoint, coin);
+    }
+
+    /**
+    * Update with coins spent and created by a transaction.
+    * Only used for package validation.
+    */
+    void PackageAddTransaction(const CTransactionRef& tx)
+    {
+        // Track Coins spent by this transaction. They must exist and not already be spent.
+        for (auto input : tx->vin) {
+            Coin spent_coin;
+            Assume(GetCoin(input.prevout, spent_coin));
+            m_temp_spent.insert(input.prevout);
+        }
+        // Track Coins added by this transaction.
+        for (unsigned int n = 0; n < tx->vout.size(); ++n) {
+            m_temp_added.emplace(COutPoint(tx->GetHash(), n), Coin(tx->vout[n], MEMPOOL_HEIGHT, false));
+        }
+    }
+
+    /**
+    * Returns whether an outpoint is spent by a transaction in the package being validated.
+    * Only used for package validation.
+    */
+    bool PackageSpends(const COutPoint& outpoint) const {
+        return m_temp_spent.count(outpoint);
+    }
+
+    /**
+    * Clear our knowledge of which coins have been spent so far during validation.
+    * Only used for package validation.
+    */
+    void ClearTemporarySpends() {
+        m_temp_spent.clear();
+    }
+
+    // A CoinsViewTemporary is for temporary scratch space only; it should not write to its backend.
+    bool Flush() override {
+        throw std::logic_error("CoinsViewTemporary flushing is not supported.");
+    }
+
+    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlockIn) override {
+        throw std::logic_error("CoinsViewTemporary writing is not supported.");
+    }
+
+};
+
 namespace {
 
 class MemPoolAccept
@@ -555,7 +660,7 @@ private:
 
 private:
     CTxMemPool& m_pool;
-    CCoinsViewCache m_view;
+    CoinsViewTemporary m_view;
     CCoinsViewMemPool m_viewmempool;
     CCoinsView m_dummy;
 
