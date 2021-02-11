@@ -465,7 +465,9 @@ namespace {
 class MemPoolAccept
 {
 public:
-    explicit MemPoolAccept(CTxMemPool& mempool, CChainState& active_chainstate) : m_pool(mempool), m_view(&m_dummy), m_viewmempool(&m_dummy, m_pool), m_active_chainstate(active_chainstate),
+    explicit MemPoolAccept(CTxMemPool& mempool, CChainState& active_chainstate)
+        : m_pool(mempool), m_viewmempool(&m_dummy, m_pool), m_view(&m_viewmempool),
+        m_active_chainstate(active_chainstate),
         m_limit_ancestors(gArgs.GetArg("-limitancestorcount", DEFAULT_ANCESTOR_LIMIT)),
         m_limit_ancestor_size(gArgs.GetArg("-limitancestorsize", DEFAULT_ANCESTOR_SIZE_LIMIT)*1000),
         m_limit_descendants(gArgs.GetArg("-limitdescendantcount", DEFAULT_DESCENDANT_LIMIT)),
@@ -552,8 +554,8 @@ private:
 
 private:
     CTxMemPool& m_pool;
-    CCoinsViewCache m_view;
     CCoinsViewMemPool m_viewmempool;
+    CCoinsViewCache m_view;
     CCoinsView m_dummy;
 
     CChainState& m_active_chainstate;
@@ -659,7 +661,6 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     }
 
     LockPoints lp;
-    m_view.SetBackend(m_viewmempool);
 
     assert(std::addressof(::ChainstateActive().CoinsTip()) == std::addressof(m_active_chainstate.CoinsTip()));
     const CCoinsViewCache& coins_cache = m_active_chainstate.CoinsTip();
@@ -694,7 +695,6 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     // against bugs where we pull more inputs from disk that miss being added
     // to coins_to_uncache)
     m_viewmempool.SetBackend(m_dummy);
-    m_view.SetBackend(m_dummy);
 
     // Only accept BIP68 sequence locked transactions that can be mined in the next
     // block; we don't want our mempool filled up with transactions that can't
