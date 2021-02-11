@@ -183,6 +183,7 @@ BITCOIN_CORE_H = \
   node/utxo_snapshot.h \
   noui.h \
   outputtype.h \
+  packages.h \
   policy/feerate.h \
   policy/fees.h \
   policy/policy.h \
