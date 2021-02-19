@@ -1422,6 +1422,23 @@ void InitScriptExecutionCache() {
             (nElems*sizeof(uint256)) >>20, (nMaxCacheSize*2)>>20, nElems);
 }
 
+void CreateScriptCheckQueue(const CTransaction& tx, const CCoinsViewCache &inputs, unsigned int flags,
+                            bool cacheSigStore, PrecomputedTransactionData& txdata, std::vector<CScriptCheck>& vChecks)
+{
+    vChecks.reserve(tx.vin.size());
+    // Construct (but don't run) script checks and return via vChecks
+    for (unsigned int i = 0; i < tx.vin.size(); ++i) {
+        // We very carefully only pass in things to CScriptCheck which
+        // are clearly committed to by tx' witness hash. This provides
+        // a sanity check that our caching is not introducing consensus
+        // failures through additional data in, eg, the coins being
+        // spent being checked as a part of CScriptCheck.
+        CScriptCheck check(txdata.m_spent_outputs[i], tx, i, flags, cacheSigStore, &txdata);
+        vChecks.push_back(CScriptCheck());
+        check.swap(vChecks.back());
+    }
+}
+
 /**
  * Check whether all of this transaction's input scripts succeed.
  *
@@ -1444,10 +1461,6 @@ void InitScriptExecutionCache() {
 bool CheckInputScripts(const CTransaction& tx, TxValidationState &state, const CCoinsViewCache &inputs, unsigned int flags, bool cacheSigStore, bool cacheFullScriptStore, PrecomputedTransactionData& txdata, std::vector<CScriptCheck> *pvChecks)
 {
     if (tx.IsCoinBase()) return true;
-
-    if (pvChecks) {
-        pvChecks->reserve(tx.vin.size());
-    }
 
     // First check if script executions have been cached with the same
     // flags. Note that this assumes that the inputs provided are
@@ -1473,20 +1486,16 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState &state, const C
     }
     assert(txdata.m_spent_outputs.size() == tx.vin.size());
 
-    for (unsigned int i = 0; i < tx.vin.size(); i++) {
+    if (pvChecks) {
+        CreateScriptCheckQueue(tx, inputs, flags, cacheSigStore, txdata, *pvChecks);
+        return true;
+    }
 
-        // We very carefully only pass in things to CScriptCheck which
-        // are clearly committed to by tx' witness hash. This provides
-        // a sanity check that our caching is not introducing consensus
-        // failures through additional data in, eg, the coins being
-        // spent being checked as a part of CScriptCheck.
+    for (unsigned int i = 0; i < tx.vin.size(); i++) {
 
         // Verify signature
         CScriptCheck check(txdata.m_spent_outputs[i], tx, i, flags, cacheSigStore, &txdata);
-        if (pvChecks) {
-            pvChecks->push_back(CScriptCheck());
-            check.swap(pvChecks->back());
-        } else if (!check()) {
+        if (!check()) {
             if (flags & STANDARD_NOT_MANDATORY_VERIFY_FLAGS) {
                 // Check whether the failure was caused by a
                 // non-mandatory script verification check, such as
@@ -1514,7 +1523,7 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState &state, const C
         }
     }
 
-    if (cacheFullScriptStore && !pvChecks) {
+    if (cacheFullScriptStore) {
         // We executed all of the provided scripts, and were told to
         // cache the result. Do so now.
         g_scriptExecutionCache.Add(hashCacheEntry);
