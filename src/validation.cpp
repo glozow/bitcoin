@@ -87,6 +87,8 @@ const std::vector<std::string> CHECKLEVEL_DOC {
 
 static CScriptCache g_scriptExecutionCache;
 
+static CCheckQueue<CScriptCheck> scriptcheckqueue(128);
+
 bool CBlockIndexWorkComparator::operator()(const CBlockIndex *pa, const CBlockIndex *pb) const {
     // First sort by most total work, ...
     if (pa->nChainWork > pb->nChainWork) return false;
@@ -425,6 +427,29 @@ static void UpdateMempoolForReorg(CChainState& active_chainstate, CTxMemPool& me
     LimitMempoolSize(mempool, active_chainstate.CoinsTip(), gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000, std::chrono::hours{gArgs.GetArg("-mempoolexpiry", DEFAULT_MEMPOOL_EXPIRY)});
 }
 
+/** Used by mempool validation to run parallel script-checking and cache results.
+* Calls CheckInputScripts with cacheSigStore = true, cacheFullScriptStore = true,
+* and non-null pvChecks to construct the CScriptCheck functors, then creates a
+* work queue and runs them in parallel.
+*/
+bool CheckInputScriptsParallelWithCaching(const CTransaction& tx, TxValidationState &state,
+                                          const CCoinsViewCache &inputs, unsigned int flags,
+                                          PrecomputedTransactionData& txdata)
+{
+    // Only use this for consensus script checking, after PolicyScriptChecks already passed.
+    Assume(!(flags & STANDARD_NOT_MANDATORY_VERIFY_FLAGS));
+    std::vector<CScriptCheck> pvChecks;
+    if (!CheckInputScripts(tx, state, inputs, flags, true, true, txdata, &pvChecks)) return false;
+    CCheckQueueControl<CScriptCheck> control(g_parallel_script_checks ? &scriptcheckqueue : nullptr);
+    control.Add(pvChecks);
+    if (!control.Wait()) {
+        return state.Invalid(TxValidationResult::TX_CONSENSUS, strprintf("mandatory-script-verify-flag-failed"));
+    }
+    uint256 hashCacheEntry = g_scriptExecutionCache.ComputeEntry(tx.GetWitnessHash(), flags);
+    g_scriptExecutionCache.Add(hashCacheEntry);
+    return true;
+}
+
 /**
 * Checks to avoid mempool polluting consensus critical paths since cached
 * signature and script validity results will be reused if we validate this
@@ -465,7 +490,7 @@ static bool CheckInputsFromMempoolAndCache(const CTransaction& tx, TxValidationS
     }
 
     // Call CheckInputScripts() to cache signature and script validity against current tip consensus rules.
-    return CheckInputScripts(tx, state, view, flags, /* cacheSigStore = */ true, /* cacheFullSciptStore = */ true, txdata);
+    return CheckInputScriptsParallelWithCaching(tx, state, view, flags, txdata);
 }
 
 namespace {
@@ -1794,8 +1819,6 @@ static bool WriteUndoDataForBlock(const CBlockUndo& blockundo, BlockValidationSt
 
     return true;
 }
-
-static CCheckQueue<CScriptCheck> scriptcheckqueue(128);
 
 void StartScriptCheckWorkerThreads(int threads_num)
 {
