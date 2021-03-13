@@ -905,6 +905,7 @@ static RPCHelpMan testmempoolaccept()
                             {RPCResult::Type::OBJ, "fees", "Transaction fees (only present if 'allowed' is true)",
                             {
                                 {RPCResult::Type::STR_AMOUNT, "base", "transaction fee in " + CURRENCY_UNIT},
+                                {RPCResult::Type::STR_AMOUNT, "descendant", "fee including descendants in " + CURRENCY_UNIT + " (only present if multiple transactions were passed in)."},
                             }},
                             {RPCResult::Type::STR, "reject-reason", "Rejection string (only present when 'allowed' is false)"},
                         }},
@@ -974,6 +975,9 @@ static RPCHelpMan testmempoolaccept()
                 result_inner.pushKV("vsize", virtual_size);
                 UniValue fees(UniValue::VOBJ);
                 fees.pushKV("base", ValueFromAmount(fee));
+                if (validation_results.size() > 1) {
+                    fees.pushKV("descendant", ValueFromAmount(accept_result.m_descendants_fees.value()));
+                }
                 result_inner.pushKV("fees", fees);
             }
         } else if (accept_result.m_result_type == MempoolAcceptResult::ResultType::INVALID) {

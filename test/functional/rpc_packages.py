@@ -29,6 +29,19 @@ class RPCPackagesTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.setup_clean_chain = True
 
+    def assert_results_equal(self, testres_a, testres_b):
+        """Return whether the testmempoolaccept results are the same, ignoring keys that only apply to packages
+        - fees["descendant"]
+        """
+        assert_equal(len(testres_a), len(testres_b))
+
+        def strip_result(result_dict):
+            if "fees" in result_dict:
+                result_dict["fees"].pop("descendant", None)
+
+        for i in range(len(testres_a)):
+            assert_equal(strip_result(testres_a[i]), strip_result(testres_b[i]))
+
     def run_test(self):
         self.log.info("Generate blocks to create UTXOs")
         node = self.nodes[0]
@@ -89,7 +102,7 @@ class RPCPackagesTest(BitcoinTestFramework):
     def test_independent(self):
         self.log.info("Test multiple independent transactions in a package")
         node = self.nodes[0]
-        assert_equal(self.independent_txns_testres, node.testmempoolaccept(rawtxs=self.independent_txns_hex))
+        self.assert_results_equal(self.independent_txns_testres, node.testmempoolaccept(rawtxs=self.independent_txns_hex))
 
         self.log.info("Test a valid package with garbage inserted")
         garbage_tx = node.createrawtransaction([{"txid": "00" * 32, "vout": 5}], {self.address: 1})
@@ -97,7 +110,7 @@ class RPCPackagesTest(BitcoinTestFramework):
         tx.deserialize(BytesIO(hex_str_to_bytes(garbage_tx)))
         testres_bad = node.testmempoolaccept(self.independent_txns_hex + [garbage_tx])
         testres_independent_ids = [{"txid": res["txid"], "wtxid": res["wtxid"]} for res in self.independent_txns_testres]
-        assert_equal(testres_bad, testres_independent_ids + [
+        self.assert_results_equal(testres_bad, testres_independent_ids + [
             {"txid": tx.rehash(), "wtxid": tx.getwtxid(), "allowed": False, "reject-reason": "missing-inputs"}
         ])
 
@@ -108,7 +121,7 @@ class RPCPackagesTest(BitcoinTestFramework):
         tx_bad_sig = CTransaction()
         tx_bad_sig.deserialize(BytesIO(hex_str_to_bytes(tx_bad_sig_hex)))
         testres_bad_sig = node.testmempoolaccept(self.independent_txns_hex + [tx_bad_sig_hex])
-        assert_equal(testres_bad_sig, self.independent_txns_testres + [{
+        self.assert_results_equal(testres_bad_sig, self.independent_txns_testres + [{
             "txid": tx_bad_sig.rehash(),
             "wtxid": tx_bad_sig.getwtxid(), "allowed": False,
             "reject-reason": "mandatory-script-verify-flag-failed (Operation not valid with the current stack size)"
@@ -123,11 +136,11 @@ class RPCPackagesTest(BitcoinTestFramework):
         tx_high_fee = CTransaction()
         tx_high_fee.deserialize(BytesIO(hex_str_to_bytes(tx_high_fee_signed["hex"])))
         testres_high_fee = node.testmempoolaccept([tx_high_fee_signed["hex"]])
-        assert_equal(testres_high_fee, [
+        self.assert_results_equal(testres_high_fee, [
             {"txid": tx_high_fee.rehash(), "wtxid": tx_high_fee.getwtxid(), "allowed": False, "reject-reason": "max-fee-exceeded"}
         ])
         testres_package_high_fee = node.testmempoolaccept(self.independent_txns_hex + [tx_high_fee_signed["hex"]])
-        assert_equal(testres_package_high_fee, self.independent_txns_testres + testres_high_fee)
+        self.assert_results_equal(testres_package_high_fee, self.independent_txns_testres + testres_high_fee)
 
     def test_chain(self):
         node = self.nodes[0]
@@ -149,7 +162,7 @@ class RPCPackagesTest(BitcoinTestFramework):
 
         self.log.info("Check that testmempoolaccept requires packages to be sorted by dependency")
         testres_multiple_unsorted = node.testmempoolaccept(rawtxs=chain_hex[::-1])
-        assert_equal(testres_multiple_unsorted, [{"txid": chain_txns[-1].rehash(), "wtxid": chain_txns[-1].getwtxid(), "allowed": False, "reject-reason": "missing-inputs"}]
+        self.assert_results_equal(testres_multiple_unsorted, [{"txid": chain_txns[-1].rehash(), "wtxid": chain_txns[-1].getwtxid(), "allowed": False, "reject-reason": "missing-inputs"}]
                                               + [{"txid": tx.rehash(), "wtxid": tx.getwtxid()} for tx in chain_txns[::-1]][1:])
 
         self.log.info("Testmempoolaccept with entire package")
@@ -162,7 +175,7 @@ class RPCPackagesTest(BitcoinTestFramework):
             testres_single.append(testres[0])
             # Submit the transaction now so its child should have no problem validating
             node.sendrawtransaction(rawtx)
-        assert_equal(testres_single, testres_multiple)
+        self.assert_results_equal(testres_single, testres_multiple)
 
         # Clean up by clearing the mempool
         node.generate(1)
@@ -212,7 +225,7 @@ class RPCPackagesTest(BitcoinTestFramework):
             testres_single.append(testres[0])
             # Submit the transaction now so its child should have no problem validating
             node.sendrawtransaction(rawtx)
-        assert_equal(testres_single, testres_multiple_ab)
+        self.assert_results_equal(testres_single, testres_multiple_ab)
 
     def test_multiple_parents(self):
         node = self.nodes[0]
@@ -250,7 +263,7 @@ class RPCPackagesTest(BitcoinTestFramework):
             testres_single.append(testres[0])
             # Submit the transaction now so its child should have no problem validating
             node.sendrawtransaction(rawtx)
-        assert_equal(testres_single, testres_multiple_ab)
+        self.assert_results_equal(testres_single, testres_multiple_ab)
 
     def test_conflicting(self):
         node = self.nodes[0]
@@ -277,14 +290,14 @@ class RPCPackagesTest(BitcoinTestFramework):
 
         self.log.info("Test duplicate transactions in the same package")
         testres = node.testmempoolaccept([signedtx1["hex"], signedtx1["hex"]])
-        assert_equal(testres, [
+        self.assert_results_equal(testres, [
             {"txid": tx1.rehash(), "wtxid": tx1.getwtxid()},
             {"txid": tx1.rehash(), "wtxid": tx1.getwtxid(), "allowed": False, "reject-reason": "conflict-in-package"}
         ])
 
         self.log.info("Test conflicting transactions in the same package")
         testres = node.testmempoolaccept([signedtx1["hex"], signedtx2["hex"]])
-        assert_equal(testres, [
+        self.assert_results_equal(testres, [
             {"txid": tx1.rehash(), "wtxid": tx1.getwtxid()},
             {"txid": tx2.rehash(), "wtxid": tx2.getwtxid(), "allowed": False, "reject-reason": "conflict-in-package"}
         ])
@@ -300,7 +313,7 @@ class RPCPackagesTest(BitcoinTestFramework):
         testres_replaceable = node.testmempoolaccept([signed_replaceable_tx["hex"]])
         replaceable_tx = CTransaction()
         replaceable_tx.deserialize(BytesIO(hex_str_to_bytes(signed_replaceable_tx["hex"])))
-        assert_equal(testres_replaceable, [
+        self.assert_results_equal(testres_replaceable, [
             {"txid": replaceable_tx.rehash(), "wtxid": replaceable_tx.getwtxid(),
             "allowed": True, "vsize": replaceable_tx.get_vsize(), "fees": { "base": fee }}
         ])
@@ -314,7 +327,7 @@ class RPCPackagesTest(BitcoinTestFramework):
 
         self.log.info("Test that transactions within a package cannot replace each other")
         testres_rbf_conflicting = node.testmempoolaccept([signed_replaceable_tx["hex"], signed_replacement_tx["hex"]])
-        assert_equal(testres_rbf_conflicting, [
+        self.assert_results_equal(testres_rbf_conflicting, [
             {"txid": replaceable_tx.rehash(), "wtxid": replaceable_tx.getwtxid()},
             {"txid": replacement_tx.rehash(), "wtxid": replacement_tx.getwtxid(),
             "allowed": False, "reject-reason": "conflict-in-package"}
@@ -327,7 +340,7 @@ class RPCPackagesTest(BitcoinTestFramework):
         testres_replacement["txid"] = replacement_tx.rehash()
         testres_replacement["wtxid"] = replacement_tx.getwtxid()
         testres_replacement["fees"]["base"] = Decimal(str(2 * fee))
-        assert_equal(testres_rbf, self.independent_txns_testres + [testres_replacement])
+        self.assert_results_equal(testres_rbf, self.independent_txns_testres + [testres_replacement])
 
 
 if __name__ == "__main__":
