@@ -599,6 +599,11 @@ public:
          */
         std::vector<COutPoint>& m_coins_to_uncache;
         const bool m_test_accept;
+        /**
+        * If true, use descendant fee rate instead of a transaction's base
+        * fee rate in mempool policy. Only applicable in package validation.
+        */
+        const bool m_use_descendant_feerate;
     };
 
     // Single transaction acceptance
@@ -630,6 +635,10 @@ private:
         const CTransactionRef& m_ptx;
         const uint256& m_hash;
         TxValidationState m_state;
+
+        std::vector<CTransactionRef> m_descendants; //!> known descendants
+        size_t m_descendants_size; //!> total size including known descendants
+        CAmount m_descendants_fees; //!> total fees including known descendants
     };
 
     // Run the policy checks on a given transaction, excluding any script checks.
@@ -867,8 +876,8 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                 strprintf("%d", nSigOpsCost));
 
     // No transactions are allowed below minRelayTxFee except from disconnected
-    // blocks
-    if (!bypass_limits && !CheckFeeRate(nSize, nModifiedFees, state)) return false;
+    // blocks or in packages (use descendant fee rate to account for CPFP).
+    if (!bypass_limits && !args.m_use_descendant_feerate && !CheckFeeRate(nSize, nModifiedFees, state)) return false;
 
     const CTxMemPool::setEntries setIterConflicting = m_pool.GetIterSet(setConflicts);
     // Calculate in-mempool ancestors, up to a limit.
@@ -1203,7 +1212,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
 std::vector<MempoolAcceptResult> MemPoolAccept::AcceptMultipleTransactions(std::vector<CTransactionRef>& txns, ATMPArgs& args)
 {
     AssertLockHeld(cs_main);
-    std::vector<Workspace> workspaces{};
+    std::vector<Workspace> workspaces;
     const int package_size = txns.size();
     workspaces.reserve(package_size);
     std::transform(txns.begin(), txns.end(), std::back_inserter(workspaces), [](CTransactionRef& tx) {
@@ -1226,6 +1235,20 @@ std::vector<MempoolAcceptResult> MemPoolAccept::AcceptMultipleTransactions(std::
             return results;
         }
         m_view.PackageAddTransaction(ws.m_ptx);
+
+        // Add me to the descendants of previous transactions
+        ws.m_descendants_size = GetVirtualTransactionSize(*ws.m_ptx);
+        ws.m_descendants_fees = ws.m_modified_fees;
+        for (auto input : ws.m_ptx->vin) {
+            auto parent_it = std::find_if(workspaces.begin(), workspaces.end(),
+                                          [&, txid = input.prevout.hash](Workspace& ws)
+                                          { return ws.m_ptx->GetHash() == txid; });
+            if (parent_it != workspaces.end()) {
+                parent_it->m_descendants.push_back(ws.m_ptx);
+                parent_it->m_descendants_size += GetVirtualTransactionSize(*ws.m_ptx);
+                parent_it->m_descendants_fees += ws.m_modified_fees;
+            }
+        }
     }
 
     // Now that we have verified all inputs are available and there are no conflicts in the package,
@@ -1260,7 +1283,8 @@ std::vector<MempoolAcceptResult> MemPoolAccept::AcceptMultipleTransactions(std::
 
     std::transform(workspaces.begin(), workspaces.end(), std::back_inserter(results), [](Workspace& ws) {
         // All successful MemPoolAcceptResults
-        return MempoolAcceptResult(*ws.m_ptx, std::move(ws.m_replaced_transactions), ws.m_base_fees);
+        return MempoolAcceptResult(*ws.m_ptx, std::move(ws.m_replaced_transactions), ws.m_base_fees,
+                                   std::move(ws.m_descendants), ws.m_descendants_fees);
     });
     return results;
 }
@@ -1275,7 +1299,8 @@ static MempoolAcceptResult AcceptToMemoryPoolWithTime(const CChainParams& chainp
                                                       EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
     std::vector<COutPoint> coins_to_uncache;
-    MemPoolAccept::ATMPArgs args { chainparams, nAcceptTime, bypass_limits, coins_to_uncache, test_accept };
+    MemPoolAccept::ATMPArgs args { chainparams, nAcceptTime, bypass_limits, coins_to_uncache, test_accept,
+                                   /* use_descendant_feerate */ false };
 
     assert(std::addressof(::ChainstateActive()) == std::addressof(active_chainstate));
     const MempoolAcceptResult result = MemPoolAccept(pool, active_chainstate).AcceptSingleTransaction(tx, args);
@@ -1312,7 +1337,8 @@ std::vector<MempoolAcceptResult> ProcessNewPackage(CChainState& active_chainstat
 
     std::vector<COutPoint> coins_to_uncache;
     const CChainParams& chainparams = Params();
-    MemPoolAccept::ATMPArgs args { chainparams, GetTime(), false, coins_to_uncache, test_accept };
+    MemPoolAccept::ATMPArgs args { chainparams, GetTime(), false, coins_to_uncache, test_accept,
+                                   /* use_descendant_feerate */ true };
     assert(std::addressof(::ChainstateActive()) == std::addressof(active_chainstate));
     const std::vector<MempoolAcceptResult> results = MemPoolAccept(pool, active_chainstate).AcceptMultipleTransactions(txns, args);
     Assume(txns.size() == results.size());

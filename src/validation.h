@@ -208,18 +208,30 @@ struct MempoolAcceptResult {
     const std::optional<std::list<CTransactionRef>> m_replaced_transactions;
     /** Raw base fees in satoshis. */
     const std::optional<CAmount> m_base_fees;
+    /** List of descendants if validated together in a package. */
+    const std::optional<std::vector<CTransactionRef>> m_package_descendants;
+    /** Feerate of this transaction + package descendants in satoshis. */
+    const std::optional<CAmount> m_descendants_fees;
 
     /** Constructor for failure case */
     explicit MempoolAcceptResult(const CTransaction& tx, TxValidationState state, bool finished=true)
         : m_tx(tx), m_result_type(finished ? ResultType::INVALID : ResultType::UNFINISHED),
-        m_state(state), m_replaced_transactions(nullopt), m_base_fees(nullopt) {
+        m_state(state), m_replaced_transactions(nullopt), m_base_fees(nullopt), m_package_descendants{},
+        m_descendants_fees{} {
             if (finished) Assume(!state.IsValid()); // Can be invalid or error
         }
 
     /** Constructor for success case */
     explicit MempoolAcceptResult(const CTransaction& tx, std::list<CTransactionRef>&& replaced_txns, CAmount fees)
         : m_tx(tx), m_result_type(ResultType::VALID), m_state{},
-        m_replaced_transactions(std::move(replaced_txns)), m_base_fees(fees) {}
+        m_replaced_transactions(std::move(replaced_txns)), m_base_fees(fees), m_descendants_fees{fees} {}
+
+    /** Overloaded constructor for success case in packages */
+    explicit MempoolAcceptResult(const CTransaction& tx, std::list<CTransactionRef>&& replaced_txns, CAmount fees,
+                                 std::vector<CTransactionRef>&& descendants, CAmount fees_with_descendants)
+        : m_tx(tx), m_result_type(ResultType::VALID), m_state{},
+        m_replaced_transactions(std::move(replaced_txns)), m_base_fees(fees),
+        m_package_descendants(std::move(descendants)), m_descendants_fees{fees_with_descendants} {}
 };
 
 /**
