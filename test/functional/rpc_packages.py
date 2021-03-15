@@ -167,6 +167,7 @@ class RPCPackagesTest(BitcoinTestFramework):
 
         self.log.info("Testmempoolaccept with entire package")
         testres_multiple = node.testmempoolaccept(rawtxs=chain_hex)
+        print(testres_multiple)
 
         testres_single = []
         self.log.info("Test accept and then submit each one individually, which should be identical to package testaccept")

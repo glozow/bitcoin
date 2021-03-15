@@ -576,7 +576,7 @@ namespace {
 class MemPoolAccept
 {
 public:
-    explicit MemPoolAccept(CTxMemPool& mempool, CChainState& active_chainstate) : m_pool(mempool), m_view(&m_dummy), m_viewmempool(&active_chainstate.CoinsTip(), m_pool), m_active_chainstate(active_chainstate),
+    explicit MemPoolAccept(CTxMemPool& mempool, CChainState& active_chainstate) : m_pool(mempool), m_tempool(nullptr, 0), m_view(&m_dummy), m_viewmempool(&active_chainstate.CoinsTip(), m_pool), m_active_chainstate(active_chainstate),
         m_limit_ancestors(gArgs.GetArg("-limitancestorcount", DEFAULT_ANCESTOR_LIMIT)),
         m_limit_ancestor_size(gArgs.GetArg("-limitancestorsize", DEFAULT_ANCESTOR_SIZE_LIMIT)*1000),
         m_limit_descendants(gArgs.GetArg("-limitdescendantcount", DEFAULT_DESCENDANT_LIMIT)),
@@ -635,10 +635,6 @@ private:
         const CTransactionRef& m_ptx;
         const uint256& m_hash;
         TxValidationState m_state;
-
-        std::vector<CTransactionRef> m_descendants; //!> known descendants
-        size_t m_descendants_size; //!> total size including known descendants
-        CAmount m_descendants_fees; //!> total fees including known descendants
     };
 
     // Run the policy checks on a given transaction, excluding any script checks.
@@ -678,6 +674,8 @@ private:
 
 private:
     CTxMemPool& m_pool;
+    /** Temporarily stores the transactions currently being validated. */
+    CTxMemPool m_tempool;
     CCoinsViewTemporary m_view;
     CCoinsViewMemPool m_viewmempool;
     CCoinsView m_dummy;
@@ -1236,18 +1234,16 @@ std::vector<MempoolAcceptResult> MemPoolAccept::AcceptMultipleTransactions(std::
         }
         m_view.PackageAddTransaction(ws.m_ptx);
 
-        // Add me to the descendants of previous transactions
-        ws.m_descendants_size = GetVirtualTransactionSize(*ws.m_ptx);
-        ws.m_descendants_fees = ws.m_modified_fees;
-        for (auto input : ws.m_ptx->vin) {
-            auto parent_it = std::find_if(workspaces.begin(), workspaces.end(),
-                                          [&, txid = input.prevout.hash](Workspace& ws)
-                                          { return ws.m_ptx->GetHash() == txid; });
-            if (parent_it != workspaces.end()) {
-                parent_it->m_descendants.push_back(ws.m_ptx);
-                parent_it->m_descendants_size += GetVirtualTransactionSize(*ws.m_ptx);
-                parent_it->m_descendants_fees += ws.m_modified_fees;
+        {
+            LOCK(m_tempool.cs);
+            CTxMemPool::setEntries tempool_ancestors;
+            std::string err_string;
+            if (!m_tempool.CalculateMemPoolAncestors(*ws.m_entry, tempool_ancestors, m_limit_ancestors,
+                                                     m_limit_ancestor_size, m_limit_descendants,
+                                                     m_limit_descendant_size, err_string, true)) {
+                // TODO: pass in and enforce package limits here.
             }
+            m_tempool.addUnchecked(*ws.m_entry, tempool_ancestors); // automatically updates ancestors
         }
     }
 
@@ -1282,9 +1278,9 @@ std::vector<MempoolAcceptResult> MemPoolAccept::AcceptMultipleTransactions(std::
     }
 
     std::transform(workspaces.begin(), workspaces.end(), std::back_inserter(results), [](Workspace& ws) {
+        const CFeeRate descendant_feerate{ws.m_entry->GetModFeesWithDescendants(), ws.m_entry->GetSizeWithDescendants()};
         // All successful MemPoolAcceptResults
-        return MempoolAcceptResult(*ws.m_ptx, std::move(ws.m_replaced_transactions), ws.m_base_fees,
-                                   std::move(ws.m_descendants), ws.m_descendants_fees);
+        return MempoolAcceptResult(*ws.m_ptx, std::move(ws.m_replaced_transactions), ws.m_base_fees, descendant_feerate);
     });
     return results;
 }

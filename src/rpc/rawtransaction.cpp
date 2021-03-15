@@ -900,14 +900,14 @@ static RPCHelpMan testmempoolaccept()
                             {RPCResult::Type::STR_HEX, "txid", "The transaction hash in hex"},
                             {RPCResult::Type::STR_HEX, "wtxid", "The transaction witness hash in hex"},
                             {RPCResult::Type::BOOL, "allowed", "Whether this tx would be accepted to the mempool and passes client-specified maxfeerate.\n"
-                                                               "If not present, the tx was not fully validated due to a failure in another tx in the list."},
-                            {RPCResult::Type::NUM, "vsize", "Virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted (only present when 'allowed' is true)"},
-                            {RPCResult::Type::OBJ, "fees", "Transaction fees (only present if 'allowed' is true)",
+                                                               "If not present, the tx was not fully validated due to a failure in another tx in the list.\n"},
+                            {RPCResult::Type::NUM, "vsize", "Virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted (only present when 'allowed' is true).\n"},
+                            {RPCResult::Type::OBJ, "fees", "Transaction fees (only present if 'allowed' is true).\n",
                             {
-                                {RPCResult::Type::STR_AMOUNT, "base", "transaction fee in " + CURRENCY_UNIT},
-                                {RPCResult::Type::STR_AMOUNT, "descendant", "fee including descendants in " + CURRENCY_UNIT + " (only present if multiple transactions were passed in)."},
+                                {RPCResult::Type::STR_AMOUNT, "base", "transaction fee in " + CURRENCY_UNIT + "\n"},
+                                {RPCResult::Type::STR_AMOUNT, "descendant", "fee rate including package descendants in " + CURRENCY_UNIT + "/kB (only present if multiple transactions were passed in).\n"},
                             }},
-                            {RPCResult::Type::STR, "reject-reason", "Rejection string (only present when 'allowed' is false)"},
+                            {RPCResult::Type::STR, "reject-reason", "Rejection string (only present when 'allowed' is false).\n"},
                         }},
                     }
                 },
@@ -976,7 +976,7 @@ static RPCHelpMan testmempoolaccept()
                 UniValue fees(UniValue::VOBJ);
                 fees.pushKV("base", ValueFromAmount(fee));
                 if (validation_results.size() > 1) {
-                    fees.pushKV("descendant", ValueFromAmount(accept_result.m_descendants_fees.value()));
+                    fees.pushKV("descendant", ValueFromAmount(accept_result.m_descendant_fees.value()));
                 }
                 result_inner.pushKV("fees", fees);
             }
