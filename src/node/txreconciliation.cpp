@@ -9,6 +9,20 @@
 
 namespace {
 
+/** Static salt component used to compute short txids for sketch construction, see BIP-330. */
+const std::string RECON_STATIC_SALT = "Tx Relay Salting";
+/**
+ * Salt (specified by BIP-330) constructed from contributions from both peers. It is used
+ * to compute transaction short IDs, which are then used to construct a sketch representing a set
+ * of transactions we want to announce to the peer.
+ */
+uint256 ComputeSalt(uint64_t salt1, uint64_t salt2)
+{
+    // According to BIP-330, salts should be combined in ascending order.
+    static auto RECON_SALT_HASHER = TaggedHash(RECON_STATIC_SALT);
+    return (RECON_SALT_HASHER << std::min(salt1, salt2) << std::max(salt1, salt2)).GetSHA256();
+}
+
 /**
  * Keeps track of reconciliation-related per-peer state.
  */
