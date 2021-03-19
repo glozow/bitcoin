@@ -336,8 +336,9 @@ class PeerManagerImpl final : public PeerManager
 {
 public:
     PeerManagerImpl(const CChainParams& chainparams, CConnman& connman, AddrMan& addrman,
-                    BanMan* banman, ChainstateManager& chainman,
-                    CTxMemPool& pool, bool ignore_incoming_txs);
+                    BanMan* banman, ChainstateManager& chainman, CTxMemPool& pool,
+                    std::unique_ptr<TxReconciliationTracker> txreconciliation,
+                    bool ignore_incoming_txs);
 
     /** Overridden from CValidationInterface. */
     void BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindexConnected) override;
@@ -457,6 +458,7 @@ private:
     ChainstateManager& m_chainman;
     CTxMemPool& m_mempool;
     TxRequestTracker m_txrequest GUARDED_BY(::cs_main);
+    std::unique_ptr<TxReconciliationTracker> m_txreconciliation;
 
     /** The height of the best chain */
     std::atomic<int> m_best_height{-1};
@@ -1540,21 +1542,24 @@ std::optional<std::string> PeerManagerImpl::FetchBlock(NodeId peer_id, const CBl
 }
 
 std::unique_ptr<PeerManager> PeerManager::make(const CChainParams& chainparams, CConnman& connman, AddrMan& addrman,
-                                               BanMan* banman, ChainstateManager& chainman,
-                                               CTxMemPool& pool, bool ignore_incoming_txs)
+                                               BanMan* banman, ChainstateManager& chainman, CTxMemPool& pool,
+                                               std::unique_ptr<TxReconciliationTracker> txreconciliation,
+                                               bool ignore_incoming_txs)
 {
-    return std::make_unique<PeerManagerImpl>(chainparams, connman, addrman, banman, chainman, pool, ignore_incoming_txs);
+    return std::make_unique<PeerManagerImpl>(chainparams, connman, addrman, banman, chainman, pool, std::move(txreconciliation), ignore_incoming_txs);
 }
 
 PeerManagerImpl::PeerManagerImpl(const CChainParams& chainparams, CConnman& connman, AddrMan& addrman,
-                                 BanMan* banman, ChainstateManager& chainman,
-                                 CTxMemPool& pool, bool ignore_incoming_txs)
+                                 BanMan* banman, ChainstateManager& chainman, CTxMemPool& pool,
+                                 std::unique_ptr<TxReconciliationTracker> txreconciliation,
+                                 bool ignore_incoming_txs)
     : m_chainparams(chainparams),
       m_connman(connman),
       m_addrman(addrman),
       m_banman(banman),
       m_chainman(chainman),
       m_mempool(pool),
+      m_txreconciliation(std::move(txreconciliation)),
       m_ignore_incoming_txs(ignore_incoming_txs)
 {
 }
@@ -2687,6 +2692,26 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
         if (greatest_common_version >= WTXID_RELAY_VERSION) {
             m_connman.PushMessage(&pfrom, msg_maker.Make(NetMsgType::WTXIDRELAY));
+
+            if (m_txreconciliation) {
+                // We announce reconciliation support only if this connection supports relaying
+                // transactions when they arrive (which is not the case for blocks-only nodes,
+                // block-relay-only connections, etc.).
+                // Also, we announce reconciliation support only for protocol versions above
+                // WTXID_RELAY per BIP-330.
+                if (peer->m_tx_relay && !m_ignore_incoming_txs) {
+                    const uint64_t recon_salt = m_txreconciliation->PreRegisterPeer(pfrom.GetId());
+                    // Per the protocol, only the inbound peer initiate reconciliations and the
+                    // outbound peer is supposed to only respond. Here we suggest our roles in
+                    // reconciliations (initiator/responder) based on the connection direction.
+                    // If the way we assign reconciliation roles is updated, reconciliation
+                    // protocol version should be bumped.
+                    m_connman.PushMessage(&pfrom, msg_maker.Make(NetMsgType::SENDRECON,
+                                                                 !pfrom.IsInboundConn(),
+                                                                 pfrom.IsInboundConn(),
+                                                                 RECON_VERSION, recon_salt));
+                }
+            }
         }
 
         // Signal ADDRv2 support (BIP155).
