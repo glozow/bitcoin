@@ -3004,6 +3004,51 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         return;
     }
 
+    // Received from a peer demonstrating readiness to announce transactions via reconciliations.
+    // This feature negotiation should happen: between VERSION and VERACK to avoid relay problems
+    // from switching announcement protocols after the connection is up.
+    if (msg_type == NetMsgType::SENDRECON) {
+        // For now, transaction reconciliation is an experimental feature that could be
+        // enabled via CLI.
+        if (!m_txreconciliation) {
+            LogPrint(BCLog::NET, "sendrecon from peer=%d ignored according to our config\n", pfrom.GetId());
+            return;
+        }
+
+        if (pfrom.fSuccessfullyConnected) {
+            // Disconnect peers that send a SENDRECON message after VERACK.
+            LogPrint(BCLog::NET, "sendrecon received after verack from peer=%d; disconnecting\n", pfrom.GetId());
+            pfrom.fDisconnect = true;
+            return;
+        }
+
+        bool they_initiator;
+        bool they_responder;
+        uint32_t peer_recon_version;
+        uint64_t remote_salt;
+        vRecv >> they_initiator >> they_responder >> peer_recon_version >> remote_salt;
+
+        if (m_txreconciliation->IsPeerRegistered(pfrom.GetId())) {
+            // A peer is already registered, meaning we already received SENDRECON from them.
+            LogPrint(BCLog::NET, "reconciliation protocol violation from peer=%d; disconnecting\n", pfrom.GetId());
+            pfrom.fDisconnect = true;
+            return;
+        }
+
+        const auto registered = m_txreconciliation->RegisterPeer(pfrom.GetId(), pfrom.IsInboundConn(),
+                                                                 they_initiator, they_responder, peer_recon_version, remote_salt);
+
+        // If the returned value is false, disconnect for protocol violation.
+        // If the returned value is nullopt (no change state, but something unexpected happened) or
+        // true (the peer was registered), nothing to be done.
+        if (!registered.value_or(true)) {
+            LogPrint(BCLog::NET, "reconciliation protocol violation from peer=%d; disconnecting\n", pfrom.GetId());
+            pfrom.fDisconnect = true;
+            return;
+        }
+        return;
+    }
+
     if (!pfrom.fSuccessfullyConnected) {
         LogPrint(BCLog::NET, "Unsupported message \"%s\" prior to verack from peer=%d\n", SanitizeString(msg_type), pfrom.GetId());
         return;

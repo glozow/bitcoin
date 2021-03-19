@@ -57,6 +57,17 @@ public:
     uint64_t PreRegisterPeer(NodeId peer_id);
 
     /**
+     * Step 0. Once the peer agreed to reconcile with us, generate the state required to track
+     * ongoing reconciliations. Should be called only after pre-registering the peer and only once.
+     * Returns:
+     * - true if the peer was registered
+     * - false if the peer violates the protocol
+     * - nullopt if nothing was done (e.g., we haven't pre-registered this peer)
+     */
+    std::optional<bool> RegisterPeer(NodeId peer_id, bool peer_inbound, bool recon_initiator,
+                                     bool recon_responder, uint32_t peer_recon_version, uint64_t remote_salt);
+
+    /**
      * Attempts to forget reconciliation-related state of the peer (if we previously stored any).
      * After this, we won't be able to reconcile with the peer.
      */
