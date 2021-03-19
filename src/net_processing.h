@@ -7,6 +7,7 @@
 #define BITCOIN_NET_PROCESSING_H
 
 #include <net.h>
+#include <node/txreconciliation.h>
 #include <validationinterface.h>
 
 class AddrMan;
@@ -22,6 +23,10 @@ static const bool DEFAULT_PEERBLOOMFILTERS = false;
 static const bool DEFAULT_PEERBLOCKFILTERS = false;
 /** Threshold for marking a node to be discouraged, e.g. disconnected and added to the discouragement filter. */
 static const int DISCOURAGEMENT_THRESHOLD{100};
+/** Whether transaction reconciliation protocol should be enabled by default. */
+static const bool DEFAULT_TXRECON_ENABLE = false;
+/** Supported transaction reconciliation protocol version */
+static constexpr uint32_t RECON_VERSION{1};
 
 struct CNodeStateStats {
     int nSyncHeight = -1;
@@ -40,8 +45,9 @@ class PeerManager : public CValidationInterface, public NetEventsInterface
 {
 public:
     static std::unique_ptr<PeerManager> make(const CChainParams& chainparams, CConnman& connman, AddrMan& addrman,
-                                             BanMan* banman, ChainstateManager& chainman,
-                                             CTxMemPool& pool, bool ignore_incoming_txs);
+                                             BanMan* banman, ChainstateManager& chainman, CTxMemPool& pool,
+                                             std::unique_ptr<TxReconciliationTracker> txreconciliation,
+                                             bool ignore_incoming_txs);
     virtual ~PeerManager() { }
 
     /**
