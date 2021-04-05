@@ -49,6 +49,7 @@
 #include <validationinterface.h>
 #include <warnings.h>
 
+#include <numeric>
 #include <optional>
 #include <string>
 
@@ -601,6 +602,13 @@ public:
     // Single transaction acceptance
     MempoolAcceptResult AcceptSingleTransaction(const CTransactionRef& ptx, ATMPArgs& args) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+    /**
+    * Multiple transaction acceptance. Transactions may or may not be interdependent,
+    * but must not conflict with each other. Parents must come before children if any
+    * any dependencies exist.
+    */
+    PackageMempoolAcceptResult AcceptMultipleTransactions(const std::vector<CTransactionRef>& txns, ATMPArgs& args) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
 private:
     // All the intermediate state that gets passed between the various levels
     // of checking a given transaction.
@@ -763,6 +771,10 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
 
                 setConflicts.insert(ptxConflicting->GetHash());
             }
+        }
+        // Check for conflicts with transactions in the same package.
+        if (m_view.PackageSpends(txin.prevout)) {
+            return state.Invalid(TxValidationResult::TX_CONFLICT, "conflict-in-package");
         }
     }
 
@@ -1163,7 +1175,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
 
     Workspace ws(ptx);
 
-    if (!PreChecks(args, ws)) return MempoolAcceptResult(ws.m_state);
+    if (!PreChecks(args, ws)) return MempoolAcceptResult::Failure(ws.m_state);
 
     // Only compute the precomputed transaction data if we need to verify
     // scripts (ie, other policy checks pass). We perform the inexpensive
@@ -1171,20 +1183,93 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
     // checks pass, to mitigate CPU exhaustion denial-of-service attacks.
     PrecomputedTransactionData txdata;
 
-    if (!PolicyScriptChecks(args, ws, txdata)) return MempoolAcceptResult(ws.m_state);
+    if (!PolicyScriptChecks(args, ws, txdata)) return MempoolAcceptResult::Failure(ws.m_state);
 
-    if (!ConsensusScriptChecks(args, ws, txdata)) return MempoolAcceptResult(ws.m_state);
+    if (!ConsensusScriptChecks(args, ws, txdata)) return MempoolAcceptResult::Failure(ws.m_state);
 
     // Tx was accepted, but not added
     if (args.m_test_accept) {
-        return MempoolAcceptResult(std::move(ws.m_replaced_transactions), ws.m_base_fees);
+        return MempoolAcceptResult::Success(std::move(ws.m_replaced_transactions), ws.m_base_fees);
     }
 
-    if (!Finalize(args, ws)) return MempoolAcceptResult(ws.m_state);
+    if (!Finalize(args, ws)) return MempoolAcceptResult::Failure(ws.m_state);
 
     GetMainSignals().TransactionAddedToMempool(ptx, m_pool.GetAndIncrementSequence());
 
-    return MempoolAcceptResult(std::move(ws.m_replaced_transactions), ws.m_base_fees);
+    return MempoolAcceptResult::Success(std::move(ws.m_replaced_transactions), ws.m_base_fees);
+}
+
+PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::vector<CTransactionRef>& txns, ATMPArgs& args)
+{
+    AssertLockHeld(cs_main);
+
+    PackageValidationState package_state;
+    const unsigned int package_count = txns.size();
+
+    std::vector<Workspace> workspaces{};
+    workspaces.reserve(package_count);
+
+
+    std::transform(txns.cbegin(), txns.cend(), std::back_inserter(workspaces), [](const auto& tx) {
+        return Workspace(tx);
+    });
+
+    LOCK(m_pool.cs);
+
+    std::map<const uint256, const MempoolAcceptResult> results;
+    // Do all PreChecks first and fail fast to avoid running expensive script checks when unnecessary.
+    for (Workspace& ws : workspaces) {
+        if (!PreChecks(args, ws)) {
+            package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
+            // Exit early to avoid doing pointless work. Update the failed tx result; the rest are unfinished.
+            results.emplace(ws.m_ptx->GetHash(), MempoolAcceptResult::Failure(ws.m_state));
+            return PackageMempoolAcceptResult(package_state, std::move(results));
+        }
+        m_view.PackageAddTransaction(ws.m_ptx);
+    }
+
+    // We don't want to modify the workspace entries and won't use the set of ancestors returned.
+    std::vector<CTxMemPoolEntry> dummy_entries;
+    std::transform(workspaces.cbegin(), workspaces.cend(), std::back_inserter(dummy_entries),
+                   [](const auto& ws) { return CTxMemPoolEntry(*ws.m_entry); });
+    CTxMemPool::setEntries dummy_ancestors;
+    std::string err_string;
+    if (!m_pool.CalculateMemPoolAncestors(dummy_entries, dummy_ancestors, m_limit_ancestors,
+                                          m_limit_ancestor_size, m_limit_descendants,
+                                          m_limit_descendant_size, err_string)) {
+        // All transactions must have individually passed mempool ancestor and dsecendant limits
+        // inside of PreChecks(). Figuring out which transaction to attribute this failure to may
+        // be implementation-dependent, and it's likely to be multiple transactions because we
+        // evaluated all of them together. Just return this failure result for all transactions.
+        for (auto& ws : workspaces) {
+            ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "package-too-long-mempool-chain", err_string);
+            results.emplace(ws.m_ptx->GetHash(), MempoolAcceptResult::Failure(ws.m_state));
+        }
+        package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package-too-long-mempool-chain");
+        return PackageMempoolAcceptResult(package_state, std::move(results));
+    }
+
+    // We have now verified all inputs are available and there are no conflicts in the package by
+    // marking coins (temporarily) spent in m_view. However, since script checks will assert that
+    // each coin has not been spent as a sanity check, we need to clear m_view.m_temp_spent so that
+    // script checks don't fail on those asserts.
+    m_view.ClearTemporarySpends();
+
+    for (Workspace& ws : workspaces) {
+        PrecomputedTransactionData txdata;
+        if (!PolicyScriptChecks(args, ws, txdata)) {
+            // Exit early to avoid doing pointless work. Update the failed tx result; the rest are unfinished.
+            package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
+            results.emplace(ws.m_ptx->GetHash(), MempoolAcceptResult::Failure(ws.m_state));
+            return PackageMempoolAcceptResult(package_state, std::move(results));
+        }
+        // When test_accept=true, transactions that pass PolicyScriptChecks are valid because there are
+        // no further mempool checks (passing PolicyScriptChecks implies passing ConsensusScriptChecks).
+        results.emplace(ws.m_ptx->GetHash(),
+                        MempoolAcceptResult::Success(std::move(ws.m_replaced_transactions), ws.m_base_fees));
+    }
+
+    return PackageMempoolAcceptResult(package_state, std::move(results));
 }
 
 } // anon namespace
@@ -1221,6 +1306,28 @@ MempoolAcceptResult AcceptToMemoryPool(CChainState& active_chainstate, CTxMemPoo
 {
     assert(std::addressof(::ChainstateActive()) == std::addressof(active_chainstate));
     return AcceptToMemoryPoolWithTime(Params(), pool, active_chainstate, tx, GetTime(), bypass_limits, test_accept);
+}
+
+PackageMempoolAcceptResult ProcessNewPackage(CChainState& active_chainstate, CTxMemPool& pool,
+                                                   const Package& package, bool test_accept)
+{
+    AssertLockHeld(cs_main);
+    assert(test_accept); // Only allow package accept dry-runs (testmempoolaccept RPC).
+
+    std::vector<COutPoint> coins_to_uncache;
+    const CChainParams& chainparams = Params();
+    MemPoolAccept::ATMPArgs args { chainparams, GetTime(), /* bypass_limits */ false, coins_to_uncache, test_accept };
+    assert(std::addressof(::ChainstateActive()) == std::addressof(active_chainstate));
+    const PackageMempoolAcceptResult result = MemPoolAccept(pool, active_chainstate).AcceptMultipleTransactions(package, args);
+
+    // Uncache coins pertaining to transactions that were not submitted to the mempool.
+    // Ensure the cache is still within its size limits.
+    for (const COutPoint& hashTx : coins_to_uncache) {
+        active_chainstate.CoinsTip().Uncache(hashTx);
+    }
+    BlockValidationState state_dummy;
+    active_chainstate.FlushStateToDisk(chainparams, state_dummy, FlushStateMode::PERIODIC);
+    return result;
 }
 
 CTransactionRef GetTransaction(const CBlockIndex* const block_index, const CTxMemPool* const mempool, const uint256& hash, const Consensus::Params& consensusParams, uint256& hashBlock)
