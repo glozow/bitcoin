@@ -597,6 +597,8 @@ public:
          */
         std::vector<COutPoint>& m_coins_to_uncache;
         const bool m_test_accept;
+        /** Disable BIP125 RBFing; disallow all conflicts with mempool transactions. */
+        const bool disable_rbf;
     };
 
     // Single transaction acceptance
@@ -765,7 +767,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                         break;
                     }
                 }
-                if (fReplacementOptOut) {
+                if (fReplacementOptOut || args.disable_rbf) {
                     return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "txn-mempool-conflict");
                 }
 
@@ -1273,7 +1275,8 @@ static MempoolAcceptResult AcceptToMemoryPoolWithTime(const CChainParams& chainp
                                                       EXCLUSIVE_LOCKS_REQUIRED(cs_main)
 {
     std::vector<COutPoint> coins_to_uncache;
-    MemPoolAccept::ATMPArgs args { chainparams, nAcceptTime, bypass_limits, coins_to_uncache, test_accept };
+    MemPoolAccept::ATMPArgs args { chainparams, nAcceptTime, bypass_limits, coins_to_uncache,
+                                   test_accept, /* disable_rbf */ false };
 
     assert(std::addressof(::ChainstateActive()) == std::addressof(active_chainstate));
     const MempoolAcceptResult result = MemPoolAccept(pool, active_chainstate).AcceptSingleTransaction(tx, args);
@@ -1307,7 +1310,8 @@ PackageMempoolAcceptResult ProcessNewPackage(CChainState& active_chainstate, CTx
 
     std::vector<COutPoint> coins_to_uncache;
     const CChainParams& chainparams = Params();
-    MemPoolAccept::ATMPArgs args { chainparams, GetTime(), /* bypass_limits */ false, coins_to_uncache, test_accept };
+    MemPoolAccept::ATMPArgs args { chainparams, GetTime(), /* bypass_limits */ false, coins_to_uncache,
+                                   test_accept, /* disable_rbf */ true };
     assert(std::addressof(::ChainstateActive()) == std::addressof(active_chainstate));
     const PackageMempoolAcceptResult result = MemPoolAccept(pool, active_chainstate).AcceptMultipleTransactions(package, args);
 
