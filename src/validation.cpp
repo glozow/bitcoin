@@ -1208,13 +1208,6 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     PackageValidationState package_state;
     const unsigned int package_count = txns.size();
 
-    std::vector<Workspace> workspaces{};
-    workspaces.reserve(package_count);
-
-    std::transform(txns.cbegin(), txns.cend(), std::back_inserter(workspaces), [](const auto& tx) {
-        return Workspace(tx);
-    });
-
     // These context-free package limits can be checked before taking the mempool lock.
     if (package_count > MAX_PACKAGE_COUNT) {
         package_state.Invalid(PackageValidationResult::PCKG_POLICY, "too-many-transactions");
@@ -1226,6 +1219,31 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     if (total_size > MAX_PACKAGE_SIZE * 1000) {
         package_state.Invalid(PackageValidationResult::PCKG_POLICY, "too-large");
         return PackageMempoolAcceptResult(package_state, {});
+    }
+
+    std::vector<Workspace> workspaces{};
+    workspaces.reserve(package_count);
+
+    // Require the package to be sorted in order of dependency, i.e. parents appear before children.
+    // An unsorted package will fail anyway on missing-inputs, but it's better to quit earlier and
+    // fail on something less ambiguous (missing-inputs could also be an orphan or trying to
+    // spend nonexistent coins).
+    for (const auto& tx : txns) {
+        Workspace workspace(tx);
+        for (const auto& input : tx->vin) {
+            if (std::find_if(workspaces.begin(), workspaces.end(),
+                             [&, txid = input.prevout.hash](const auto& preceding_ws)
+                             { return preceding_ws.m_ptx->GetHash() == txid; }) == workspaces.end() &&
+                std::find_if(txns.begin(), txns.end(),
+                             [&, txid = input.prevout.hash](const auto& tx)
+                             { return tx->GetHash() == txid; }) != txns.end()) {
+                // If we don't find the parent in workspaces but we do find it in txns,
+                // then it must be a subsequent transaction in the package.
+                package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package-not-sorted");
+                return PackageMempoolAcceptResult(package_state, {});
+            }
+        }
+        workspaces.emplace_back(std::move(workspace));
     }
 
     LOCK(m_pool.cs);
