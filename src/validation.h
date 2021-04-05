@@ -18,6 +18,7 @@
 #include <fs.h>
 #include <node/utxo_snapshot.h>
 #include <policy/feerate.h>
+#include <policy/packages.h>
 #include <protocol.h> // For CMessageHeader::MessageStartChars
 #include <script/script_error.h>
 #include <sync.h>
@@ -169,9 +170,7 @@ void PruneBlockFilesManual(CChainState& active_chainstate, int nManualPruneHeigh
 * Validation result for a single transaction mempool acceptance.
 */
 struct MempoolAcceptResult {
-    /** Used to indicate the results of mempool validation,
-    * including the possibility of unfinished validation.
-    */
+    /** Used to indicate the results of mempool validation. */
     enum class ResultType {
         VALID, //!> Fully validated, valid.
         INVALID, //!> Invalid.
@@ -185,6 +184,16 @@ struct MempoolAcceptResult {
     /** Raw base fees in satoshis. */
     const std::optional<CAmount> m_base_fees;
 
+    static MempoolAcceptResult Failure(TxValidationState state) {
+        return MempoolAcceptResult(state);
+    }
+
+    static MempoolAcceptResult Success(std::list<CTransactionRef>&& replaced_txns, CAmount fees) {
+        return MempoolAcceptResult(std::move(replaced_txns), fees);
+    }
+
+// Private constructors. Use static methods MempoolAcceptResult::Success, etc. to construct.
+private:
     /** Constructor for failure case */
     explicit MempoolAcceptResult(TxValidationState state)
         : m_result_type(ResultType::INVALID), m_state(state) {
@@ -198,6 +207,28 @@ struct MempoolAcceptResult {
 };
 
 /**
+* Validation result for package mempool acceptance.
+*/
+struct PackageMempoolAcceptResult
+{
+    const PackageValidationState m_state;
+    /**
+    * Map from wtxid to finished MempoolAcceptResults. The client is responsible
+    * for keeping track of the transaction objects themselves. If a result is not
+    * present, it means validation was unfinished for that transaction.
+    */
+    std::map<const uint256, const MempoolAcceptResult> m_tx_results;
+
+    explicit PackageMempoolAcceptResult(PackageValidationState state,
+                                        std::map<const uint256, const MempoolAcceptResult>&& results)
+        : m_state{state}, m_tx_results(std::move(results)) {}
+
+    /** Constructor to create a PackageMempoolAcceptResult from a single MempoolAcceptResult */
+    explicit PackageMempoolAcceptResult(const uint256& wtxid, const MempoolAcceptResult& result)
+        : m_tx_results{ {wtxid, result} } {}
+};
+
+/**
  * (Try to) add a transaction to the memory pool.
  * @param[in]  bypass_limits   When true, don't enforce mempool fee limits.
  * @param[in]  test_accept     When true, run validation checks but don't submit to mempool.
@@ -205,6 +236,18 @@ struct MempoolAcceptResult {
 MempoolAcceptResult AcceptToMemoryPool(CChainState& active_chainstate, CTxMemPool& pool, const CTransactionRef& tx,
                                        bool bypass_limits, bool test_accept=false) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+/**
+* Atomically test acceptance of a package. If the package only contains one tx, package rules still apply.
+* @param[in]    txns                Group of transactions which may be independent or contain
+*                                   parent-child dependencies. The transactions must not conflict, i.e.
+*                                   must not spend the same inputs, even if it would be a valid BIP125
+*                                   replace-by-fee. Parents must appear before children.
+* @returns a PackageMempoolAcceptResult which includes a MempoolAcceptResult for each transaction.
+* If a transaction fails, validation will exit early and some results may be missing.
+*/
+PackageMempoolAcceptResult ProcessNewPackage(CChainState& active_chainstate, CTxMemPool& pool,
+                                                   const Package& txns, bool test_accept)
+                                                   EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 /** Apply the effects of this transaction on the UTXO set represented by view */
 void UpdateCoins(const CTransaction& tx, CCoinsViewCache& inputs, int nHeight);
