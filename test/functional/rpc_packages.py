@@ -476,6 +476,43 @@ class RPCPackagesTest(BitcoinTestFramework):
             {"txid": tx2.rehash(), "wtxid": tx2.getwtxid(), "allowed": False, "reject-reason": "conflict-in-package"}
         ])
 
+    def test_rbf(self):
+        node = self.nodes[0]
+        coin = self.coins.pop()
+        inputs = [{"txid" : coin["txid"], "vout" : 0, "sequence": BIP125_SEQUENCE_NUMBER}]
+        fee = Decimal('0.00125000')
+        output = {node.get_deterministic_priv_key().address: 50 - fee}
+        raw_replaceable_tx = node.createrawtransaction(inputs, output)
+        signed_replaceable_tx = node.signrawtransactionwithkey(hexstring=raw_replaceable_tx, privkeys=self.privkeys)
+        testres_replaceable = node.testmempoolaccept([signed_replaceable_tx["hex"]])
+        replaceable_tx = CTransaction()
+        replaceable_tx.deserialize(BytesIO(hex_str_to_bytes(signed_replaceable_tx["hex"])))
+        assert_equal(testres_replaceable, [
+            {"txid": replaceable_tx.rehash(), "wtxid": replaceable_tx.getwtxid(),
+            "allowed": True, "vsize": replaceable_tx.get_vsize(), "fees": { "base": fee }}
+        ])
+
+        # Replacement transaction is identical except has double the fee
+        replacement_tx = CTransaction()
+        replacement_tx.deserialize(BytesIO(hex_str_to_bytes(signed_replaceable_tx["hex"])))
+        replacement_tx.vout[0].nValue -= int(fee * COIN)  # Doubled fee
+        signed_replacement_tx = node.signrawtransactionwithkey(replacement_tx.serialize().hex(), self.privkeys)
+        replacement_tx.deserialize(BytesIO(hex_str_to_bytes(signed_replacement_tx["hex"])))
+
+        self.log.info("Test that transactions within a package cannot replace each other")
+        testres_rbf_conflicting = node.testmempoolaccept([signed_replaceable_tx["hex"], signed_replacement_tx["hex"]])
+        assert_equal(testres_rbf_conflicting, [
+            {"txid": replaceable_tx.rehash(), "wtxid": replaceable_tx.getwtxid()},
+            {"txid": replacement_tx.rehash(), "wtxid": replacement_tx.getwtxid(),
+            "allowed": False, "reject-reason": "conflict-in-package"}
+        ])
+
+        self.log.info("Test that packges cannot conflict with mempool transactions, even if a valid BIP125 RBF")
+        node.sendrawtransaction(signed_replaceable_tx["hex"])
+        testres_rbf_single = node.testmempoolaccept([signed_replacement_tx["hex"]])
+        assert testres_rbf_single[0]["allowed"]
+        testres_rbf_package = node.testmempoolaccept([signed_replacement_tx["hex"]] + self.independent_txns_hex)
+        assert_equal(testres_rbf_package[0]["reject-reason"], "txn-mempool-conflict")
 
 if __name__ == "__main__":
     RPCPackagesTest().main()
