@@ -61,6 +61,7 @@ class RPCPackagesTest(BitcoinTestFramework):
 
         self.test_independent()
         self.test_chain()
+        # self.test_mempool_limits()
         self.test_multiple_children()
         self.test_multiple_parents()
         self.test_conflicting()
@@ -164,6 +165,40 @@ class RPCPackagesTest(BitcoinTestFramework):
 
         # Clean up by clearing the mempool
         node.generate(1)
+
+    def test_mempool_limits(self):
+        node = self.nodes[0]
+
+        # Create a package in which the last tx has an in-package parent with 24 in-mempool
+        # ancestors. This is a chain of more than 25 transactions and should thus fail on
+        # too-long-mempool-chain even though the tx has no in-mempool parents.
+        # This checks that both mempool and in-package transactions are taken into account when
+        # calculating mempool limits.
+        first_coin = self.coins.pop()
+
+        parent_locking_script = None
+        txid = first_coin["txid"]
+        chain_hex = []
+        chain_txns = []
+        value = first_coin["amount"]
+
+        self.log.info("Check that in-package ancestors count for mempool ancestor limits")
+        for i in range(26):
+            value -= Decimal("0.0001") # Deduct reasonable fee
+            (tx, txhex, parent_locking_script) = self.chain_transaction(txid, value, 0, parent_locking_script)
+            txid = tx.rehash()
+            if i < 24:
+                node.sendrawtransaction(txhex)
+                assert_equal(node.getrawmempool(verbose=True)[txid]["ancestorcount"], i + 1)
+            else:
+                chain_hex.append(txhex)
+                chain_txns.append(tx)
+        testres_too_long = node.testmempoolaccept(rawtxs=chain_hex)
+        assert_equal(testres_too_long[-1]["reject-reason"], "too-long-mempool-chain")
+
+        # Clear mempool and check that the package passes now
+        generate(1)
+        assert all([res["allowed"] for res in node.testmempoolaccept(rawtxs=chain_hex)])
 
     def test_multiple_children(self):
         node = self.nodes[0]

@@ -618,9 +618,18 @@ private:
         explicit Workspace(const CTransactionRef& ptx) : m_ptx(ptx), m_hash(ptx->GetHash()) {}
         std::set<uint256> m_conflicts;
         CTxMemPool::setEntries m_all_conflicting;
+        /* In-mempool ancestors. Not including the ancestors of in-package ancestors. */
         CTxMemPool::setEntries m_mempool_ancestors;
         std::unique_ptr<CTxMemPoolEntry> m_entry;
         std::list<CTransactionRef> m_replaced_transactions;
+
+        /** Direct parents that are being validated together. */
+        // Pointing to ancestors = ownership pointer
+        std::set<std::shared_ptr<Workspace>> m_package_parents;
+        /** Descendants (not just direct children) that are being validated together */
+        // Pointing to descendants = non-ownership pointer
+        // Can't be a shared_ptr because cycles = memory leaks
+        std::set<std::weak_ptr<Workspace> m_package_descendants;
 
         bool m_replacement_transaction;
         CAmount m_base_fees;
@@ -667,6 +676,8 @@ private:
         }
         return true;
     }
+
+    bool CalculatePackageMempoolAncestors(std::vector<Workspace>& workspaces) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
 private:
     CTxMemPool& m_pool;
@@ -1170,6 +1181,29 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
     return true;
 }
 
+bool MemPoolAccept::CalculatePackageMempoolAncestors(std::vector<Workspace>& workspaces)
+{
+    // For each tx in the package (from ancestors to descendants), calculate all in-mempool ancestors,
+    // including the in-mempool ancestors of its in-package ancestors.
+    // Keep the set of all in-mempool ancestors and package transactions in package_mempool_family.
+    // One by one, merge the m_mempool_ancestors of each tx into package_mempool_family.
+    // If at any point, an entry would exceed ancestor or descendant limits, fail.
+    // Example: Mempool has a chain of 24, and package is Parent + Child.
+    // Example: Mempool has a chain of 13, and package has a chain of 13.
+    // Example: Mempool has a top matriarch with 2 chains of 12, and package has two transactions
+    // which are the children of the lowest tx of each chain.
+    CTxMemPool::setEntries package_mempool_family;
+    std::string err_string;
+    for (auto& ws : workspaces) {
+        if (!m_pool.MergeAncestors(package_mempool_family, ws.m_entry, ws.m_mempool_ancestors,
+                                   ws.m_package_descendants, m_limit_ancestors, m_limit_ancestor_size,
+                                   m_limit_descendants, m_limit_ancestor_size, err_string)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef& ptx, ATMPArgs& args)
 {
     AssertLockHeld(cs_main);
@@ -1206,7 +1240,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     AssertLockHeld(cs_main);
 
     PackageValidationState package_state;
-    const unsigned int package_count = txns.size();
+    const size_t package_count = txns.size();
 
     // These context-free package limits can be checked before taking the mempool lock.
     if (package_count > MAX_PACKAGE_COUNT) {
@@ -1231,12 +1265,14 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     for (const auto& tx : txns) {
         Workspace workspace(tx);
         for (const auto& input : tx->vin) {
-            if (std::find_if(workspaces.begin(), workspaces.end(),
-                             [&, txid = input.prevout.hash](const auto& preceeding_ws)
-                             { return preceeding_ws.m_ptx->GetHash() == txid; }) == workspaces.end() &&
-                std::find_if(txns.begin(), txns.end(),
-                             [&, txid = input.prevout.hash](const auto& tx)
-                             { return tx->GetHash() == txid; }) != txns.end()) {
+            if (auto package_parent_it = std::find_if(workspaces.begin(), workspaces.end(),
+                                         [&, txid = input.prevout.hash](const auto& preceding_ws)
+                                         { return preceding_ws.m_ptx->GetHash() == txid; });
+                                         package_parent_it != workspaces.end()) {
+                workspace.m_package_parents.insert();
+            } else if (std::find_if(txns.begin(), txns.end(),
+                                    [&, txid = input.prevout.hash](const auto& tx)
+                                    { return tx->GetHash() == txid; }) != txns.end()) {
                 // If we don't find the parent in workspaces but we do find it in txns,
                 // then it must be a subsequent transaction in the package.
                 package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package-not-sorted");
@@ -1245,6 +1281,18 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
         }
         workspaces.emplace_back(std::move(workspace));
     }
+
+    // Update workspaces to know about in-package descendants.
+    // Iterate through them backwards (from descendants to ancestors).
+    // For each tx, add itself + its descendants to all of its direct parents' m_package_descendants.
+    /* auto revit = workspaces.rbegin(); */
+    /* while (revit != workspaces.rend()) { */
+    /*     revit->m_package_descendants.insert(me); */
+    /*     for (auto direct_parent : revit->m_package_parents) { */
+    /*         direct_parent.m_package_descendants += revit->m_package_descendants; */
+    /*     } */
+    /*     revit++; */
+    /* } */
 
     LOCK(m_pool.cs);
 
@@ -1258,6 +1306,16 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
             return PackageMempoolAcceptResult(package_state, std::move(results));
         }
         m_view.PackageAddTransaction(ws.m_ptx);
+    }
+
+    // At this point we expect m_ancestors to contain the in-mempool ancestors and m_package_parents
+    // to contain the in-package parents for each tx.
+    // Make sure the package as a whole satisfies mempool ancestor descendant limits.
+    if (!CalculatePackageMempoolAncestors()) {
+        child.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-long-mempool-chain", err_string);
+        package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
+        results.emplace(ws.m_ptx->GetHash(), MempoolAcceptResult::Failure(ws.m_state));
+        return PackageMempoolAcceptResult(package_state, std::move(results));
     }
 
     // We have now verified all inputs are available and there are no conflicts in the package by
@@ -1280,6 +1338,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
                         MempoolAcceptResult::Success(std::move(ws.m_replaced_transactions), ws.m_base_fees));
     }
 
+    // Later, in for-realsies package accept, Finalize() should submit one by one using
+    // the m_pool.addUnchecked() that re-calculates mempool ancestors.
     return PackageMempoolAcceptResult(package_state, std::move(results));
 }
 

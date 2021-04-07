@@ -681,6 +681,25 @@ public:
      */
     bool CalculateMemPoolAncestors(const CTxMemPoolEntry& entry, setEntries& setAncestors, uint64_t limitAncestorCount, uint64_t limitAncestorSize, uint64_t limitDescendantCount, uint64_t limitDescendantSize, std::string& errString, bool fSearchForParents = true) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
+    /** Check that ancestor and descendant limits are still met after merging a package transaction's
+     * ancestors and descendants into an existing set of in-package and in-mempool transactions.
+     * @param[in]       package_mempool_family      Entries including package so far and all in-mempool
+     *                                              family (ancestors and their descendants).
+     *                                              Expected to be correct so far.
+     * @param[in]       new_entry                   The new transaction to be added.
+     * @param[in/out]   new_mempool_ancestors       Entries including the new entry and its in-package
+     *                                              ancestors. Expected to be correct so far.
+     * @param[in]       new_package_descendants     Entries including the child and its in-package
+     *                                              descendants (it is impossible for it to have in-mempool
+     *                                              descendants). This is expected to be correct.
+     * returns false if any limits are exceeded, errString populated with error reason.
+     */
+    bool MergeAncestors(setEntries& package_mempool_family, const CTxMemPoolEntry& new_entry,
+                        setEntries& new_mempool_ancestors, setEntries& new_package_descendants,
+                        uint64_t limitAncestorCount, uint64_t limitAncestorSize,
+                        uint64_t limitDescendantCount, uint64_t limitDescendantSize,
+                        std::string& errString) const EXCLUSIVE_LOCKS_REQUIRED(cs);
+
     /** Populate setDescendants with all in-mempool descendants of hash.
      *  Assumes that setDescendants includes all in-mempool descendants of anything
      *  already in it.  */
