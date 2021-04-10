@@ -186,6 +186,28 @@ FUZZ_TARGET_INIT(tx_pool_standard, initialize_tx_pool)
         RegisterSharedValidationInterface(txr);
         const bool bypass_limits = fuzzed_data_provider.ConsumeBool();
         ::fRequireStandard = fuzzed_data_provider.ConsumeBool();
+
+        // If tx has no conflicts with mempool transactions, run test_accept with ATMP and
+        // ProcessNewPackage to check that they return the same result. The only possible
+        // difference (when validating 1 transaction) is that package validation does not allow RBF,
+        // which is why we only do this check when the tx doesn't conflict with mempool.
+        if (WITH_LOCK(tx_pool.cs, return tx_pool.HasNoInputsOf(*tx))) {
+            const auto result_atmp = WITH_LOCK(::cs_main,
+                return AcceptToMemoryPool(node.chainman->ActiveChainstate(), tx_pool, tx, bypass_limits, true));
+            const auto result_package = WITH_LOCK(::cs_main,
+                return ProcessNewPackage(node.chainman->ActiveChainstate(), tx_pool, {tx}, true));
+            // ProcessNewPackage should always fully validate the tx if there's only 1.
+            auto it = result_package.m_tx_results.find(tx->GetHash());
+            Assert(it != result_package.m_tx_results.end());
+            Assert(it->second.m_result_type == result_atmp.m_result_type);
+            if (result_atmp.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+                Assert(it->second.m_base_fees.value() == result_atmp.m_base_fees.value());
+            } else if (result_atmp.m_result_type == MempoolAcceptResult::ResultType::INVALID) {
+                Assert(it->second.m_state.GetResult() == result_atmp.m_state.GetResult());
+                Assert(it->second.m_state.GetRejectReason() == result_atmp.m_state.GetRejectReason());
+            }
+        }
+
         const auto res = WITH_LOCK(::cs_main, return AcceptToMemoryPool(chainstate, tx_pool, tx, bypass_limits));
         const bool accepted = res.m_result_type == MempoolAcceptResult::ResultType::VALID;
         SyncWithValidationInterfaceQueue();
