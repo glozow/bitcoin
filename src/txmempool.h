@@ -681,6 +681,27 @@ public:
      */
     bool CalculateMemPoolAncestors(const CTxMemPoolEntry& entry, setEntries& setAncestors, uint64_t limitAncestorCount, uint64_t limitAncestorSize, uint64_t limitDescendantCount, uint64_t limitDescendantSize, std::string& errString, bool fSearchForParents = true) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
+    /** Try to calculate all in-mempool ancestors of a set of entries.
+     * All ancestor and descendant calculations are inclusive of the txs in entries.
+     * @param[in/out]   setAncestors            Set of in-mempool ancestors. Updated to include
+     *                                          any new ancestors found.
+     * @param[in]       limitAncestorCount      Max number of txns including ancestors.
+     * @param[in]       limitAncestorSize       Max virtual size including ancestors.
+     * @param[in]       limitDescendantCount    Max number of txns including descendants.
+     * @param[in]       limitDescendantSize     Max virtual size including descendants.
+     * @param[out]      errString              Populated with error reason if a limit is hit.
+     * @param[in]       fSearchForParents       Whether to search for entries' in-mempool parents.
+     *                                          Must be true if any entries are not already in mempool.
+     */
+    bool CalculateMemPoolAncestors(const std::vector<CTxMemPoolEntry>& entries,
+                                   setEntries& setAncestors,
+                                   const uint64_t limitAncestorCount,
+                                   const uint64_t limitAncestorSize,
+                                   const uint64_t limitDescendantCount,
+                                   const uint64_t limitDescendantSize,
+                                   std::string &errString,
+                                   const bool fSearchForParents = true) const EXCLUSIVE_LOCKS_REQUIRED(cs);
+
     /** Populate setDescendants with all in-mempool descendants of hash.
      *  Assumes that setDescendants includes all in-mempool descendants of anything
      *  already in it.  */
