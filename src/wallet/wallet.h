@@ -612,17 +612,28 @@ public:
     }
 };
 
+/** Parameters for one iteration of Coin Selection. */
 struct CoinSelectionParams
 {
+    /** When true, try to use the Branch and Bound algorithm before falling back to knapsack. */
     bool use_bnb = true;
+    /** Size of a change output in bytes, determined by the output type. */
     size_t change_output_size = 0;
+    /** Size of the input to spend a change output in virtual bytes. */
     size_t change_spend_size = 0;
+    /** The targeted feerate of the transaction being built. */
     CFeeRate m_effective_feerate;
+    /** The feerate estimate used to calculate the upper bound of the cost to spend a change output. */
     CFeeRate m_long_term_feerate;
+    /** If the cost to spend a change output at the discard feerate exceeds its value, drop it to fees. */
     CFeeRate m_discard_feerate;
+    /** Size of the transaction before inputs are selected, the header and recipient output(s). */
     size_t tx_noinputs_size = 0;
     /** Indicate that we are subtracting the fee from outputs */
     bool m_subtract_fee_outputs = false;
+    /** When true, always spend all (up to OUTPUT_GROUP_MAX_ENTRIES) or none of the outputs
+     * associated with the same address. This helps reduce privacy leaks resulting from address
+     * reuse. Dust outputs are not eligible to be added to output groups and thus not considered. */
     bool m_avoid_partial_spends = false;
 
     CoinSelectionParams(bool use_bnb, size_t change_output_size, size_t change_spend_size, CFeeRate effective_feerate,
@@ -765,8 +776,11 @@ public:
 
     /**
      * Select a set of coins such that nValueRet >= nTargetValue and at least
-     * all coins from coinControl are selected; Never select unconfirmed coins
-     * if they are not ours
+     * all coins from coin_ontrol are selected; Never select unconfirmed coins if they are not ours
+     * param@[out]  setCoinsRet         Populated with inputs including pre-selected inputs from
+     *                                  coin_control and Coin Selection if successful.
+     * param@[out]  nValueRet           Total value of selected coins including pre-selected ones
+     *                                  from coin_control and Coin Selection if successful.
      */
     bool SelectCoins(const std::vector<COutput>& vAvailableCoins, const CAmount& nTargetValue, std::set<CInputCoin>& setCoinsRet, CAmount& nValueRet,
                     const CCoinControl& coin_control, CoinSelectionParams& coin_selection_params, bool& bnb_used) const EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
@@ -851,6 +865,11 @@ public:
      * small change; This method is stochastic for some inputs and upon
      * completion the coin set and corresponding actual target value is
      * assembled
+     * param@[in]   coins           Set of UTXOs to consider. These will be categorized into
+     *                              OutputGroups and filtered using eligibility_filter before
+     *                              selecting coins.
+     * param@[out]  setCoinsRet     Populated with the coins selected if successful.
+     * param@[out]  nValueRet       Used to return the total value of selected coins.
      */
     bool SelectCoinsMinConf(const CAmount& nTargetValue, const CoinEligibilityFilter& eligibility_filter, std::vector<COutput> coins,
         std::set<CInputCoin>& setCoinsRet, CAmount& nValueRet, const CoinSelectionParams& coin_selection_params, bool& bnb_used) const;
