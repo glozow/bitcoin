@@ -987,6 +987,13 @@ public:
      * @note passing nChangePosInOut as -1 will result in setting a random position
      */
     bool CreateTransaction(const std::vector<CRecipient>& vecSend, CTransactionRef& tx, CAmount& nFeeRet, int& nChangePosInOut, bilingual_str& error, const CCoinControl& coin_control, FeeCalculation& fee_calc_out, bool sign = true);
+
+    /**
+     * Checks a transaction created using CreateTransactionInternal().
+     * @param[in,out]   error   Populated with the error message.
+     * @returns true if all checks passed, false if something went wrong.
+     */
+    bool CheckTransaction(CTransactionRef& tx, CAmount nFeeRet, const CCoinControl& coin_control, bilingual_str& error);
     /**
      * Submit the transaction to the node's mempool and then relay to peers.
      * Should be called after CreateTransaction unless you want to abort
