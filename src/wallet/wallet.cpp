@@ -55,7 +55,8 @@ const std::map<uint64_t,std::string> WALLET_FLAG_CAVEATS{
 };
 
 static const size_t OUTPUT_GROUP_MAX_ENTRIES = 10;
-
+//>! 4 nVersion, 4 nLocktime, 1 input count, 1 output count, 1 witness overhead (dummy, flag, stack size)
+static constexpr size_t TRANSACTION_OVERHEAD_SIZE{11};
 RecursiveMutex cs_wallets;
 static std::vector<std::shared_ptr<CWallet>> vpwallets GUARDED_BY(cs_wallets);
 static std::list<LoadWalletFn> g_load_wallet_fns GUARDED_BY(cs_wallets);
@@ -2896,7 +2897,7 @@ bool CWallet::CreateTransactionInternal(
 
             // vouts to the payees
             if (!coin_selection_params.m_subtract_fee_outputs) {
-                coin_selection_params.tx_noinputs_size = 11; // Static vsize overhead + outputs vsize. 4 nVersion, 4 nLocktime, 1 input count, 1 output count, 1 witness overhead (dummy, flag, stack size)
+                coin_selection_params.tx_noinputs_size = TRANSACTION_OVERHEAD_SIZE; 
             }
             for (const auto& recipient : vecSend)
             {
