@@ -2819,18 +2819,18 @@ bool CWallet::CreateTransactionInternal(
         FeeCalculation& fee_calc_out,
         bool sign)
 {
-    CAmount nValue = 0;
+    CAmount payment_total = 0;
     const OutputType change_type = TransactionChangeType(coin_control.m_change_type ? *coin_control.m_change_type : m_default_change_type, vecSend);
     ReserveDestination reservedest(this, change_type);
     unsigned int nSubtractFeeFromAmount = 0;
     for (const auto& recipient : vecSend)
     {
-        if (nValue < 0 || recipient.nAmount < 0)
+        if (payment_total < 0 || recipient.nAmount < 0)
         {
             error = _("Transaction amounts must not be negative");
             return false;
         }
-        nValue += recipient.nAmount;
+        payment_total += recipient.nAmount;
 
         if (recipient.fSubtractFeeFromAmount)
             nSubtractFeeFromAmount++;
@@ -2931,7 +2931,7 @@ bool CWallet::CreateTransactionInternal(
             // Calculate the fees for things that aren't inputs
             const CAmount not_input_fees = coin_selection_params.m_effective_feerate.GetFee(coin_selection_params.tx_noinputs_size);
 
-            if (!SelectCoins(vAvailableCoins, /* nTargetValue */ nValue + not_input_fees, setCoins, input_sum, coin_control, coin_selection_params))
+            if (!SelectCoins(vAvailableCoins, /* nTargetValue */ payment_total + not_input_fees, setCoins, input_sum, coin_control, coin_selection_params))
             {
                 error = _("Insufficient funds");
                 return false;
@@ -2940,7 +2940,7 @@ bool CWallet::CreateTransactionInternal(
             const CAmount selected_eff = std::accumulate(setCoins.cbegin(), setCoins.cend(), CAmount(0),
                 [](CAmount sum, const auto& coin) { return sum + coin.effective_value; });
 
-            const CAmount nChange = input_sum - nValue;
+            const CAmount nChange = input_sum - payment_total;
             if (nChange > 0)
             {
                 // Fill a vout to ourself
@@ -2956,8 +2956,8 @@ bool CWallet::CreateTransactionInternal(
                 // We want to drop the change to fees if:
                 // 1. The change output would be dust
                 // 2. The "change" is within the (almost) exact match window, i.e. the difference between the selected effective value
-                //    and the selection target (nValue + not_input_fees) is less than or equal to the cost of the change output (cost_of_change)
-                if (IsDust(newTxOut, coin_selection_params.m_discard_feerate) || selected_eff <= nValue + not_input_fees + cost_of_change)
+                //    and the selection target (payment_total + not_input_fees) is less than or equal to the cost of the change output (cost_of_change)
+                if (IsDust(newTxOut, coin_selection_params.m_discard_feerate) || selected_eff <= payment_total + not_input_fees + cost_of_change)
                 {
                     nChangePosInOut = -1;
                     assert(nFeeRet == 0);
