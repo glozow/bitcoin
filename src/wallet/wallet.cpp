@@ -2863,30 +2863,7 @@ bool CWallet::CreateTransactionInternal(
             // TODO: pass in scriptChange instead of reservedest so
             // change transaction isn't always pay-to-bitcoin-address
             CScript scriptChange;
-
-            // coin control: send change to custom address
-            if (!std::get_if<CNoDestination>(&coin_control.destChange)) {
-                scriptChange = GetScriptForDestination(coin_control.destChange);
-            } else { // no coin control: send change to newly generated address
-                // Note: We use a new key here to keep it from being obvious which side is the change.
-                //  The drawback is that by not reusing a previous key, the change may be lost if a
-                //  backup is restored, if the backup doesn't have the new private key for the change.
-                //  If we reused the old key, it would be possible to add code to look for and
-                //  rediscover unknown transactions that were written with keys of ours to recover
-                //  post-backup change.
-
-                // Reserve a new key pair from key pool. If it fails, provide a dummy
-                // destination in case we don't need change.
-                CTxDestination dest;
-                if (!reservedest.GetReservedDestination(dest, true)) {
-                    error = _("Transaction needs a change address, but we can't generate it. Please call keypoolrefill first.");
-                }
-                scriptChange = GetScriptForDestination(dest);
-                // A valid destination implies a change script (and
-                // vice-versa). An empty change script will abort later, if the
-                // change keypool ran out, but change is required.
-                CHECK_NONFATAL(IsValidDestination(dest) != scriptChange.empty());
-            }
+            if (!GetChangeScript(vecSend, coin_control, error, reservedest, scriptChange)) return false;
             CTxOut change_prototype_txout(0, scriptChange);
             coin_selection_params.change_output_size = GetSerializeSize(change_prototype_txout);
 
@@ -3139,6 +3116,38 @@ bool CWallet::CheckTransaction(CTransactionRef& tx, CAmount nFeeRet, const CCoin
             error = _("Transaction has too long of a mempool chain");
             return false;
         }
+    }
+    return true;
+}
+
+bool CWallet::GetChangeScript(const std::vector<CRecipient>& vecSend,
+                              const CCoinControl& coin_control,
+                              bilingual_str& error,
+                              ReserveDestination& reservedest,
+                              CScript scriptChange)
+{
+    // coin control: send change to custom address
+    if (!std::get_if<CNoDestination>(&coin_control.destChange)) {
+        scriptChange = GetScriptForDestination(coin_control.destChange);
+    } else { // no coin control: send change to newly generated address
+        // Note: We use a new key here to keep it from being obvious which side is the change.
+        //  The drawback is that by not reusing a previous key, the change may be lost if a
+        //  backup is restored, if the backup doesn't have the new private key for the change.
+        //  If we reused the old key, it would be possible to add code to look for and
+        //  rediscover unknown transactions that were written with keys of ours to recover
+        //  post-backup change.
+
+        // Reserve a new key pair from key pool. If it fails, provide a dummy
+        // destination in case we don't need change.
+        CTxDestination dest;
+        if (!reservedest.GetReservedDestination(dest, true)) {
+            error = _("Transaction needs a change address, but we can't generate it. Please call keypoolrefill first.");
+        }
+        scriptChange = GetScriptForDestination(dest);
+        // A valid destination implies a change script (and
+        // vice-versa). An empty change script will abort later, if the
+        // change keypool ran out, but change is required.
+        CHECK_NONFATAL(IsValidDestination(dest) != scriptChange.empty());
     }
     return true;
 }

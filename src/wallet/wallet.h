@@ -723,6 +723,13 @@ private:
 
     bool CreateTransactionInternal(const std::vector<CRecipient>& vecSend, CTransactionRef& tx, CAmount& nFeeRet, int& nChangePosInOut, bilingual_str& error, const CCoinControl& coin_control, FeeCalculation& fee_calc_out, bool sign);
 
+    /**
+     */
+    bool GetChangeScript(const std::vector<CRecipient>& vecSend,
+                         const CCoinControl& coin_control,
+                         bilingual_str& error,
+                         ReserveDestination& reservedest,
+                         CScript scriptChange);
     /** Grab CoinSelectionParams appropriate for current wallet state and the tx we want to create.
      */
     bool GetCoinSelectionParams(CoinSelectionParams& coin_selection_params, const CCoinControl& coin_control, FeeCalculation& feeCalc, bilingual_str& error);
