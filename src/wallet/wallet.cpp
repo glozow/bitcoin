@@ -2781,6 +2781,33 @@ OutputType CWallet::TransactionChangeType(const std::optional<OutputType>& chang
     return m_default_address_type;
 }
 
+bool CWallet::GetCoinSelectionParams(CoinSelectionParams& coin_selection_params, const CCoinControl& coin_control, FeeCalculation& feeCalc, bilingual_str& error)
+{
+    // Set discard feerate
+    coin_selection_params.m_discard_feerate = GetDiscardRate(*this);
+
+    // Get the fee rate to use effective values in coin selection
+    coin_selection_params.m_effective_feerate = GetMinimumFeeRate(*this, coin_control, &feeCalc);
+    // Do not, ever, assume that it's fine to change the fee rate if the user has explicitly
+    // provided one
+    if (coin_control.m_feerate && coin_selection_params.m_effective_feerate > *coin_control.m_feerate) {
+        error = strprintf(_("Fee rate (%s) is lower than the minimum fee rate setting (%s)"), coin_control.m_feerate->ToString(FeeEstimateMode::SAT_VB), coin_selection_params.m_effective_feerate.ToString(FeeEstimateMode::SAT_VB));
+        return false;
+    }
+    if (feeCalc.reason == FeeReason::FALLBACK && !m_allow_fallback_fee) {
+        // eventually allow a fallback fee
+        error = _("Fee estimation failed. Fallbackfee is disabled. Wait a few blocks or enable -fallbackfee.");
+        return false;
+    }
+
+    // Get long term estimate
+    CCoinControl cc_temp;
+    cc_temp.m_confirm_target = chain().estimateMaxBlocks();
+    coin_selection_params.m_long_term_feerate = GetMinimumFeeRate(*this, cc_temp, nullptr);
+
+    return true;
+}
+
 bool CWallet::CreateTransactionInternal(
         const std::vector<CRecipient>& vecSend,
         CTransactionRef& tx,
@@ -2858,27 +2885,7 @@ bool CWallet::CreateTransactionInternal(
             CTxOut change_prototype_txout(0, scriptChange);
             coin_selection_params.change_output_size = GetSerializeSize(change_prototype_txout);
 
-            // Set discard feerate
-            coin_selection_params.m_discard_feerate = GetDiscardRate(*this);
-
-            // Get the fee rate to use effective values in coin selection
-            coin_selection_params.m_effective_feerate = GetMinimumFeeRate(*this, coin_control, &feeCalc);
-            // Do not, ever, assume that it's fine to change the fee rate if the user has explicitly
-            // provided one
-            if (coin_control.m_feerate && coin_selection_params.m_effective_feerate > *coin_control.m_feerate) {
-                error = strprintf(_("Fee rate (%s) is lower than the minimum fee rate setting (%s)"), coin_control.m_feerate->ToString(FeeEstimateMode::SAT_VB), coin_selection_params.m_effective_feerate.ToString(FeeEstimateMode::SAT_VB));
-                return false;
-            }
-            if (feeCalc.reason == FeeReason::FALLBACK && !m_allow_fallback_fee) {
-                // eventually allow a fallback fee
-                error = _("Fee estimation failed. Fallbackfee is disabled. Wait a few blocks or enable -fallbackfee.");
-                return false;
-            }
-
-            // Get long term estimate
-            CCoinControl cc_temp;
-            cc_temp.m_confirm_target = chain().estimateMaxBlocks();
-            coin_selection_params.m_long_term_feerate = GetMinimumFeeRate(*this, cc_temp, nullptr);
+            if (!GetCoinSelectionParams(coin_selection_params, coin_control, feeCalc, error)) return false;
 
             nFeeRet = 0;
 
