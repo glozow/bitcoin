@@ -3096,18 +3096,7 @@ bool CWallet::CreateTransactionInternal(
         }
     }
 
-    if (nFeeRet > m_default_max_tx_fee) {
-        error = TransactionErrorString(TransactionError::MAX_FEE_EXCEEDED);
-        return false;
-    }
-
-    if (gArgs.GetBoolArg("-walletrejectlongchains", DEFAULT_WALLET_REJECT_LONG_CHAINS)) {
-        // Lastly, ensure this tx will pass the mempool's chain limits
-        if (!chain().checkChainLimits(tx)) {
-            error = _("Transaction has too long of a mempool chain");
-            return false;
-        }
-    }
+    if (!CheckTransaction(tx, nFeeRet,  coin_control, error)) return false;
 
     // Before we return success, we assume any change key will be used to prevent
     // accidental re-use.
@@ -3122,6 +3111,23 @@ bool CWallet::CreateTransactionInternal(
               feeCalc.est.fail.start, feeCalc.est.fail.end,
               (feeCalc.est.fail.totalConfirmed + feeCalc.est.fail.inMempool + feeCalc.est.fail.leftMempool) > 0.0 ? 100 * feeCalc.est.fail.withinTarget / (feeCalc.est.fail.totalConfirmed + feeCalc.est.fail.inMempool + feeCalc.est.fail.leftMempool) : 0.0,
               feeCalc.est.fail.withinTarget, feeCalc.est.fail.totalConfirmed, feeCalc.est.fail.inMempool, feeCalc.est.fail.leftMempool);
+    return true;
+}
+
+bool CWallet::CheckTransaction(CTransactionRef& tx, CAmount nFeeRet, const CCoinControl& coin_control, bilingual_str& error)
+{
+    if (nFeeRet > m_default_max_tx_fee) {
+        error = TransactionErrorString(TransactionError::MAX_FEE_EXCEEDED);
+        return false;
+    }
+
+    if (gArgs.GetBoolArg("-walletrejectlongchains", DEFAULT_WALLET_REJECT_LONG_CHAINS)) {
+        // Lastly, ensure this tx will pass the mempool's chain limits
+        if (!chain().checkChainLimits(tx)) {
+            error = _("Transaction has too long of a mempool chain");
+            return false;
+        }
+    }
     return true;
 }
 
