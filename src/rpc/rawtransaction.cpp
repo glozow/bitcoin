@@ -899,6 +899,7 @@ static RPCHelpMan testmempoolaccept()
                         },
                         },
                     {"maxfeerate", RPCArg::Type::AMOUNT, RPCArg::Default{FormatMoney(DEFAULT_MAX_RAW_TX_FEE_RATE.GetFeePerK())}, "Reject transactions whose fee rate is higher than the specified value, expressed in " + CURRENCY_UNIT + "/kvB\n"},
+                    {"aspackage", RPCArg::Type::BOOL, RPCArg::Optional::OMITTED, "Whether to apply package rules: use descendant feerate instead of base feerate.\n"},
                 },
                 RPCResult{
                     RPCResult::Type::ARR, "", "The result of the mempool acceptance test for each raw transaction in the input array.\n"
