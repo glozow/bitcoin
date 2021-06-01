@@ -73,8 +73,7 @@ inline CTransactionRef create_placeholder_tx(size_t num_inputs, size_t num_outpu
 BOOST_FIXTURE_TEST_CASE(package_tests, TestChain100Setup)
 {
     LOCK(cs_main);
-    unsigned int initialPoolSize = m_node.mempool->size();
-
+    unsigned int expected_pool_size = m_node.mempool->size();
     // Parent and Child Package
     CKey parent_key;
     parent_key.MakeNewKey(true);
@@ -109,14 +108,28 @@ BOOST_FIXTURE_TEST_CASE(package_tests, TestChain100Setup)
     // mempool and trim it from the package.
     const auto result_parent = AcceptToMemoryPool(m_node.chainman->ActiveChainstate(), *m_node.mempool,
                                                   tx_parent, /* bypass_limits */ false);
-    initialPoolSize += 1;
-    BOOST_CHECK_EQUAL(m_node.mempool->size(), initialPoolSize);
+    expected_pool_size += 1;
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
     BOOST_CHECK(result_parent.m_result_type == MempoolAcceptResult::ResultType::VALID);
     const auto result_trimmed = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
                                                   {tx_parent, tx_child}, /* test_accept */ true);
     BOOST_CHECK(result_trimmed.m_state.IsValid());
     auto it_trimmed_parent = result_trimmed.m_tx_results.find(tx_parent->GetWitnessHash());
     BOOST_CHECK(it_trimmed_parent->second.m_result_type == MempoolAcceptResult::ResultType::MEMPOOL_INFO);
+    const auto result_submitted = ProcessNewPackage(m_node.chainman->ActiveChainstate(),
+                                                    *m_node.mempool, {tx_parent, tx_child},
+                                                    /* test_accept */ false);
+    expected_pool_size += 1;
+    BOOST_CHECK_MESSAGE(result_submitted.m_state.IsValid(),
+                        "Package validation unexpectedly failed: " << result_submitted.m_state.GetRejectReason());
+    auto it_parent_submitted = result_submitted.m_tx_results.find(tx_parent->GetWitnessHash());
+    auto it_child_submitted = result_submitted.m_tx_results.find(tx_child->GetWitnessHash());
+    BOOST_CHECK(it_parent_submitted != result_submitted.m_tx_results.end());
+    BOOST_CHECK(it_child_submitted != result_submitted.m_tx_results.end());
+    BOOST_CHECK_EQUAL(it_parent->second.m_base_fees.value(), it_parent_submitted->second.m_base_fees.value());
+    BOOST_CHECK_EQUAL(it_child->second.m_base_fees.value(), it_child_submitted->second.m_base_fees.value());
+
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 
     // Packages can't have more than 25 transactions.
     Package package_too_many;
@@ -156,6 +169,6 @@ BOOST_FIXTURE_TEST_CASE(package_tests, TestChain100Setup)
     BOOST_CHECK_EQUAL(it_giant_tx->second.m_state.GetRejectReason(), "tx-size");
 
     // Check that mempool size hasn't changed.
-    BOOST_CHECK_EQUAL(m_node.mempool->size(), initialPoolSize);
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 }
 BOOST_AUTO_TEST_SUITE_END()
