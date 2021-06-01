@@ -4,6 +4,7 @@
 
 #include <consensus/validation.h>
 #include <miner.h>
+#include <policy/packages.h>
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
 #include <test/fuzz/util.h>
@@ -15,7 +16,6 @@
 #include <validationinterface.h>
 
 namespace {
-
 const TestingSetup* g_setup;
 std::vector<COutPoint> g_outpoints_coinbase_init_mature;
 std::vector<COutPoint> g_outpoints_coinbase_init_immature;
@@ -26,6 +26,20 @@ struct MockedTxPool : public CTxMemPool {
         LOCK(cs);
         lastRollingFeeUpdate = GetTime();
         blockSinceLastRollingFeeBump = true;
+    }
+    bool CheckAncestryLimits(uint64_t ancestor_count = DEFAULT_ANCESTOR_LIMIT,
+                             uint64_t ancestor_size = DEFAULT_ANCESTOR_SIZE_LIMIT,
+                             uint64_t descendant_count = DEFAULT_DESCENDANT_LIMIT,
+                             uint64_t descendant_size = DEFAULT_DESCENDANT_SIZE_LIMIT) EXCLUSIVE_LOCKS_REQUIRED(!cs)
+    {
+        LOCK(cs);
+        for (auto it = mapTx.cbegin(); it != mapTx.cend(); it++) {
+            if (it->GetCountWithAncestors() > ancestor_count ||
+                it->GetSizeWithAncestors() > ancestor_size ||
+                it->GetCountWithDescendants() > descendant_count ||
+                it->GetSizeWithDescendants() > descendant_size) return false;
+        }
+        return true;
     }
 };
 
@@ -238,7 +252,7 @@ FUZZ_TARGET_INIT(tx_pool_standard, initialize_tx_pool)
         Assert(accepted == res.m_state.IsValid());
         Assert(accepted != res.m_state.IsInvalid());
         if (accepted) {
-            Assert(added.size() == 1); // For now, no package acceptance
+            Assert(added.size() == 1);
             Assert(tx == *added.begin());
         } else {
             // Do not consider rejected transaction removed
@@ -332,6 +346,73 @@ FUZZ_TARGET_INIT(tx_pool, initialize_tx_pool)
         const bool accepted = res.m_result_type == MempoolAcceptResult::ResultType::VALID;
         if (accepted) {
             txids.push_back(tx->GetHash());
+        }
+    }
+    Finish(fuzzed_data_provider, tx_pool, chainstate);
+}
+FUZZ_TARGET_INIT(tx_pool_packages, initialize_tx_pool)
+{
+    FuzzedDataProvider fuzzed_data_provider(buffer.data(), buffer.size());
+    const auto& node = g_setup->m_node;
+    auto& chainstate = node.chainman->ActiveChainstate();
+    MockTime(fuzzed_data_provider, chainstate);
+
+    std::vector<uint256> txids;
+    for (const auto& outpoint : g_outpoints_coinbase_init_mature) {
+        txids.push_back(outpoint.hash);
+    }
+    CTxMemPool tx_pool_{/* estimator */ nullptr, /* check_ratio */ 1};
+    MockedTxPool& tx_pool = *static_cast<MockedTxPool*>(&tx_pool_);
+
+    while (fuzzed_data_provider.ConsumeBool()) {
+        // Include transactions within the package in order to make dependent chains.
+        std::vector<uint256> package_txids{txids};
+        const auto num_transactions = fuzzed_data_provider.ConsumeIntegralInRange<unsigned int>(1, MAX_PACKAGE_COUNT);
+        std::vector<CTransactionRef> package;
+        package.reserve(num_transactions);
+        for (unsigned int i{0}; i <= num_transactions; ++i) {
+            const auto mut_tx = ConsumeTransaction(fuzzed_data_provider, package_txids, 1, 1);
+            const auto tx = MakeTransactionRef(mut_tx);
+            package.emplace_back(tx);
+            package_txids.emplace_back(tx->GetHash());
+        }
+
+        if (fuzzed_data_provider.ConsumeBool()) {
+            MockTime(fuzzed_data_provider, chainstate);
+        }
+        if (fuzzed_data_provider.ConsumeBool()) {
+            tx_pool.RollingFeeUpdate();
+        }
+        if (fuzzed_data_provider.ConsumeBool()) {
+            const auto& txid = PickValue(fuzzed_data_provider, package_txids);
+            const auto delta = fuzzed_data_provider.ConsumeIntegralInRange<CAmount>(-50 * COIN, +50 * COIN);
+            tx_pool.PrioritiseTransaction(txid, delta);
+        }
+
+        const auto size_before = tx_pool.size();
+        const auto res = WITH_LOCK(::cs_main,
+                                   return ProcessNewPackage(node.chainman->ActiveChainstate(), tx_pool,
+                                                            package, /* test_accept */ false));
+        // Ensure mempool limits are not exceeded.
+        Assert(tx_pool.CheckAncestryLimits());
+        const bool accepted = res.m_state.IsValid();
+        if (accepted) {
+            // Package submissions are all-or-nothing.
+            for (auto& tx : package) {
+                auto it = res.m_tx_results.find(tx->GetWitnessHash());
+                Assert(it != res.m_tx_results.end());
+                Assert(it->second.m_result_type == MempoolAcceptResult::ResultType::VALID);
+                Assert(it->second.m_state.IsValid());
+                Assert(it->second.m_replaced_transactions.value().size() == 0);
+                txids.emplace_back(tx->GetHash());
+            }
+            // Packages cannot replace mempool transactions.
+            Assert(tx_pool.size() == size_before + package.size());
+        } else {
+            Assert(tx_pool.size() == size_before);
+            if (res.m_state.GetResult() == PackageValidationResult::PCKG_TX) {
+                Assert(res.m_tx_results.size() > 0);
+            }
         }
     }
     Finish(fuzzed_data_provider, tx_pool, chainstate);
