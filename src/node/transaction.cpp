@@ -51,7 +51,11 @@ TransactionError BroadcastTransaction(NodeContext& node, const CTransactionRef t
         if (!existingCoin.IsSpent()) return TransactionError::ALREADY_IN_CHAIN;
     }
     if (!node.mempool->exists(hashTx)) {
-        // Transaction is not already in the mempool.
+        // A transaction with the same txid is not already in the mempool. Note that it is still
+        // possible for a transaction with same nonwitness data but different witness to be in the
+        // mempool - in that case, we treat them as the same transaction and don't try to submit tx
+        // to mempool. This logic must be changed if we allow replacements of
+        // same-txid-different-wtxid transactions in the future.
         if (max_tx_fee > 0) {
             // First, call ATMP with test_accept and check the fee. If ATMP
             // fails here, return error immediately.
