@@ -1079,6 +1079,22 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
         m_viewmempool.PackageAddTransaction(ws.m_ptx);
     }
 
+    // Apply package mempool ancestor/descendant limits.
+    std::string err_string;
+    if (!m_pool.CheckPackageLimits(txns, m_limit_ancestors, m_limit_ancestor_size, m_limit_descendants,
+                                   m_limit_descendant_size, err_string)) {
+        // All transactions must have individually passed mempool ancestor and descendant limits
+        // inside of PreChecks(). Figuring out which transaction to attribute this failure to may be
+        // implementation-dependent, and it's likely to be multiple transactions because we
+        // evaluated all of them together. Return the same failure for all transactions.
+        for (auto& ws : workspaces) {
+            ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "exceeds-ancestor-descendant-limits", err_string);
+            results.emplace(ws.m_ptx->GetWitnessHash(), MempoolAcceptResult::Failure(ws.m_state));
+        }
+        package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package-mempool-limits");
+        return PackageMempoolAcceptResult(package_state, std::move(results));
+    }
+
     for (Workspace& ws : workspaces) {
         PrecomputedTransactionData txdata;
         if (!PolicyScriptChecks(args, ws, txdata)) {
