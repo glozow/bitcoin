@@ -60,3 +60,19 @@ bool CheckPackage(const Package& txns, PackageValidationState& state)
     }
     return true;
 }
+
+bool IsChildWithParents(const Package& package)
+{
+    std::unordered_set<uint256, SaltedTxidHasher> parent_txids;
+    std::transform(package.cbegin(), package.cbegin() + (package.size() - 1),
+                   std::inserter(parent_txids, parent_txids.end()),
+                   [](const auto& tx) { return tx->GetHash(); });
+    for (const auto& tx : package) {
+        // Only the last tx is allowed to be the child of any other transaction in the package.
+        const bool is_child = std::any_of(tx->vin.cbegin(), tx->vin.cend(), [&parent_txids](const auto& input)
+                                    { return parent_txids.count(input.prevout.hash) > 0; });
+        const bool is_last_tx = tx->GetWitnessHash() == package[package.size() - 1]->GetHash();
+        if (is_child != is_last_tx) return false;
+    }
+    return true;
+}
