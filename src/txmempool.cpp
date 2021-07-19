@@ -207,6 +207,56 @@ bool CTxMemPool::CheckPackageLimits(const Package& package,
                                     uint64_t limitDescendantSize,
                                     std::string &errString) const
 {
+    // Special case when the package is just two generations with one child at the end: calculate
+    // ancestor and descendant limits by checking each parent individually with the child subtracted
+    // from the limits, then checking the union of all sets of ancestors.
+    if (IsChildWithParents(package)) {
+        size_t package_size{0};
+        for (const auto& tx : package) package_size += GetVirtualTransactionSize(*tx);
+        // Union of every transaction's in-mempool ancestors, de-duplicated.
+        setEntries collective_ancestors;
+        const auto& child = package[package.size() - 1];
+        const size_t child_size = GetVirtualTransactionSize(*child);
+        for (const auto& tx : package) {
+            // The staged_ancestors parameter to calculateAncestorsAndCheckLimits must contain only
+            // in-mempool entries.
+            CTxMemPoolEntry::Parents mempool_parents;
+            std::optional<txiter> piter = GetIter(tx->GetHash());
+            if (piter) {
+                mempool_parents.insert(**piter);
+            }
+            for (const auto& input : tx->vin) {
+                piter = GetIter(input.prevout.hash);
+                if (piter) {
+                    mempool_parents.insert(**piter);
+                }
+            }
+
+            // Include the child when calculating mempool entries' descendant limits.
+            if (!CalculateAncestorsAndCheckLimits(GetVirtualTransactionSize(*tx), 1,
+                                                  collective_ancestors, mempool_parents,
+                                                  limitAncestorCount, limitAncestorSize,
+                                                  limitDescendantCount - 1,
+                                                  limitDescendantSize - child_size, errString)) {
+                errString = strprintf("possibly too many unconfirmed ancestors [limit: %u]", limitAncestorCount);
+                return false;
+            }
+            if (collective_ancestors.size() + package.size() > limitAncestorCount) {
+                errString = strprintf("tx %s possibly exceeds ancestor count limit [limit: %u]",
+                                      child->GetHash().ToString(), limitAncestorCount);
+                return false;
+            }
+            size_t collective_ancestor_size{0};
+            for (txiter it : collective_ancestors) collective_ancestor_size += it->GetTxSize();
+            if (collective_ancestor_size + package_size > limitAncestorSize) {
+                errString = strprintf("tx %s possibly exceeds ancestor size limit [limit: %u]",
+                                      child->GetHash().ToString(), limitAncestorSize);
+                return false;
+            }
+        }
+        return true;
+    }
+
     CTxMemPoolEntry::Parents staged_ancestors;
     size_t total_size = 0;
     for (const auto& tx : package) {
