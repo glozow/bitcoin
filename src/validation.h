@@ -203,10 +203,21 @@ struct PackageMempoolAcceptResult
     * was a package-wide error (see result in m_state), m_tx_results will be empty.
     */
     std::map<const uint256, const MempoolAcceptResult> m_tx_results;
+    /** Aggregated virtual size of all transactions in the package. May be unavailable if validation
+     * is terminated early for some reason. */
+    std::optional<size_t> m_total_vsize;
+    /** Aggregated base fees of all transaction in the package. May be unavailable if some inputs
+     * were not available or a transaction failure caused validation to terminate early. */
+    std::optional<CAmount> m_total_modified_fees;
 
     explicit PackageMempoolAcceptResult(PackageValidationState state,
                                         std::map<const uint256, const MempoolAcceptResult>&& results)
         : m_state{state}, m_tx_results(std::move(results)) {}
+
+    explicit PackageMempoolAcceptResult(PackageValidationState state, size_t vsize, CAmount fees,
+                                        std::map<const uint256, const MempoolAcceptResult>&& results)
+        : m_state{state}, m_tx_results(std::move(results)), m_total_vsize{vsize},
+        m_total_modified_fees{fees} {}
 
     /** Constructor to create a PackageMempoolAcceptResult from a single MempoolAcceptResult */
     explicit PackageMempoolAcceptResult(const uint256& wtxid, const MempoolAcceptResult& result)

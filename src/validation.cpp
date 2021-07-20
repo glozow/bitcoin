@@ -454,6 +454,10 @@ public:
          * partially submitted.
          */
         const bool m_package_submission{false};
+        /** When true, use package feerates instead of individual transaction feerates for fee-based
+         * policies such as mempool min fee and min relay fee.
+         */
+        const bool m_package_feerates{false};
 
         /** Parameters for single transaction mempool validation. */
         static ATMPArgs SingleAccept(const CChainParams& chainparams, int64_t accept_time,
@@ -477,6 +481,7 @@ public:
                             /* m_test_accept */ true,
                             /* m_allow_bip125_replacement */ false,
                             /* m_package_submission */ false,
+                            /* m_package_feerates */ true,
             };
         }
 
@@ -489,6 +494,7 @@ public:
                             /* m_test_accept */ false,
                             /* m_allow_bip125_replacement */ true,
                             /* m_package_submission */ true,
+                            /* m_package_feerates */ true,
             };
         }
     };
@@ -776,7 +782,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     // No individual transactions are allowed below minRelayTxFee and mempool min fee except from
     // disconnected blocks and transactions in a package. Package transactions will be checked using
     // descendant feerates later.
-    if (!bypass_limits && !CheckFeeRate(nSize, ws.m_modified_fees, state)) return false;
+    if (!bypass_limits && !args.m_package_feerates && !CheckFeeRate(nSize, ws.m_modified_fees, state)) return false;
     return true;
 }
 
@@ -1275,6 +1281,19 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
         // All transactions must have individually passed mempool ancestor and descendant limits
         // inside of PreChecks(), so this is separate from an individual transaction error.
         return PackageMempoolAcceptResult(package_state, std::move(results));
+    }
+
+    // Transactions must meet two minimum feerates: the mempool minimum fee and min relay fee.
+    // For transactions consisting of exactly one child and its parents, it suffices to use the
+    // package feerate (total modified fees / total virtual size) to check this requirement.
+    const auto total_size = std::accumulate(workspaces.cbegin(), workspaces.cend(), 0,
+        [](size_t sum, auto& ws) { return sum + GetVirtualTransactionSize(*ws.m_ptx); });
+    const auto total_modified_fees = std::accumulate(workspaces.cbegin(), workspaces.cend(), 0,
+        [](CAmount sum, auto& ws) { return sum + ws.m_modified_fees; });
+    TxValidationState placeholder_state;
+    if (IsChildWithParents(txns) && !CheckFeeRate(total_size, total_modified_fees, placeholder_state)) {
+        package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package-fee-too-low");
+        return PackageMempoolAcceptResult(package_state, total_size, total_modified_fees, {});
     }
 
     for (Workspace& ws : workspaces) {
