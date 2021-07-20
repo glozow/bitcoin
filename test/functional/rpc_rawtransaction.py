@@ -84,6 +84,7 @@ class RawTransactionsTest(BitcoinTestFramework):
         self.generate(self.nodes[0], 5)
         self.sync_all()
 
+        self.removefrommempool_tests()
         self.getrawtransaction_tests()
         self.createrawtransaction_tests()
         self.signrawtransactionwithwallet_tests()
@@ -93,6 +94,39 @@ class RawTransactionsTest(BitcoinTestFramework):
         self.transaction_version_number_tests()
         if not self.options.descriptors:
             self.raw_multisig_transaction_legacy_tests()
+
+    def removefrommempool_tests(self):
+        addr = self.nodes[1].getnewaddress()
+        txid = self.nodes[0].sendtoaddress(addr, 10)
+        self.generate(self.nodes[0], 1)
+        self.sync_all()
+        # parent
+        vout = find_vout_for_address(self.nodes[1], txid, addr)
+        addr1 = self.nodes[1].getnewaddress()
+        raw_parent = self.nodes[1].createrawtransaction([{'txid': txid, 'vout': vout}], {addr1: 9.999})
+        raw_parent_signed = self.nodes[1].signrawtransactionwithwallet(raw_parent)
+        parent_txid = self.nodes[1].sendrawtransaction(raw_parent_signed['hex'])
+        # child
+        vout2 = find_vout_for_address(self.nodes[1], parent_txid, addr1)
+        addr2 = self.nodes[2].getnewaddress()
+        raw_child = self.nodes[1].createrawtransaction([{'txid': parent_txid, 'vout': vout2}], {addr2: 9.998})
+        raw_child_signed = self.nodes[1].signrawtransactionwithwallet(raw_child)
+        child_txid = self.nodes[1].sendrawtransaction(raw_child_signed['hex'])
+        self.sync_all()
+
+        assert parent_txid in self.nodes[2].getrawmempool()
+        assert child_txid in self.nodes[2].getrawmempool()
+        assert_equal(2, self.nodes[2].removefrommempool(parent_txid))
+        # No longer in node2's mempool
+        assert parent_txid not in self.nodes[2].getrawmempool()
+        assert child_txid not in self.nodes[2].getrawmempool()
+        # Still in node0's mempool
+        assert parent_txid in self.nodes[0].getrawmempool()
+        assert child_txid in self.nodes[0].getrawmempool()
+        # Calling it again doesn't do anything
+        self.nodes[2].removefrommempool(parent_txid)
+        self.nodes[2].removefrommempool(child_txid)
+
 
     def getrawtransaction_tests(self):
         addr = self.nodes[1].getnewaddress()

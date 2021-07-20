@@ -1008,6 +1008,39 @@ static RPCHelpMan testmempoolaccept()
     };
 }
 
+static RPCHelpMan removefrommempool()
+{
+    return RPCHelpMan{"removefrommempool",
+        "\nRemove a transaction, and any in-mempool descendants, from the local mempool (-regtest only).\n"
+        "\nNote that this transaction may still be relayed by the rest of the network.\n"
+        "\nNo-op if the transaction is not in the mempool.\n",
+        {
+            {"txid", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The transaction id"},
+        },
+        RPCResult{
+            RPCResult::Type::NUM, "", "Number of transactions removed.",
+        },
+        RPCExamples{
+            HelpExampleCli("removefrommempool", "[txid]")
+        },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+{
+    if (!Params().IsMockableChain()) {
+        throw std::runtime_error("removefrommempool is for regression testing (-regtest mode) only");
+    }
+    const uint256 hash = ParseHashV(request.params[0], "parameter 1");
+    CTxMemPool& pool = EnsureAnyMemPool(request.context);
+    LOCK(pool.cs);
+    const auto start = pool.size();
+    if (!pool.exists(GenTxid::Txid(hash))) return 0;
+    auto ptx = pool.info(GenTxid::Txid(hash)).tx;
+    pool.removeRecursive(*ptx, MemPoolRemovalReason::REPLACED);
+    CHECK_NONFATAL(!pool.exists(GenTxid::Txid(hash)));
+    return start - pool.size();
+},
+    };
+}
+
 static RPCHelpMan decodepsbt()
 {
     return RPCHelpMan{"decodepsbt",
@@ -1904,6 +1937,8 @@ static const CRPCCommand commands[] =
 
     { "blockchain",          &gettxoutproof,              },
     { "blockchain",          &verifytxoutproof,           },
+
+    { "hidden",              &removefrommempool,           },
 };
 // clang-format on
     for (const auto& c : commands) {
