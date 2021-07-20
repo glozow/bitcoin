@@ -222,14 +222,16 @@ MempoolAcceptResult AcceptToMemoryPool(CChainState& active_chainstate, CTxMemPoo
                                        bool bypass_limits, bool test_accept=false) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
 /**
-* Atomically test acceptance of a package. If the package only contains one tx, package rules still
-* apply. Package validation does not allow BIP125 replacements, so the transaction(s) cannot spend
-* the same inputs as any transaction in the mempool.
+* Try to submit a package to the mempool. Unless test_accept = true, the package must consist of
+* exactly 1 child and all or some of its parents. If the package only contains one tx, package rules
+* still apply. Package validation does not allow BIP125 replacements, so the transaction(s) cannot
+* spend the same inputs as any transaction in the mempool.
 * @param[in]    txns                Group of transactions which may be independent or contain
 *                                   parent-child dependencies. The transactions must not conflict
 *                                   with each other, i.e., must not spend the same inputs. If any
 *                                   dependencies exist, parents must appear anywhere in the list
 *                                   before their children.
+* @param[in]    test_accept         When true, apply validation rules but don't submit to mempool.
 * @returns a PackageMempoolAcceptResult which includes a MempoolAcceptResult for each transaction.
 * If a transaction fails, validation will exit early and some results may be missing.
 */
