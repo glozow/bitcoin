@@ -589,11 +589,12 @@ private:
     {
         CAmount mempoolRejectFee = m_pool.GetMinFee(gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000).GetFee(package_size);
         if (mempoolRejectFee > 0 && package_fee < mempoolRejectFee) {
-            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "mempool min fee not met", strprintf("%d < %d", package_fee, mempoolRejectFee));
+            return state.Invalid(TxValidationResult::TX_LOW_FEE, "mempool min fee not met",
+                                 strprintf("%d < %d", package_fee, mempoolRejectFee));
         }
-
         if (package_fee < ::minRelayTxFee.GetFee(package_size)) {
-            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "min relay fee not met", strprintf("%d < %d", package_fee, ::minRelayTxFee.GetFee(package_size)));
+            return state.Invalid(TxValidationResult::TX_LOW_FEE, "min relay fee not met",
+                                 strprintf("%d < %d", package_fee, ::minRelayTxFee.GetFee(package_size)));
         }
         return true;
     }
@@ -896,7 +897,7 @@ bool MemPoolAccept::MempoolChecks(Workspace& ws)
         // transactions that would need to be removed (direct conflicts and all descendants), check
         // that the replacement transaction pays more than its direct conflicts.
         if (const auto err_string{PaysMoreThanConflicts(setIterConflicting, newFeeRate, hash)}) {
-            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "insufficient fee", *err_string);
+            return state.Invalid(TxValidationResult::TX_LOW_FEE, "insufficient fee", *err_string);
         }
 
         // Calculate all conflicting entries and enforce BIP125 Rule #5.
@@ -918,7 +919,7 @@ bool MemPoolAccept::MempoolChecks(Workspace& ws)
         }
         if (const auto err_string{PaysForRBF(m_conflicting_fees, ws.m_modified_fees, ws.m_vsize,
                                              ::incrementalRelayFee, hash)}) {
-            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "insufficient fee", *err_string);
+            return state.Invalid(TxValidationResult::TX_LOW_FEE, "insufficient fee", *err_string);
         }
     }
     return true;
