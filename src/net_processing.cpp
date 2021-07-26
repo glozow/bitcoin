@@ -1377,6 +1377,7 @@ bool PeerManagerImpl::MaybePunishNodeForTx(NodeId nodeid, const TxValidationStat
     case TxValidationResult::TX_WITNESS_MUTATED:
     case TxValidationResult::TX_WITNESS_STRIPPED:
     case TxValidationResult::TX_CONFLICT:
+    case TxValidationResult::TX_LOW_FEE:
     case TxValidationResult::TX_MEMPOOL_POLICY:
         break;
     }
