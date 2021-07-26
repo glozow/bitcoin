@@ -2305,6 +2305,11 @@ void PeerManagerImpl::ProcessOrphanTx(std::set<uint256>& orphan_work_set)
                 AddToCompactExtraTransactions(removedTx);
             }
             break;
+        } else if (state.GetResult() == TxValidationResult::TX_LOW_FEE) {
+            // Transaction is no longer an orphan, but doesn't have sufficient fee to
+            // enter the mempool. Remove from the orphanage and put in the cheap pool.
+            m_orphanage.EraseTx(orphanHash);
+            m_cheappool.AddTransaction(porphanTx);
         } else if (state.GetResult() != TxValidationResult::TX_MISSING_INPUTS) {
             if (state.IsInvalid()) {
                 LogPrint(BCLog::MEMPOOL, "   invalid orphan tx %s from peer=%d. %s\n",
@@ -3304,7 +3309,13 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 }
             }
             return;
+        } else if (m_cheappool.HaveTransaction(txid)) {
+            // This transaction is in our cheap pool. Don't attempt revalidating by itself.
+            return;
         }
+
+        // Remove from the cheap pool. We may re-add it later.
+        m_cheappool.RemoveTransaction(tx.GetHash());
 
         const MempoolAcceptResult result = AcceptToMemoryPool(m_chainman.ActiveChainstate(), m_mempool, ptx, false /* bypass_limits */);
         const TxValidationState& state = result.m_state;
@@ -3315,6 +3326,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             // requests for it.
             m_txrequest.ForgetTxHash(tx.GetHash());
             m_txrequest.ForgetTxHash(tx.GetWitnessHash());
+
             _RelayTransaction(tx.GetHash(), tx.GetWitnessHash());
             m_orphanage.AddChildrenToWorkSet(tx, peer->m_orphan_work_set);
 
@@ -3331,9 +3343,12 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
             // Recursively process any orphan transactions that depended on this one
             ProcessOrphanTx(peer->m_orphan_work_set);
-        }
-        else if (state.GetResult() == TxValidationResult::TX_MISSING_INPUTS)
-        {
+        } else if (state.GetResult() == TxValidationResult::TX_LOW_FEE) {
+            // Transaction couldn't afford the entry price. Put it in the cheap seats.
+            const CTransactionRef tx_ref{ptx};
+            m_cheappool.AddTransaction(tx_ref);
+            return;
+        } else if (state.GetResult() == TxValidationResult::TX_MISSING_INPUTS) {
             bool fRejectedParents = false; // It may be the case that the orphans parents have all been rejected
 
             // Deduplicate parent txids, so that we don't have to loop over
