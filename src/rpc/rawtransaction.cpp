@@ -1089,6 +1089,16 @@ static RPCHelpMan submitrawpackage()
     CChainState& chainstate = EnsureChainman(node).ActiveChainstate();
     const PackageMempoolAcceptResult package_result = WITH_LOCK(::cs_main,
         return ProcessNewPackage(chainstate, mempool, txns, /* test_accept */ false));
+    if (package_result.m_state.IsValid()) {
+        std::string err_string;
+        for (const auto& tx : txns) {
+            // This will see that the transactions are already in the mempool and simply relay them.
+            const TransactionError err = BroadcastTransaction(node, tx, err_string, 0, /*relay*/ true, /*wait_callback*/ true);
+            if (TransactionError::OK != err) {
+                throw JSONRPCTransactionError(err, err_string);
+            }
+        }
+    }
 
     UniValue rpc_result{UniValue::VOBJ};
     if (package_result.m_state.GetResult() == PackageValidationResult::PCKG_POLICY) {
