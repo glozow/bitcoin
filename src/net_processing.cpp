@@ -174,6 +174,64 @@ struct QueuedBlock {
     std::unique_ptr<PartiallyDownloadedBlock> partialBlock;
 };
 
+/** Stores a limited number transactions whose feerates are too low to enter the mempool.
+ *  Those transactions can later be submitted to the mempool as part of a package. */
+class CheapPool {
+    /** Limit the maximum size of the CheapPool to CHEAP_POOL_MAX_SIZE transactions. */
+    static constexpr size_t CHEAP_POOL_MAX_SIZE{100};
+
+    /** Store shared pointers to the too-low-feerate transactions. */
+    std::unordered_map<uint256, CTransactionRef, SaltedTxidHasher> m_txs;
+
+public:
+    /** Add a transaction to the cheap pool, and trim to the max size if necessary. */
+    void AddTransaction(CTransactionRef tx)
+    {
+        assert(tx);
+
+        if (m_txs.count(tx->GetHash())) {
+            // Already in the cheap pool
+            return;
+        }
+
+        // Add to the cheap pool
+        m_txs[tx->GetHash()] = tx;
+
+        // Limit the size of the cheap pool
+        if (m_txs.size() > CHEAP_POOL_MAX_SIZE) {
+            // Remove the first entry
+            // TODO: remove a random entry
+            m_txs.erase(m_txs.begin());
+        }
+    }
+
+    /** Returns whether a transaction with txid is in the cheap pool. */
+    bool HaveTransaction(const uint256& txid)
+    {
+        return m_txs.count(txid);
+    }
+
+    /** Removes a transaction with txid from the cheap pool. */
+    void RemoveTransaction(const uint256& txid)
+    {
+        m_txs.erase(txid);
+    }
+
+    /** Retrieves CTransactionRefs for all of the parent txids.
+     *  Returns nullopt if any of the parents aren't in the cheap pool. */
+    std::optional<std::vector<CTransactionRef>> GetTransactions(const std::set<uint256>& parent_txids)
+    {
+        std::vector<CTransactionRef> ret;
+        ret.reserve(parent_txids.size());
+        for (const uint256& txid : parent_txids) {
+            auto it = m_txs.find(txid);
+            if (it == m_txs.end()) return {}; // parent transaction is not in cheappool.
+            ret.push_back(it->second);
+        }
+        return ret;
+    }
+};
+
 /**
  * Data structure for an individual peer. This struct is not protected by
  * cs_main since it does not contain validation-critical data.
@@ -571,6 +629,9 @@ private:
 
     /** Storage for orphan information */
     TxOrphanage m_orphanage;
+
+    /** Storage for cheap transactions */
+    CheapPool m_cheappool;
 
     void AddToCompactExtraTransactions(const CTransactionRef& tx) EXCLUSIVE_LOCKS_REQUIRED(g_cs_orphans);
 
