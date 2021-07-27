@@ -761,17 +761,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     // that we have the set of all ancestors we can detect this
     // pathological case by making sure setConflicts and setAncestors don't
     // intersect.
-    for (CTxMemPool::txiter ancestorIt : setAncestors)
-    {
-        const uint256 &hashAncestor = ancestorIt->GetTx().GetHash();
-        if (setConflicts.count(hashAncestor))
-        {
-            return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-txns-spends-conflicting-tx",
-                    strprintf("%s spends conflicting transaction %s",
-                        hash.ToString(),
-                        hashAncestor.ToString()));
-        }
-    }
+    if (!SpendsAndConflictsDisjoint(setAncestors, setConflicts, state, hash)) return false;
 
 
     // If we don't hold the lock allConflicting might be incomplete; the
