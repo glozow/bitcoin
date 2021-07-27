@@ -770,6 +770,8 @@ bool MemPoolAccept::RBFChecks(Workspace& ws)
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
 
+    if (ws.m_conflicts.empty()) return true;
+
     const CTransaction& tx = *ws.m_ptx;
     const uint256& hash = ws.m_hash;
     const size_t nSize = GetVirtualTransactionSize(tx);
@@ -780,7 +782,6 @@ bool MemPoolAccept::RBFChecks(Workspace& ws)
     CTxMemPool::setEntries& setIterConflicting = ws.m_iter_conflicts;
     CTxMemPool::setEntries& allConflicting = ws.m_all_conflicting;
     CTxMemPool::setEntries& setAncestors = ws.m_ancestors;
-    bool& fReplacementTransaction = ws.m_replacement_transaction;
     CAmount& nModifiedFees = ws.m_modified_fees;
     CAmount& nConflictingFees = ws.m_conflicting_fees;
     size_t& nConflictingSize = ws.m_conflicting_size;
@@ -791,30 +792,25 @@ bool MemPoolAccept::RBFChecks(Workspace& ws)
     // intersect.
     if (!SpendsAndConflictsDisjoint(setAncestors, setConflicts, state, hash)) return false;
 
-
     // If we don't hold the lock allConflicting might be incomplete; the
     // subsequent RemoveStaged() and addUnchecked() calls don't guarantee
     // mempool consistency for us.
-    fReplacementTransaction = setConflicts.size();
-    if (fReplacementTransaction)
-    {
-        CFeeRate newFeeRate(nModifiedFees, nSize);
-        if (!PaysMoreThanConflicts(setIterConflicting, newFeeRate, state, hash)) return false;
+    CFeeRate newFeeRate(nModifiedFees, nSize);
+    if (!PaysMoreThanConflicts(setIterConflicting, newFeeRate, state, hash)) return false;
 
-        // Calculate all conflicting entries and enforce Rules 2 and 5.
-        if (!GetEntriesForRBF(tx, m_pool, setIterConflicting, state, allConflicting)) return false;
+    // Calculate all conflicting entries and enforce Rules 2 and 5.
+    if (!GetEntriesForRBF(tx, m_pool, setIterConflicting, state, allConflicting)) return false;
 
-        // Check if it's economically rational to mine this transaction rather
-        // than the ones it replaces. Enforce Rules 3 and 4.
-        nConflictingFees = 0;
-        nConflictingSize = 0;
-        for (CTxMemPool::txiter it : allConflicting) {
-            nConflictingFees += it->GetModifiedFee();
-            nConflictingSize += it->GetTxSize();
-        }
-        if (!PaysForRBF(nConflictingFees, nConflictingSize, nModifiedFees, nSize, state, hash)) return false;
-
+    // Check if it's economically rational to mine this transaction rather
+    // than the ones it replaces. Enforce Rules 3 and 4.
+    nConflictingFees = 0;
+    nConflictingSize = 0;
+    for (CTxMemPool::txiter it : allConflicting) {
+        nConflictingFees += it->GetModifiedFee();
+        nConflictingSize += it->GetTxSize();
     }
+    if (!PaysForRBF(nConflictingFees, nConflictingSize, nModifiedFees, nSize, state, hash)) return false;
+
     return true;
 }
 
