@@ -115,3 +115,21 @@ bool HasNoNewUnconfirmed(const CTransaction& tx, const CTxMemPool& m_pool,
     }
     return true;
 }
+
+bool EntriesAndTxidsDisjoint(const CTxMemPool::setEntries& setAncestors,
+                             const std::set<uint256>& setConflicts,
+                             const uint256& txid, std::string& err_string)
+{
+    for (CTxMemPool::txiter ancestorIt : setAncestors)
+    {
+        const uint256 &hashAncestor = ancestorIt->GetTx().GetHash();
+        if (setConflicts.count(hashAncestor))
+        {
+            err_string = strprintf("%s spends conflicting transaction %s",
+                        txid.ToString(),
+                        hashAncestor.ToString());
+            return false;
+        }
+    }
+    return true;
+}
