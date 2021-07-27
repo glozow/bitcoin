@@ -879,33 +879,36 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                             newFeeRate.ToString(),
                             oldFeeRate.ToString()));
             }
+        }
 
+        for (const auto& mi : setIterConflicting) {
+            nConflictingCount += mi->GetCountWithDescendants();
+            // This potentially overestimates the number of actual descendants
+            // but we just want to be conservative to avoid doing too much
+            // work.
+            if (nConflictingCount > MAX_BIP125_REPLACEMENT_CANDIDATES) {
+                return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too many potential replacements",
+                        strprintf("rejecting replacement %s; too many potential replacements (%d > %d)\n",
+                            hash.ToString(),
+                            nConflictingCount,
+                            MAX_BIP125_REPLACEMENT_CANDIDATES));
+            }
+        }
+        // If not too many to replace, then calculate the set of
+        // transactions that would have to be evicted
+        for (CTxMemPool::txiter it : setIterConflicting) {
+            m_pool.CalculateDescendants(it, allConflicting);
+        }
+        for (CTxMemPool::txiter it : allConflicting) {
+            nConflictingFees += it->GetModifiedFee();
+            nConflictingSize += it->GetTxSize();
+        }
+
+        for (const auto& mi : setIterConflicting) {
             for (const CTxIn &txin : mi->GetTx().vin)
             {
                 setConflictsParents.insert(txin.prevout.hash);
             }
-
-            nConflictingCount += mi->GetCountWithDescendants();
-        }
-        // This potentially overestimates the number of actual descendants
-        // but we just want to be conservative to avoid doing too much
-        // work.
-        if (nConflictingCount <= MAX_BIP125_REPLACEMENT_CANDIDATES) {
-            // If not too many to replace, then calculate the set of
-            // transactions that would have to be evicted
-            for (CTxMemPool::txiter it : setIterConflicting) {
-                m_pool.CalculateDescendants(it, allConflicting);
-            }
-            for (CTxMemPool::txiter it : allConflicting) {
-                nConflictingFees += it->GetModifiedFee();
-                nConflictingSize += it->GetTxSize();
-            }
-        } else {
-            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too many potential replacements",
-                    strprintf("rejecting replacement %s; too many potential replacements (%d > %d)\n",
-                        hash.ToString(),
-                        nConflictingCount,
-                        MAX_BIP125_REPLACEMENT_CANDIDATES));
         }
 
         for (unsigned int j = 0; j < tx.vin.size(); j++)
