@@ -889,7 +889,9 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                             newFeeRate.ToString(),
                             oldFeeRate.ToString()));
             }
+        }
 
+        for (const auto& mi : setIterConflicting) {
             for (const CTxIn &txin : mi->GetTx().vin)
             {
                 setConflictsParents.insert(txin.prevout.hash);
