@@ -53,4 +53,16 @@ bool GetEntriesForRBF(const CTransaction& tx, CTxMemPool& m_pool,
 bool HasNoNewUnconfirmed(const CTransaction& tx, const CTxMemPool& m_pool,
                          const CTxMemPool::setEntries& setIterConflicting,
                          TxValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(m_pool.cs);
+
+/** Check the intersection between two sets of mempool entries to make sure they are disjoint.
+ * @param[in]   setAncestors    Set of mempool entries corresponding to ancestors of the
+ *                              replacement transactions.
+ * @param[in]   setEntries      Set of mempool entries corresponding to the mempool conflicts
+ *                              (candidates to be replaced).
+ * @param[in]   hash            Transaction ID, included in the error message if violation occurs.
+ * returns true if the two sets are disjoint (i.e. intersection is empty), false if otherwise.
+ */
+bool SpendsAndConflictsDisjoint(const CTxMemPool::setEntries& setAncestors,
+                                const std::set<uint256>& setConflicts,
+                                TxValidationState& state, const uint256& hash);
 #endif // BITCOIN_POLICY_RBF_H

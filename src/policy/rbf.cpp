@@ -111,3 +111,21 @@ bool HasNoNewUnconfirmed(const CTransaction& tx, const CTxMemPool& m_pool,
     }
     return true;
 }
+
+bool SpendsAndConflictsDisjoint(const CTxMemPool::setEntries& setAncestors,
+                                const std::set<uint256>& setConflicts,
+                                TxValidationState& state, const uint256& hash)
+{
+    for (CTxMemPool::txiter ancestorIt : setAncestors)
+    {
+        const uint256 &hashAncestor = ancestorIt->GetTx().GetHash();
+        if (setConflicts.count(hashAncestor))
+        {
+            return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-txns-spends-conflicting-tx",
+                    strprintf("%s spends conflicting transaction %s",
+                        hash.ToString(),
+                        hashAncestor.ToString()));
+        }
+    }
+    return true;
+}
