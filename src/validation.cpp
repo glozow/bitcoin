@@ -472,6 +472,7 @@ private:
     struct Workspace {
         explicit Workspace(const CTransactionRef& ptx) : m_ptx(ptx), m_hash(ptx->GetHash()) {}
         std::set<uint256> m_conflicts;
+        CTxMemPool::setEntries m_iter_conflicts;
         CTxMemPool::setEntries m_all_conflicting;
         CTxMemPool::setEntries m_ancestors;
         std::unique_ptr<CTxMemPoolEntry> m_entry;
@@ -493,6 +494,9 @@ private:
     // package limits, etc. As this function can be invoked for "free" by a peer,
     // only tests that are fast should be done here (to avoid CPU DoS).
     bool PreChecks(ATMPArgs& args, Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
+
+    // Run BIP125 RBF Checks.
+    bool RBFChecks(Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Run the script checks using our policy flags. As this can be slow, we should
     // only invoke this on transactions that have otherwise passed policy checks.
@@ -554,13 +558,10 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     // Alias what we need out of ws
     TxValidationState& state = ws.m_state;
     std::set<uint256>& setConflicts = ws.m_conflicts;
-    CTxMemPool::setEntries& allConflicting = ws.m_all_conflicting;
+    CTxMemPool::setEntries& setIterConflicting = ws.m_iter_conflicts;
     CTxMemPool::setEntries& setAncestors = ws.m_ancestors;
     std::unique_ptr<CTxMemPoolEntry>& entry = ws.m_entry;
-    bool& fReplacementTransaction = ws.m_replacement_transaction;
     CAmount& nModifiedFees = ws.m_modified_fees;
-    CAmount& nConflictingFees = ws.m_conflicting_fees;
-    size_t& nConflictingSize = ws.m_conflicting_size;
 
     if (!CheckTransaction(tx, state)) {
         return false; // state filled in by CheckTransaction
@@ -703,7 +704,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     // blocks
     if (!bypass_limits && !CheckFeeRate(nSize, nModifiedFees, state)) return false;
 
-    const CTxMemPool::setEntries setIterConflicting = m_pool.GetIterSet(setConflicts);
+    setIterConflicting = m_pool.GetIterSet(setConflicts);
     // Calculate in-mempool ancestors, up to a limit.
     if (setConflicts.size() == 1) {
         // In general, when we receive an RBF transaction with mempool conflicts, we want to know whether we
@@ -761,6 +762,28 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
             return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-long-mempool-chain", errString);
         }
     }
+    return true;
+}
+
+bool MemPoolAccept::RBFChecks(Workspace& ws)
+{
+    AssertLockHeld(cs_main);
+    AssertLockHeld(m_pool.cs);
+
+    const CTransaction& tx = *ws.m_ptx;
+    const uint256& hash = ws.m_hash;
+    const size_t nSize = GetVirtualTransactionSize(tx);
+
+    // Alias what we need out of ws
+    TxValidationState& state = ws.m_state;
+    std::set<uint256>& setConflicts = ws.m_conflicts;
+    CTxMemPool::setEntries& setIterConflicting = ws.m_iter_conflicts;
+    CTxMemPool::setEntries& allConflicting = ws.m_all_conflicting;
+    CTxMemPool::setEntries& setAncestors = ws.m_ancestors;
+    bool& fReplacementTransaction = ws.m_replacement_transaction;
+    CAmount& nModifiedFees = ws.m_modified_fees;
+    CAmount& nConflictingFees = ws.m_conflicting_fees;
+    size_t& nConflictingSize = ws.m_conflicting_size;
 
     // A transaction that spends outputs that would be replaced by it is invalid. Now
     // that we have the set of all ancestors we can detect this
@@ -906,6 +929,8 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
     Workspace ws(ptx);
 
     if (!PreChecks(args, ws)) return MempoolAcceptResult::Failure(ws.m_state);
+
+    if (!RBFChecks(ws)) return MempoolAcceptResult::Failure(ws.m_state);
 
     // Only compute the precomputed transaction data if we need to verify
     // scripts (ie, other policy checks pass). We perform the inexpensive
