@@ -36,6 +36,10 @@ enum class RBFTransactionState {
 RBFTransactionState IsRBFOptIn(const CTransaction& tx, const CTxMemPool& pool) EXCLUSIVE_LOCKS_REQUIRED(pool.cs);
 RBFTransactionState IsRBFOptInEmptyMempool(const CTransaction& tx);
 
+/** Determine whether a mempool transaction is opting out of RBF. Mempool entries do not inherit
+ * signaling from their parents in this implementation. */
+bool IsRBFOptOut(const CTransaction& txConflicting);
+
 /** Get all descendants of setIterConflicting. Also enforce BIP125 Rule 5 and quit as early as
  * possible. There cannot be more than MAX_BIP125_REPLACEMENT_CANDIDATES potential entries.
  * @param[out]  allConflicting      Populated with all the mempool entries that would be replaced,
