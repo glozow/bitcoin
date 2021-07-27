@@ -546,6 +546,10 @@ private:
                               std::vector<Workspace>& workspaces,
                               PackageValidationState& package_state) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
+    // Run mempool ancestor/descendant limit and BIP125 RBF Checks. Note that this does not
+    // constitute all mempool checks.
+    bool MempoolChecks(Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
+
     // Run the script checks using our policy flags. As this can be slow, we should
     // only invoke this on transactions that have otherwise passed policy checks.
     bool PolicyScriptChecks(const ATMPArgs& args, Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
@@ -604,8 +608,6 @@ private:
     bool m_replacement_transaction;
     /** Set of mempool transaction txids that are in direct conflict with transaction(s) being evaluated. */
     std::set<uint256> m_txid_conflicts;
-    /** Set of mempool entries that are in direct conflict with transaction(s) being evaluated. */
-    CTxMemPool::setEntries m_iter_conflicts;
     /** All conflicting mempool transactions and their descendants. */
     CTxMemPool::setEntries m_all_conflicts;
     /** Mempool transactions that were replaced. */
@@ -635,8 +637,6 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     // Alias what we need out of ws
     TxValidationState& state = ws.m_state;
     std::set<uint256>& setConflicts = m_txid_conflicts;
-    CTxMemPool::setEntries& setAncestors = ws.m_ancestors;
-    CTxMemPool::setEntries& allConflicting = m_all_conflicts;
     std::unique_ptr<CTxMemPoolEntry>& entry = ws.m_entry;
 
     if (!CheckTransaction(tx, state)) {
@@ -780,8 +780,26 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     // disconnected blocks and transactions in a package. Package transactions will be checked using
     // descendant feerates later.
     if (!bypass_limits && !args.m_package_feerates && !CheckFeeRate(nSize, ws.m_modified_fees, state)) return false;
+    return true;
+}
 
+bool MemPoolAccept::MempoolChecks(Workspace& ws)
+{
+    AssertLockHeld(cs_main);
+    AssertLockHeld(m_pool.cs);
+
+    const CTransaction& tx = *ws.m_ptx;
+    const uint256& hash = ws.m_hash;
+    const size_t nSize = GetVirtualTransactionSize(tx);
+
+    // Alias what we need out of ws
+    TxValidationState& state = ws.m_state;
+    std::set<uint256>& setConflicts = m_txid_conflicts;
     const CTxMemPool::setEntries setIterConflicting = m_pool.GetIterSet(setConflicts);
+    CTxMemPool::setEntries& allConflicting = m_all_conflicts;
+    CTxMemPool::setEntries& setAncestors = ws.m_ancestors;
+    std::unique_ptr<CTxMemPoolEntry>& entry = ws.m_entry;
+
     // Calculate in-mempool ancestors, up to a limit.
     if (setConflicts.size() == 1) {
         // In general, when we receive an RBF transaction with mempool conflicts, we want to know whether we
@@ -845,7 +863,6 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     // pathological case by making sure setConflicts and setAncestors don't
     // intersect.
     if (!SpendsAndConflictsDisjoint(setAncestors, setConflicts, state, hash)) return false;
-
 
     // If we don't hold the lock allConflicting might be incomplete; the
     // subsequent RemoveStaged() and addUnchecked() calls don't guarantee
@@ -1118,6 +1135,8 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
     Workspace ws(ptx, m_limit_descendants, m_limit_descendant_size);
 
     if (!PreChecks(args, ws)) return MempoolAcceptResult::Failure(ws.m_state);
+
+    if (!MempoolChecks(ws)) return MempoolAcceptResult::Failure(ws.m_state);
 
     // Only compute the precomputed transaction data if we need to verify
     // scripts (ie, other policy checks pass). We perform the inexpensive
