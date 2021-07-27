@@ -15,4 +15,7 @@ static const uint32_t MAX_BIP125_RBF_SEQUENCE = 0xfffffffd;
 // opt-in to replace-by-fee, according to BIP 125
 bool SignalsOptInRBF(const CTransaction &tx);
 
+/** Determine whether a mempool transaction is opting out of RBF. Mempool entries do not inherit
+ * signaling from their parents in this implementation. */
+bool IsRBFOptOut(const CTransaction& txConflicting);
 #endif // BITCOIN_UTIL_RBF_H
