@@ -49,4 +49,12 @@ bool IsRBFOptOut(const CTransaction& txConflicting);
 bool GetEntriesForRBF(const CTransaction& tx, CTxMemPool& m_pool,
                       const CTxMemPool::setEntries setIterConflicting, TxValidationState& state,
                       CTxMemPool::setEntries& allConflicting) EXCLUSIVE_LOCKS_REQUIRED(m_pool.cs);
+
+/** Check the intersection between original mempool transactions (candidates for being replaced) and
+ * the ancestors of replacement transactions.
+ * @param[in]   hash    Transaction ID, included in the error message if violation occurs.
+ * returns false if the intersection is empty, true if otherwise.
+ */
+bool SpendsAndConflictsDisjoint(CTxMemPool::setEntries& setAncestors, std::set<uint256> setConflicts,
+                                TxValidationState& state, const uint256& hash);
 #endif // BITCOIN_POLICY_RBF_H

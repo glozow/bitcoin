@@ -127,3 +127,19 @@ bool GetEntriesForRBF(const CTransaction& tx, CTxMemPool& m_pool,
     return true;
 }
 
+bool SpendsAndConflictsDisjoint(CTxMemPool::setEntries& setAncestors, std::set<uint256> setConflicts,
+                                TxValidationState& state, const uint256& hash)
+{
+    for (CTxMemPool::txiter ancestorIt : setAncestors)
+    {
+        const uint256 &hashAncestor = ancestorIt->GetTx().GetHash();
+        if (setConflicts.count(hashAncestor))
+        {
+            return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-txns-spends-conflicting-tx",
+                    strprintf("%s spends conflicting transaction %s",
+                        hash.ToString(),
+                        hashAncestor.ToString()));
+        }
+    }
+    return true;
+}
