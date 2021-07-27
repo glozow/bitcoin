@@ -39,42 +39,42 @@ RBFTransactionState IsRBFOptInEmptyMempool(const CTransaction& tx);
 /** Determine whether a mempool transaction is opting out of RBF (BIP125 Rule 1). */
 bool IsRBFOptOut(const CTransaction& txConflicting);
 
-/** Get all descendants of setIterConflicting. Also enforce BIP125 Rules 2 and 5:
+/** Get all descendants of conflict_iterators. Also enforce BIP125 Rules 2 and 5:
  * The transaction must not have any unconfirmed inputs in addition to the conflicts.
  * There cannot be more than MAX_BIP125_REPLACEMENT_CANDIDATES potential entries.
- * @param[out]  allConflicting      Populated with all the mempool entries that would be replaced,
- *                                  which includes descendants of setIterConflicting.
+ * @param[out]  all_conflicts      Populated with all the mempool entries that would be replaced,
+ *                                  which includes descendants of conflict_iterators.
  * @returns true if Rules 2 and 5 are met, false if anything goes wrong.
  */
-bool GetEntriesForRBF(const CTransaction& tx, CTxMemPool& m_pool,
-                      const CTxMemPool::setEntries setIterConflicting, TxValidationState& state,
-                      CTxMemPool::setEntries& allConflicting) EXCLUSIVE_LOCKS_REQUIRED(m_pool.cs);
+bool GetEntriesForRBF(const CTransaction& tx, CTxMemPool& pool,
+                      const CTxMemPool::setEntries conflict_iterators, TxValidationState& state,
+                      CTxMemPool::setEntries& all_conflicts) EXCLUSIVE_LOCKS_REQUIRED(pool.cs);
 
 /** Check the intersection between original mempool transactions (candidates for being replaced) and
  * the ancestors of replacement transactions.
  * @param[in]   hash    Transaction ID, included in the error message if violation occurs.
  * returns false if the intersection is empty, true if otherwise.
  */
-bool SpendsAndConflictsDisjoint(CTxMemPool::setEntries& setAncestors, std::set<uint256> setConflicts,
+bool SpendsAndConflictsDisjoint(CTxMemPool::setEntries& ancestors, std::set<uint256> set_conflicts,
                                 TxValidationState& state, const uint256& hash);
 
 /** Check that the feerate of the replacement transaction(s) is higher than the feerate of each
- * of the transactions in setIterConflicting.
+ * of the transactions in conflict_iterators.
  */
-bool PaysMoreThanConflicts(CTxMemPool::setEntries& setIterConflicting, CFeeRate newFeeRate,
+bool PaysMoreThanConflicts(CTxMemPool::setEntries& conflict_iterators, CFeeRate replacement_feerate,
                            TxValidationState& state, const uint256& hash);
 
 /** Enforce BIP125 Rules 3 and 4 to ensure that replacement transaction fees are sufficient to
  * replace all conflicting mempool entries.
- * @param[in]   nConflictingFees    Total modified fees of original transaction(s).
- * @param[in]   nConflictingSize    Total virtual size of original transaction(s).
- * @param[in]   nModifiedFees       Total modified fees of replacement transaction(s).
- * @param[in]   nSize               Total virtual size of replacement transaction(s).
+ * @param[in]   conflict_fees    Total modified fees of original transaction(s).
+ * @param[in]   conflict_vsize    Total virtual size of original transaction(s).
+ * @param[in]   replacement_fees       Total modified fees of replacement transaction(s).
+ * @param[in]   replacement_vsize               Total virtual size of replacement transaction(s).
  * @param[in]   hash                Transaction ID, included in the error message if violation occurs.
  * returns true if fees are sufficient, false if otherwise.
  */
-bool PaysForRBF(CAmount nConflictingFees, size_t nConflictingSize,
-                CAmount nModifiedFees, size_t nSize,
+bool PaysForRBF(CAmount conflict_fees, size_t conflict_vsize,
+                CAmount replacement_fees, size_t replacement_vsize,
                 TxValidationState& state, const uint256& hash);
 
 #endif // BITCOIN_POLICY_RBF_H
