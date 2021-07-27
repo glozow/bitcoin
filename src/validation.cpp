@@ -797,11 +797,6 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
         }
     }
 
-    // Check if it's economically rational to mine this transaction rather
-    // than the ones it replaces.
-    nConflictingFees = 0;
-    nConflictingSize = 0;
-    uint64_t nConflictingCount = 0;
 
     // If we don't hold the lock allConflicting might be incomplete; the
     // subsequent RemoveStaged() and addUnchecked() calls don't guarantee
@@ -810,7 +805,6 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     if (fReplacementTransaction)
     {
         CFeeRate newFeeRate(nModifiedFees, nSize);
-        std::set<uint256> setConflictsParents;
         for (const auto& mi : setIterConflicting) {
             // Don't allow the replacement to reduce the feerate of the
             // mempool.
@@ -837,6 +831,8 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
             }
         }
 
+        std::set<uint256> setConflictsParents;
+        uint64_t nConflictingCount = 0;
         for (const auto& mi : setIterConflicting) {
             nConflictingCount += mi->GetCountWithDescendants();
             // This potentially overestimates the number of actual descendants
@@ -855,6 +851,10 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
         for (CTxMemPool::txiter it : setIterConflicting) {
             m_pool.CalculateDescendants(it, allConflicting);
         }
+        // Check if it's economically rational to mine this transaction rather
+        // than the ones it replaces.
+        nConflictingFees = 0;
+        nConflictingSize = 0;
         for (CTxMemPool::txiter it : allConflicting) {
             nConflictingFees += it->GetModifiedFee();
             nConflictingSize += it->GetTxSize();
