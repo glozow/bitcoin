@@ -5,6 +5,8 @@
 #include <consensus/validation.h>
 #include <logging.h>
 #include <policy/rbf.h>
+#include <policy/settings.h>
+#include <util/moneystr.h>
 #include <util/rbf.h>
 
 #include <string>
@@ -140,6 +142,65 @@ bool SpendsAndConflictsDisjoint(CTxMemPool::setEntries& setAncestors, std::set<u
                         hash.ToString(),
                         hashAncestor.ToString()));
         }
+    }
+    return true;
+}
+
+bool PaysMoreThanConflicts(CTxMemPool::setEntries& setIterConflicting, CFeeRate newFeeRate,
+                           TxValidationState& state, const uint256& hash)
+{
+    for (const auto& mi : setIterConflicting) {
+        // Don't allow the replacement to reduce the feerate of the
+        // mempool.
+        //
+        // We usually don't want to accept replacements with lower
+        // feerates than what they replaced as that would lower the
+        // feerate of the next block. Requiring that the feerate always
+        // be increased is also an easy-to-reason about way to prevent
+        // DoS attacks via replacements.
+        //
+        // We only consider the feerates of transactions being directly
+        // replaced, not their indirect descendants. While that does
+        // mean high feerate children are ignored when deciding whether
+        // or not to replace, we do require the replacement to pay more
+        // overall fees too, mitigating most cases.
+        CFeeRate oldFeeRate(mi->GetModifiedFee(), mi->GetTxSize());
+        if (newFeeRate <= oldFeeRate)
+        {
+            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "insufficient fee",
+                    strprintf("rejecting replacement %s; new feerate %s <= old feerate %s",
+                        hash.ToString(),
+                        newFeeRate.ToString(),
+                        oldFeeRate.ToString()));
+        }
+    }
+    return true;
+}
+
+bool PaysForRBF(CAmount nConflictingFees, size_t nConflictingSize,
+                CAmount nModifiedFees, size_t nSize,
+                TxValidationState& state, const uint256& hash)
+{
+    // The replacement must pay greater fees than the transactions it
+    // replaces - if we did the bandwidth used by those conflicting
+    // transactions would not be paid for.
+    if (nModifiedFees < nConflictingFees)
+    {
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "insufficient fee",
+                strprintf("rejecting replacement %s, less fees than conflicting txs; %s < %s",
+                    hash.ToString(), FormatMoney(nModifiedFees), FormatMoney(nConflictingFees)));
+    }
+
+    // Finally in addition to paying more fees than the conflicts the
+    // new transaction must pay for its own bandwidth.
+    CAmount nDeltaFees = nModifiedFees - nConflictingFees;
+    if (nDeltaFees < ::incrementalRelayFee.GetFee(nSize))
+    {
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "insufficient fee",
+                strprintf("rejecting replacement %s, not enough additional fees to relay; %s < %s",
+                    hash.ToString(),
+                    FormatMoney(nDeltaFees),
+                    FormatMoney(::incrementalRelayFee.GetFee(nSize))));
     }
     return true;
 }
