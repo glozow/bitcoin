@@ -6,6 +6,7 @@
 #define BITCOIN_POLICY_RBF_H
 
 #include <txmempool.h>
+#include <consensus/validation.h>
 
 /** Maximum number of transactions that can be replaced by BIP125 RBF (Rule #5). This includes all
  * mempool conflicts and their descendants. */
@@ -35,4 +36,14 @@ enum class RBFTransactionState {
 RBFTransactionState IsRBFOptIn(const CTransaction& tx, const CTxMemPool& pool) EXCLUSIVE_LOCKS_REQUIRED(pool.cs);
 RBFTransactionState IsRBFOptInEmptyMempool(const CTransaction& tx);
 
+/** Get all descendants of setIterConflicting. Also enforce BIP125 Rules 2 and 5:
+ * The transaction must not have any unconfirmed inputs in addition to the conflicts.
+ * There cannot be more than MAX_BIP125_REPLACEMENT_CANDIDATES potential entries.
+ * @param[out]  allConflicting      Populated with all the mempool entries that would be replaced,
+ *                                  which includes descendants of setIterConflicting.
+ * @returns true if Rules 2 and 5 are met, false if anything goes wrong.
+ */
+bool GetEntriesForRBF(const CTransaction& tx, CTxMemPool& m_pool,
+                      const CTxMemPool::setEntries setIterConflicting, TxValidationState& state,
+                      CTxMemPool::setEntries& allConflicting) EXCLUSIVE_LOCKS_REQUIRED(m_pool.cs);
 #endif // BITCOIN_POLICY_RBF_H
