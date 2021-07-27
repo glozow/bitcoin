@@ -42,7 +42,7 @@ bool IsRBFOptOut(const CTransaction& txConflicting);
 /** Get all descendants of conflict_iterators. Also enforce BIP125 Rules 2 and 5:
  * The transaction must not have any unconfirmed inputs in addition to the conflicts.
  * There cannot be more than MAX_BIP125_REPLACEMENT_CANDIDATES potential entries.
- * @param[out]  all_conflicts      Populated with all the mempool entries that would be replaced,
+ * @param[out]  all_conflicts       Populated with all the mempool entries that would be replaced,
  *                                  which includes descendants of conflict_iterators.
  * @returns true if Rules 2 and 5 are met, false if anything goes wrong.
  */
@@ -52,7 +52,7 @@ bool GetEntriesForRBF(const CTransaction& tx, CTxMemPool& pool,
 
 /** Check the intersection between original mempool transactions (candidates for being replaced) and
  * the ancestors of replacement transactions.
- * @param[in]   hash    Transaction ID, included in the error message if violation occurs.
+ * @param[in]   hash                Transaction ID, included in the error message if violation occurs.
  * returns false if the intersection is empty, true if otherwise.
  */
 bool SpendsAndConflictsDisjoint(CTxMemPool::setEntries& ancestors, std::set<uint256> set_conflicts,
@@ -66,10 +66,10 @@ bool PaysMoreThanConflicts(CTxMemPool::setEntries& conflict_iterators, CFeeRate 
 
 /** Enforce BIP125 Rules 3 and 4 to ensure that replacement transaction fees are sufficient to
  * replace all conflicting mempool entries.
- * @param[in]   conflict_fees    Total modified fees of original transaction(s).
- * @param[in]   conflict_vsize    Total virtual size of original transaction(s).
- * @param[in]   replacement_fees       Total modified fees of replacement transaction(s).
- * @param[in]   replacement_vsize               Total virtual size of replacement transaction(s).
+ * @param[in]   conflict_fees       Total modified fees of original transaction(s).
+ * @param[in]   conflict_vsize      Total virtual size of original transaction(s).
+ * @param[in]   replacement_fees    Total modified fees of replacement transaction(s).
+ * @param[in]   replacement_vsize   Total virtual size of replacement transaction(s).
  * @param[in]   hash                Transaction ID, included in the error message if violation occurs.
  * returns true if fees are sufficient, false if otherwise.
  */
