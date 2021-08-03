@@ -50,4 +50,9 @@ bool IsRBFOptOut(const CTransaction& txConflicting);
 bool GetEntriesForRBF(const CTransaction& tx, CTxMemPool& m_pool,
                       const CTxMemPool::setEntries setIterConflicting, TxValidationState& state,
                       CTxMemPool::setEntries& allConflicting) EXCLUSIVE_LOCKS_REQUIRED(m_pool.cs);
+
+/** Enforce BIP125 Rule 2: a replacement transaction must not add any new unconfirmed inputs. */
+bool HasNoNewUnconfirmed(const CTransaction& tx, CTxMemPool& m_pool,
+                         const CTxMemPool::setEntries setIterConflicting,
+                         TxValidationState& state) EXCLUSIVE_LOCKS_REQUIRED(m_pool.cs);
 #endif // BITCOIN_POLICY_RBF_H
