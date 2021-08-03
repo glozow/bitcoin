@@ -987,16 +987,20 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
     std::unique_ptr<CTxMemPoolEntry>& entry = ws.m_entry;
 
     // Remove conflicting transactions from the mempool
-    for (CTxMemPool::txiter it : allConflicting)
-    {
-        LogPrint(BCLog::MEMPOOL, "replacing tx %s with %s for %s additional fees, %d delta bytes\n",
-                it->GetTx().GetHash().ToString(),
+    if (allConflicting.size() > 0) {
+        std::string removed_txids;
+        for (const auto& it : allConflicting) {
+            removed_txids += it->GetTx().GetHash().ToString() + ", ";
+            ws.m_replaced_transactions.push_back(it->GetSharedTx());
+        }
+        removed_txids.erase(removed_txids.size() - 2); // trim last delimiter
+        LogPrint(BCLog::MEMPOOL, "replacing %s with %s for %s additional fees, %d delta bytes\n",
+                removed_txids,
                 hash.ToString(),
                 FormatMoney(ws.m_modified_fees - ws.m_conflicting_fees),
                 (int)entry->GetTxSize() - (int)ws.m_conflicting_size);
-        ws.m_replaced_transactions.push_back(it->GetSharedTx());
+        m_pool.RemoveStaged(allConflicting, false, MemPoolRemovalReason::REPLACED);
     }
-    m_pool.RemoveStaged(allConflicting, false, MemPoolRemovalReason::REPLACED);
 
     // This transaction should only count for fee estimation if:
     // - it isn't a BIP 125 replacement transaction (may not be widely supported)
