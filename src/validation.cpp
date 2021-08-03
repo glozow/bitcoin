@@ -1091,10 +1091,19 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
             return PackageMempoolAcceptResult(package_state, std::move(results));
         }
         // Make the coins created by this transaction available for subsequent transactions in the
-        // package to spend. Since we already checked conflicts in the package and we don't allow
-        // replacements, we don't need to track the coins spent. Note that this logic will need to be
-        // updated if package replace-by-fee is allowed in the future.
-        assert(!args.m_allow_bip125_replacement);
+        // package to spend. Since we already checked conflicts, no transaction can spend the parent
+        // of another transaction in the package. We also need to make sure that no package tx
+        // replaces (or replaces the ancestor of) the parent of another package tx. As long as we
+        // do these two things, we don't need to track the coins spent.
+        assert(!args.m_allow_bip125_replacement || IsChildWithParents(txns));
+        for (const auto& entry : ws.m_ancestors) m_collective_ancestors.insert(entry);
+        // Check that collective ancestors and collective conflicts are disjoint, i.e. one package
+        // tx cannot replace the ancestor of another package tx. RBFChecks will do this as well.
+        if (args.m_allow_bip125_replacement && !SpendsAndConflictsDisjoint(m_collective_ancestors, m_txid_conflicts)) {
+            package_state.Invalid(PackageValidationResult::PCKG_TX_POLICY, "package RBF conflict");
+            results.emplace(ws.m_ptx->GetWitnessHash(), MempoolAcceptResult::Failure(ws.m_state));
+            return PackageMempoolAcceptResult(package_state, std::move(results));
+        }
         m_viewmempool.PackageAddTransaction(ws.m_ptx);
     }
 
