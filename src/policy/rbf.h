@@ -50,4 +50,10 @@ bool GetEntriesForConflicts(const CTransaction& tx, CTxMemPool& m_pool,
                             const CTxMemPool::setEntries& setIterConflicting,
                             CTxMemPool::setEntries& allConflicting,
                             std::string& err_string) EXCLUSIVE_LOCKS_REQUIRED(m_pool.cs);
+
+/** BIP125 Rule #2: "The replacement transaction may only include an unconfirmed input if that input
+ * was included in one of the original transactions."  */
+bool HasNoNewUnconfirmed(const CTransaction& tx, const CTxMemPool& m_pool,
+                         const CTxMemPool::setEntries& setIterConflicting,
+                         std::string& err_string) EXCLUSIVE_LOCKS_REQUIRED(m_pool.cs);
 #endif // BITCOIN_POLICY_RBF_H
