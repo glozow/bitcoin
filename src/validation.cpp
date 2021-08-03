@@ -487,7 +487,7 @@ public:
                             /* m_bypass_limits */ false,
                             /* m_coins_to_uncache */ coins_to_uncache,
                             /* m_test_accept */ false,
-                            /* m_allow_bip125_replacement */ false,
+                            /* m_allow_bip125_replacement */ true,
                             /* m_package_submission */ true,
             };
         }
@@ -917,10 +917,6 @@ bool MemPoolAccept::PackageMempoolChecks(const ATMPArgs& args,
                 ws.m_tx_limit_descendants -= 1;
                 ws.m_tx_limit_descendant_size -= child_size;
             }
-            // Note that if RBF is allowed in the future, the descendant counts/sizes of mempool
-            // conflicts should be added to the descendant limit to accurately reflect what the
-            // descendant counts/sizes will be after the transactions are added to the mempool.
-            assert(!args.m_allow_bip125_replacement);
             assert(!m_pool.exists(GenTxid(true, wtxid)));
             // Call CMPA with the updated limits.
             ws.m_ancestors.clear();
@@ -949,6 +945,63 @@ bool MemPoolAccept::PackageMempoolChecks(const ATMPArgs& args,
         // This is a package-wide error, separate from an individual transaction error.
         return package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package-mempool-limits", err_string);
     }
+
+    // Further checks are all RBF-only.
+    if (!args.m_allow_bip125_replacement || m_txid_conflicts.empty()) return true;
+
+    TxValidationState state;
+    // Use the child as the transaction for attributing errors to.
+    const auto hash = workspaces[workspaces.size() - 1].m_ptx->GetHash();
+    const auto total_fees = std::accumulate(workspaces.cbegin(), workspaces.cend(), 0,
+        [](CAmount sum, auto& ws) { return sum + ws.m_modified_fees; });
+
+    const CFeeRate package_feerate(total_fees, total_size);
+    if (!PaysMoreThanConflicts(m_iter_conflicts, package_feerate, state, hash)) {
+        // Copy the rejection string from the placeholder state into the package state
+        return package_state.Invalid(PackageValidationResult::PCKG_POLICY,
+                                     "package RBF failed: insufficient fees",
+                                     state.GetRejectReason());
+    }
+
+    // Calculate all conflicting entries and enforce Rules 2 and 5.
+    for (Workspace& ws : workspaces) {
+        // The aggregated set of conflicts cannot exceed 100.
+        if (!GetEntriesForRBF(*ws.m_ptx, m_pool, m_iter_conflicts, state, m_all_conflicts)) {
+            return package_state.Invalid(PackageValidationResult::PCKG_POLICY,
+                                         "package RBF failed: too many potential replacements",
+                                         state.GetRejectReason());
+        }
+        // None of the transactions are allowed to spend additional unconfirmed inputs, even if they
+        // aren't one of the transactions that conflicts with mempool.
+        if (!HasNoNewUnconfirmed(*ws.m_ptx, m_pool, m_iter_conflicts, state)) {
+            return package_state.Invalid(PackageValidationResult::PCKG_POLICY,
+                                         "package RBF failed: replacement-adds-unconfirmed",
+                                         state.GetRejectReason());
+        }
+    }
+
+    // Check that the union of all direct conflicts and collective ancestors are disjoint
+    std::set<uint256> all_conflicting_txids;
+    std::transform(m_all_conflicts.cbegin(), m_all_conflicts.cend(),
+                   std::inserter(all_conflicting_txids, all_conflicting_txids.end()),
+                   [](const auto& entry) { return entry->GetTx().GetHash(); });
+    if (!SpendsAndConflictsDisjoint(m_collective_ancestors, all_conflicting_txids, state, hash)) {
+        return package_state.Invalid(PackageValidationResult::PCKG_POLICY,
+                                     "package RBF failed: package replaces dependency", state.GetRejectReason());
+    }
+
+    // Check if it's economically rational to mine this package rather than the ones it replaces.
+    m_conflicting_fees = 0;
+    m_conflicting_size = 0;
+    for (CTxMemPool::txiter it : m_all_conflicts) {
+        m_conflicting_fees += it->GetModifiedFee();
+        m_conflicting_size += it->GetTxSize();
+    }
+    if (!PaysForRBF(m_conflicting_fees, m_conflicting_size, total_fees, total_size, state, hash)) {
+        return package_state.Invalid(PackageValidationResult::PCKG_POLICY,
+                                     "package RBF failed: insufficient fees", state.GetRejectReason());
+    }
+
     return true;
 }
 
@@ -1205,7 +1258,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
         for (const auto& entry : ws.m_ancestors) m_collective_ancestors.insert(entry);
         // Check that collective ancestors and collective conflicts are disjoint, i.e. one package
         // tx cannot replace the ancestor of another package tx. RBFChecks will do this as well.
-        if (args.m_allow_bip125_replacement && !SpendsAndConflictsDisjoint(m_collective_ancestors, m_txid_conflicts)) {
+        if (args.m_allow_bip125_replacement &&
+            !SpendsAndConflictsDisjoint(m_collective_ancestors, m_txid_conflicts, ws.m_state, ws.m_ptx->GetHash())) {
             package_state.Invalid(PackageValidationResult::PCKG_TX_POLICY, "package RBF conflict");
             results.emplace(ws.m_ptx->GetWitnessHash(), MempoolAcceptResult::Failure(ws.m_state));
             return PackageMempoolAcceptResult(package_state, std::move(results));
