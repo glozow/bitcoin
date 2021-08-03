@@ -27,6 +27,7 @@ from test_framework.key import (
     compute_xonly_pubkey,
 )
 from test_framework.messages import (
+    MAX_BIP125_RBF_SEQUENCE,
     COIN,
     COutPoint,
     CTransaction,
@@ -363,7 +364,7 @@ def make_chain(node, address, privkeys, parent_txid, parent_value, n=0, parent_l
     amount = parent_value with a fee deducted.
     Return tuple (CTransaction object, raw hex, nValue, scriptPubKey of the output created).
     """
-    inputs = [{"txid": parent_txid, "vout": n}]
+    inputs = [{"txid": parent_txid, "vout": n, "sequence": MAX_BIP125_RBF_SEQUENCE}]
     my_value = parent_value - fee
     outputs = {address : my_value}
     tx = tx_from_hex(node.createrawtransaction(inputs, outputs))
