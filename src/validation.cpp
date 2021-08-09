@@ -565,7 +565,11 @@ private:
     // All the intermediate state that gets passed between the various levels
     // of checking a given transaction.
     struct Workspace {
-        explicit Workspace(const CTransactionRef& ptx) : m_ptx(ptx), m_hash(ptx->GetHash()) {}
+        explicit Workspace(const CTransactionRef& ptx, size_t limit_descendants, size_t limit_descendant_size) :
+            m_ptx(ptx), m_hash(ptx->GetHash()),
+            m_tx_limit_descendants{limit_descendants},
+            m_tx_limit_descendant_size{limit_descendant_size} {}
+
         /** Txids of mempool transactions that this transaction directly conflicts with. */
         std::set<uint256> m_conflicts;
         /** Iterators to mempool entries that this transaction directly conflicts with. */
@@ -602,6 +606,12 @@ private:
         /** A temporary cache containing serialized transaction data for signature verification.
          * Reused across PolicyScriptChecks and ConsensusScriptChecks. */
         PrecomputedTransactionData m_precomputed_txdata;
+
+        // Descendant limits passed in to CalculateMemPoolAncestors() for this transaction.
+        // These may be modified while evaluating a transaction (eg to account for in-mempool
+        // conflicts; see the comment in PreChecks).
+        size_t m_tx_limit_descendants;
+        size_t m_tx_limit_descendant_size;
     };
 
     // Run the policy checks on a given transaction, excluding any script checks.
@@ -666,6 +676,7 @@ private:
     CChainState& m_active_chainstate;
 
     // The package limits in effect at the time of invocation.
+    // The same ancestor limits are applied for every transaction.
     const size_t m_limit_ancestors;
     const size_t m_limit_ancestor_size;
     // These may be modified while evaluating a transaction (eg to account for
@@ -886,12 +897,13 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
         assert(ws.m_iters_conflicting.size() == 1);
         CTxMemPool::txiter conflict = *ws.m_iters_conflicting.begin();
 
-        m_limit_descendants += 1;
-        m_limit_descendant_size += conflict->GetSizeWithDescendants();
+        ws.m_tx_limit_descendants += 1;
+        ws.m_tx_limit_descendant_size += conflict->GetSizeWithDescendants();
     }
 
     std::string errString;
-    if (!m_pool.CalculateMemPoolAncestors(*entry, ws.m_ancestors, m_limit_ancestors, m_limit_ancestor_size, m_limit_descendants, m_limit_descendant_size, errString)) {
+    if (!m_pool.CalculateMemPoolAncestors(*entry, ws.m_ancestors, m_limit_ancestors, m_limit_ancestor_size,
+                                          ws.m_tx_limit_descendants, ws.m_tx_limit_descendant_size, errString)) {
         ws.m_ancestors.clear();
         // If CalculateMemPoolAncestors fails second time, we want the original error string.
         std::string dummy_err_string;
@@ -907,7 +919,10 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
         // outputs - one for each counterparty. For more info on the uses for
         // this, see https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2018-November/016518.html
         if (ws.m_vsize > EXTRA_DESCENDANT_TX_SIZE_LIMIT ||
-                !m_pool.CalculateMemPoolAncestors(*entry, ws.m_ancestors, 2, m_limit_ancestor_size, m_limit_descendants + 1, m_limit_descendant_size + EXTRA_DESCENDANT_TX_SIZE_LIMIT, dummy_err_string)) {
+                !m_pool.CalculateMemPoolAncestors(*entry, ws.m_ancestors, 2, m_limit_ancestor_size,
+                                                  ws.m_tx_limit_descendants + 1,
+                                                  ws.m_tx_limit_descendant_size + EXTRA_DESCENDANT_TX_SIZE_LIMIT,
+                                                  dummy_err_string)) {
             return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-long-mempool-chain", errString);
         }
     }
@@ -1186,7 +1201,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
     AssertLockHeld(cs_main);
     LOCK(m_pool.cs); // mempool "read lock" (held through GetMainSignals().TransactionAddedToMempool())
 
-    Workspace ws(ptx);
+    Workspace ws(ptx, m_limit_descendants, m_limit_descendant_size);
 
     if (!PreChecks(args, ws)) return MempoolAcceptResult::Failure(ws.m_state);
 
@@ -1220,8 +1235,9 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
 
     std::vector<Workspace> workspaces{};
     workspaces.reserve(txns.size());
-    std::transform(txns.cbegin(), txns.cend(), std::back_inserter(workspaces),
-                   [](const auto& tx) { return Workspace(tx); });
+    std::transform(txns.cbegin(), txns.cend(), std::back_inserter(workspaces), [this](const auto& tx) {
+        return Workspace(tx, m_limit_descendants, m_limit_descendant_size);
+    });
     std::map<const uint256, const MempoolAcceptResult> results;
 
     if (const auto v3_violation{CheckV3Inheritance(txns)}) {
