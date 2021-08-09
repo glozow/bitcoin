@@ -523,7 +523,7 @@ private:
     bool PreChecks(ATMPArgs& args, Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Enforce mempool ancestor/descendant limits.
-    bool PackageMempoolChecks(const std::vector<CTransactionRef>& txns,
+    bool PackageMempoolChecks(const ATMPArgs& args, const std::vector<CTransactionRef>& txns,
                               std::vector<Workspace>& workspaces,
                               PackageValidationState& package_state) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
@@ -572,6 +572,11 @@ private:
     // descendant limits, which may be edited to account for the transaction's mempool conflicts.
     const size_t m_limit_descendants;
     const size_t m_limit_descendant_size;
+
+
+    /** In-mempool ancestors of the transaction(s) being validated. If there are multiple
+     * transactions, this is the de-duplicated union of all ancestors. */
+    CTxMemPool::setEntries m_collective_ancestors;
 };
 
 bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
@@ -829,20 +834,63 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     return true;
 }
 
-bool MemPoolAccept::PackageMempoolChecks(const std::vector<CTransactionRef>& txns,
+bool MemPoolAccept::PackageMempoolChecks(const ATMPArgs& args,
+                                         const std::vector<CTransactionRef>& txns,
                                          std::vector<Workspace>& workspaces,
                                          PackageValidationState& package_state)
 {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
 
+    const auto total_size = std::accumulate(workspaces.cbegin(), workspaces.cend(), 0,
+        [](size_t sum, auto& ws) { return sum + GetVirtualTransactionSize(*ws.m_ptx); });
     std::string err_string;
+    // Special case when the package is just two generations with one child at the end: calculate
+    // ancestor and descendant limits by checking each parent individually with the child subtracted
+    // from the limits, then checking the union of all sets of ancestors.
+    if (IsChildWithParents(txns)) {
+        const auto& child = txns[txns.size() - 1];
+        const size_t child_size = GetVirtualTransactionSize(*child);
+        for (Workspace& ws : workspaces) {
+            const auto wtxid = ws.m_ptx->GetWitnessHash();
+            if (wtxid != child->GetWitnessHash()) {
+                // Non-child: subtract the child from descendant limits.
+                ws.m_tx_limit_descendants -= 1;
+                ws.m_tx_limit_descendant_size -= child_size;
+            }
+            // Note that if RBF is allowed in the future, the descendant counts/sizes of mempool
+            // conflicts should be added to the descendant limit to accurately reflect what the
+            // descendant counts/sizes will be after the transactions are added to the mempool.
+            assert(!args.m_allow_bip125_replacement);
+            assert(!m_pool.exists(GenTxid(true, wtxid)));
+            // Call CMPA with the updated limits.
+            ws.m_ancestors.clear();
+            if (!m_pool.CalculateMemPoolAncestors(*ws.m_entry, ws.m_ancestors, m_limit_ancestors,
+                                                  m_limit_ancestor_size, ws.m_tx_limit_descendants,
+                                                  ws.m_tx_limit_descendant_size, err_string)) {
+                return package_state.Invalid(PackageValidationResult::PCKG_POLICY,
+                                             "package-mempool-limits", "exceeds descendant limit");
+            }
+            for (const auto& entry : ws.m_ancestors) m_collective_ancestors.insert(entry);
+        }
+
+        // We included the child when calculating mempool entries' descendant limits.
+        const size_t collective_ancestor_size = std::accumulate(m_collective_ancestors.cbegin(),
+            m_collective_ancestors.cend(), 0, [](size_t sum, auto it) { return sum + it->GetTxSize(); });
+        if (m_collective_ancestors.size() + txns.size() > m_limit_ancestors ||
+            collective_ancestor_size + total_size > m_limit_ancestor_size) {
+            return package_state.Invalid(PackageValidationResult::PCKG_POLICY,
+                                         "package-mempool-limits", "exceeds ancestor limit");
+        }
+        return true;
+    }
+    // Default case: use worst-case heuristics to ensure we don't exceed ancestor/descendant limits.
     if (!m_pool.CheckPackageLimits(txns, m_limit_ancestors, m_limit_ancestor_size, m_limit_descendants,
                                    m_limit_descendant_size, err_string)) {
         // This is a package-wide error, separate from an individual transaction error.
         return package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package-mempool-limits", err_string);
     }
-   return true;
+    return true;
 }
 
 bool MemPoolAccept::PolicyScriptChecks(const ATMPArgs& args, Workspace& ws, PrecomputedTransactionData& txdata)
@@ -1019,7 +1067,9 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     // because it's unnecessary. Also, CPFP carve out can increase the limit for individual
     // transactions, but this exemption is not extended to packages in CheckPackageLimits().
     std::string err_string;
-    if (txns.size() > 1 && !PackageMempoolChecks(txns, workspaces, package_state)) {
+    if (txns.size() > 1 && !PackageMempoolChecks(args, txns, workspaces, package_state)) {
+        // All transactions must have individually passed mempool ancestor and descendant limits
+        // inside of PreChecks(), so this is separate from an individual transaction error.
         return PackageMempoolAcceptResult(package_state, std::move(results));
     }
 
