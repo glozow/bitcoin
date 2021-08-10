@@ -680,10 +680,9 @@ static void CheckInputsAndUpdateCoins(const CTransaction& tx, CCoinsViewCache& m
     UpdateCoins(tx, mempoolDuplicate, std::numeric_limits<int>::max());
 }
 
-void CTxMemPool::check(CChainState& active_chainstate) const
+void CTxMemPool::check() const
 {
     if (m_check_ratio == 0) return;
-
     if (GetRand(m_check_ratio) >= 1) return;
 
     AssertLockHeld(::cs_main);
@@ -694,37 +693,25 @@ void CTxMemPool::check(CChainState& active_chainstate) const
     CAmount check_total_fee{0};
     uint64_t innerUsage = 0;
 
-    CCoinsViewCache& active_coins_tip = active_chainstate.CoinsTip();
-    CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(&active_coins_tip));
-    const int64_t spendheight = active_chainstate.m_chain.Height() + 1;
-
-    std::list<const CTxMemPoolEntry*> waitingOnDependants;
     for (indexed_transaction_set::const_iterator it = mapTx.begin(); it != mapTx.end(); it++) {
-        unsigned int i = 0;
         checkTotal += it->GetTxSize();
         check_total_fee += it->GetFee();
         innerUsage += it->DynamicMemoryUsage();
         const CTransaction& tx = it->GetTx();
         innerUsage += memusage::DynamicUsage(it->GetMemPoolParentsConst()) + memusage::DynamicUsage(it->GetMemPoolChildrenConst());
-        bool fDependsWait = false;
         CTxMemPoolEntry::Parents setParentCheck;
         for (const CTxIn &txin : tx.vin) {
-            // Check that every mempool transaction's inputs refer to available coins, or other mempool tx's.
             indexed_transaction_set::const_iterator it2 = mapTx.find(txin.prevout.hash);
             if (it2 != mapTx.end()) {
                 const CTransaction& tx2 = it2->GetTx();
                 assert(tx2.vout.size() > txin.prevout.n && !tx2.vout[txin.prevout.n].IsNull());
-                fDependsWait = true;
                 setParentCheck.insert(*it2);
-            } else {
-                assert(active_coins_tip.HaveCoin(txin.prevout));
             }
             // Check whether its inputs are marked in mapNextTx.
             auto it3 = mapNextTx.find(txin.prevout);
             assert(it3 != mapNextTx.end());
             assert(it3->first == &txin.prevout);
             assert(it3->second == &tx);
-            i++;
         }
         auto comp = [](const CTxMemPoolEntry& a, const CTxMemPoolEntry& b) -> bool {
             return a.GetTx().GetHash() == b.GetTx().GetHash();
@@ -768,6 +755,55 @@ void CTxMemPool::check(CChainState& active_chainstate) const
         // Also check to make sure size is greater than sum with immediate children.
         // just a sanity check, not definitive that this calc is correct...
         assert(it->GetSizeWithDescendants() >= child_sizes + it->GetTxSize());
+    }
+    for (auto it = mapNextTx.cbegin(); it != mapNextTx.cend(); it++) {
+        uint256 hash = it->second->GetHash();
+        indexed_transaction_set::const_iterator it2 = mapTx.find(hash);
+        const CTransaction& tx = it2->GetTx();
+        assert(it2 != mapTx.end());
+        assert(&tx == it->second);
+    }
+
+    assert(totalTxSize == checkTotal);
+    assert(m_total_fee == check_total_fee);
+    assert(innerUsage == cachedInnerUsage);
+}
+void CTxMemPool::check(CChainState& active_chainstate) const
+{
+    if (m_check_ratio == 0) return;
+
+    if (GetRand(m_check_ratio) >= 1) return;
+
+    AssertLockHeld(::cs_main);
+    LOCK(cs);
+    LogPrint(BCLog::MEMPOOL, "Checking mempool with %u transactions and %u inputs\n", (unsigned int)mapTx.size(), (unsigned int)mapNextTx.size());
+
+    CCoinsViewCache& active_coins_tip = active_chainstate.CoinsTip();
+    CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(&active_coins_tip));
+    const int64_t spendheight = active_chainstate.m_chain.Height() + 1;
+
+    std::list<const CTxMemPoolEntry*> waitingOnDependants;
+    for (indexed_transaction_set::const_iterator it = mapTx.begin(); it != mapTx.end(); it++) {
+        const CTransaction& tx = it->GetTx();
+        bool fDependsWait = false;
+        CTxMemPoolEntry::Parents setParentCheck;
+        for (const CTxIn &txin : tx.vin) {
+            // Check that every mempool transaction's inputs refer to available coins, or other mempool tx's.
+            indexed_transaction_set::const_iterator it2 = mapTx.find(txin.prevout.hash);
+            if (it2 != mapTx.end()) {
+                const CTransaction& tx2 = it2->GetTx();
+                assert(tx2.vout.size() > txin.prevout.n && !tx2.vout[txin.prevout.n].IsNull());
+                fDependsWait = true;
+                setParentCheck.insert(*it2);
+            } else {
+                assert(active_coins_tip.HaveCoin(txin.prevout));
+            }
+        }
+        auto comp = [](const CTxMemPoolEntry& a, const CTxMemPoolEntry& b) -> bool {
+            return a.GetTx().GetHash() == b.GetTx().GetHash();
+        };
+        assert(setParentCheck.size() == it->GetMemPoolParentsConst().size());
+        assert(std::equal(setParentCheck.begin(), setParentCheck.end(), it->GetMemPoolParentsConst().begin(), comp));
 
         if (fDependsWait)
             waitingOnDependants.push_back(&(*it));
@@ -788,17 +824,6 @@ void CTxMemPool::check(CChainState& active_chainstate) const
             stepsSinceLastRemove = 0;
         }
     }
-    for (auto it = mapNextTx.cbegin(); it != mapNextTx.cend(); it++) {
-        uint256 hash = it->second->GetHash();
-        indexed_transaction_set::const_iterator it2 = mapTx.find(hash);
-        const CTransaction& tx = it2->GetTx();
-        assert(it2 != mapTx.end());
-        assert(&tx == it->second);
-    }
-
-    assert(totalTxSize == checkTotal);
-    assert(m_total_fee == check_total_fee);
-    assert(innerUsage == cachedInnerUsage);
 }
 
 bool CTxMemPool::CompareDepthAndScore(const uint256& hasha, const uint256& hashb, bool wtxid)
