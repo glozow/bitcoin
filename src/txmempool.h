@@ -619,6 +619,9 @@ public:
      */
     explicit CTxMemPool(CBlockPolicyEstimator* estimator = nullptr, int check_ratio = 0);
 
+    /** Getter function to give CChainState access to m_check_ratio. */
+    int GetCheckRatio() const { return m_check_ratio; }
+
     /**
      * If sanity-checking is turned on, check makes sure the pool is
      * consistent (does not contain two transactions that spend the same inputs,
