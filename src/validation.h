@@ -776,6 +776,9 @@ public:
         size_t max_coins_cache_size_bytes,
         size_t max_mempool_size_bytes) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
+    /** If periodic check is due, calls mempool internal consistency checks and ensures every
+     * mempool transaction's inputs refer to available coins or mempool outputs. */
+    void CheckMempool() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
     std::string ToString() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
 private:

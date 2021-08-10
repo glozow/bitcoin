@@ -2437,7 +2437,7 @@ bool CChainState::ActivateBestChainStep(BlockValidationState& state, CBlockIndex
         // any disconnected transactions back to the mempool.
         MaybeUpdateMempoolForReorg(disconnectpool, true);
     }
-    if (m_mempool) m_mempool->check(*this);
+    if (m_mempool) CheckMempool();
 
     CheckForkWarningConditions();
 
@@ -4928,4 +4928,75 @@ void ChainstateManager::MaybeRebalanceCaches()
                 m_total_coinstip_cache * 0.95, m_total_coinsdb_cache * 0.95);
         }
     }
+}
+
+static void CheckInputsAndUpdateCoins(const CTransaction& tx, CCoinsViewCache& mempoolDuplicate, const int64_t spendheight)
+{
+    TxValidationState dummy_state; // Not used. CheckTxInputs() should always pass
+    CAmount txfee = 0;
+    bool fCheckResult = tx.IsCoinBase() || Consensus::CheckTxInputs(tx, dummy_state, mempoolDuplicate, spendheight, txfee);
+    assert(fCheckResult);
+    UpdateCoins(tx, mempoolDuplicate, std::numeric_limits<int>::max());
+}
+
+void CChainState::CheckMempool()
+{
+    const auto check_ratio = m_mempool->GetCheckRatio();
+    if (check_ratio == 0) return;
+    if (GetRand(check_ratio) >= 1) return;
+
+    AssertLockHeld(::cs_main);
+    LOCK(m_mempool->cs);
+
+    // Internal consistency checks
+    m_mempool->check();
+
+    const auto filter_unavailable_inputs = [this](const CTxMemPool::txiter it) {
+        CCoinsViewCache& active_coins_tip = CoinsTip();
+        CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(&active_coins_tip));
+        const int64_t spendheight = m_chain.Height() + 1;
+        std::list<const CTxMemPoolEntry*> waitingOnDependants;
+        const CTransaction& tx = it->GetTx();
+        bool fDependsWait = false;
+        CTxMemPoolEntry::Parents setParentCheck;
+        for (const CTxIn &txin : tx.vin) {
+            // Check that every mempool transaction's inputs refer to available coins, or other mempool tx's.
+            const auto it2 = m_mempool->mapTx.find(txin.prevout.hash);
+            if (it2 != m_mempool->mapTx.end()) {
+                const CTransaction& tx2 = it2->GetTx();
+                if (!(tx2.vout.size() > txin.prevout.n && !tx2.vout[txin.prevout.n].IsNull())) return true;
+                fDependsWait = true;
+                setParentCheck.insert(*it2);
+            } else {
+                if (!(active_coins_tip.HaveCoin(txin.prevout))) return true;
+            }
+        }
+        auto comp = [](const CTxMemPoolEntry& a, const CTxMemPoolEntry& b) -> bool {
+            return a.GetTx().GetHash() == b.GetTx().GetHash();
+        };
+        if (!(setParentCheck.size() == it->GetMemPoolParentsConst().size())) return true;
+        if (!(std::equal(setParentCheck.begin(), setParentCheck.end(), it->GetMemPoolParentsConst().begin(), comp))) return true;
+
+        if (fDependsWait)
+            waitingOnDependants.push_back(&(*it));
+        else {
+            CheckInputsAndUpdateCoins(tx, mempoolDuplicate, spendheight);
+        }
+        unsigned int stepsSinceLastRemove = 0;
+        while (!waitingOnDependants.empty()) {
+            const CTxMemPoolEntry* entry = waitingOnDependants.front();
+            waitingOnDependants.pop_front();
+            if (!mempoolDuplicate.HaveInputs(entry->GetTx())) {
+                waitingOnDependants.push_back(entry);
+                stepsSinceLastRemove++;
+                if (!(stepsSinceLastRemove < waitingOnDependants.size())) return true;
+            } else {
+                CheckInputsAndUpdateCoins(entry->GetTx(), mempoolDuplicate, spendheight);
+                stepsSinceLastRemove = 0;
+            }
+        }
+        return false;
+    };
+    CTxMemPool::setEntries entries_spending_unavailable_inputs = m_mempool->GetFiltered(filter_unavailable_inputs);
+    assert(entries_spending_unavailable_inputs.empty());
 }

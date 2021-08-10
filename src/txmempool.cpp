@@ -671,15 +671,6 @@ void CTxMemPool::clear()
     _clear();
 }
 
-static void CheckInputsAndUpdateCoins(const CTransaction& tx, CCoinsViewCache& mempoolDuplicate, const int64_t spendheight)
-{
-    TxValidationState dummy_state; // Not used. CheckTxInputs() should always pass
-    CAmount txfee = 0;
-    bool fCheckResult = tx.IsCoinBase() || Consensus::CheckTxInputs(tx, dummy_state, mempoolDuplicate, spendheight, txfee);
-    assert(fCheckResult);
-    UpdateCoins(tx, mempoolDuplicate, std::numeric_limits<int>::max());
-}
-
 void CTxMemPool::check() const
 {
     if (m_check_ratio == 0) return;
@@ -767,66 +758,6 @@ void CTxMemPool::check() const
     assert(totalTxSize == checkTotal);
     assert(m_total_fee == check_total_fee);
     assert(innerUsage == cachedInnerUsage);
-}
-void CTxMemPool::check(CChainState& active_chainstate) const
-{
-    if (m_check_ratio == 0) return;
-
-    if (GetRand(m_check_ratio) >= 1) return;
-
-    AssertLockHeld(::cs_main);
-    LOCK(cs);
-    LogPrint(BCLog::MEMPOOL, "Checking mempool with %u transactions and %u inputs\n", (unsigned int)mapTx.size(), (unsigned int)mapNextTx.size());
-
-    const auto filter_unavailable_inputs = [this, &active_chainstate](const txiter it) {
-        CCoinsViewCache& active_coins_tip = active_chainstate.CoinsTip();
-        CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(&active_coins_tip));
-        const int64_t spendheight = active_chainstate.m_chain.Height() + 1;
-
-        std::list<const CTxMemPoolEntry*> waitingOnDependants;
-        const CTransaction& tx = it->GetTx();
-        bool fDependsWait = false;
-        CTxMemPoolEntry::Parents setParentCheck;
-        for (const CTxIn &txin : tx.vin) {
-            // Check that every mempool transaction's inputs refer to available coins, or other mempool tx's.
-            indexed_transaction_set::const_iterator it2 = mapTx.find(txin.prevout.hash);
-            if (it2 != mapTx.end()) {
-                const CTransaction& tx2 = it2->GetTx();
-                if (!(tx2.vout.size() > txin.prevout.n && !tx2.vout[txin.prevout.n].IsNull())) return true;
-                fDependsWait = true;
-                setParentCheck.insert(*it2);
-            } else {
-                if (!(active_coins_tip.HaveCoin(txin.prevout))) return true;
-            }
-        }
-        auto comp = [](const CTxMemPoolEntry& a, const CTxMemPoolEntry& b) -> bool {
-            return a.GetTx().GetHash() == b.GetTx().GetHash();
-        };
-        if (!(setParentCheck.size() == it->GetMemPoolParentsConst().size())) return true;
-        if (!(std::equal(setParentCheck.begin(), setParentCheck.end(), it->GetMemPoolParentsConst().begin(), comp))) return true;
-
-        if (fDependsWait)
-            waitingOnDependants.push_back(&(*it));
-        else {
-            CheckInputsAndUpdateCoins(tx, mempoolDuplicate, spendheight);
-        }
-        unsigned int stepsSinceLastRemove = 0;
-        while (!waitingOnDependants.empty()) {
-            const CTxMemPoolEntry* entry = waitingOnDependants.front();
-            waitingOnDependants.pop_front();
-            if (!mempoolDuplicate.HaveInputs(entry->GetTx())) {
-                waitingOnDependants.push_back(entry);
-                stepsSinceLastRemove++;
-                if (!(stepsSinceLastRemove < waitingOnDependants.size())) return true;
-            } else {
-                CheckInputsAndUpdateCoins(entry->GetTx(), mempoolDuplicate, spendheight);
-                stepsSinceLastRemove = 0;
-            }
-        }
-        return false;
-    };
-    setEntries entries_spending_unavailable_inputs = GetFiltered(filter_unavailable_inputs);
-    assert(entries_spending_unavailable_inputs.empty());
 }
 
 bool CTxMemPool::CompareDepthAndScore(const uint256& hasha, const uint256& hashb, bool wtxid)
