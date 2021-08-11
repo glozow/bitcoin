@@ -165,3 +165,29 @@ bool PaysMoreThanConflicts(const CTxMemPool::setEntries& setIterConflicting, CFe
     return true;
 }
 
+bool PaysForRBF(CAmount nConflictingFees, CAmount nModifiedFees, size_t nSize,
+                const uint256& hash, std::string& err_string)
+{
+    // The replacement must pay greater fees than the transactions it
+    // replaces - if we did the bandwidth used by those conflicting
+    // transactions would not be paid for.
+    if (nModifiedFees < nConflictingFees)
+    {
+        err_string = strprintf("rejecting replacement %s, less fees than conflicting txs; %s < %s",
+                    hash.ToString(), FormatMoney(nModifiedFees), FormatMoney(nConflictingFees));
+        return false;
+    }
+
+    // Finally in addition to paying more fees than the conflicts the
+    // new transaction must pay for its own bandwidth.
+    CAmount nDeltaFees = nModifiedFees - nConflictingFees;
+    if (nDeltaFees < ::incrementalRelayFee.GetFee(nSize))
+    {
+        err_string = strprintf("rejecting replacement %s, not enough additional fees to relay; %s < %s",
+                    hash.ToString(),
+                    FormatMoney(nDeltaFees),
+                    FormatMoney(::incrementalRelayFee.GetFee(nSize)));
+        return false;
+    }
+    return true;
+}
