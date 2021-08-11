@@ -5,6 +5,8 @@
 #include <consensus/validation.h>
 #include <logging.h>
 #include <policy/rbf.h>
+#include <policy/settings.h>
+#include <util/moneystr.h>
 #include <util/rbf.h>
 
 RBFTransactionState IsRBFOptIn(const CTransaction& tx, const CTxMemPool& pool)
@@ -161,3 +163,29 @@ bool PaysMoreThanConflicts(const CTxMemPool::setEntries& setIterConflicting, CFe
     return true;
 }
 
+bool PaysForRBF(CAmount nConflictingFees, CAmount nModifiedFees, size_t nSize,
+                TxValidationState& state, const uint256& hash)
+{
+    // The replacement must pay greater fees than the transactions it
+    // replaces - if we did the bandwidth used by those conflicting
+    // transactions would not be paid for.
+    if (nModifiedFees < nConflictingFees)
+    {
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "insufficient fee",
+                strprintf("rejecting replacement %s, less fees than conflicting txs; %s < %s",
+                    hash.ToString(), FormatMoney(nModifiedFees), FormatMoney(nConflictingFees)));
+    }
+
+    // Finally in addition to paying more fees than the conflicts the
+    // new transaction must pay for its own bandwidth.
+    CAmount nDeltaFees = nModifiedFees - nConflictingFees;
+    if (nDeltaFees < ::incrementalRelayFee.GetFee(nSize))
+    {
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "insufficient fee",
+                strprintf("rejecting replacement %s, not enough additional fees to relay; %s < %s",
+                    hash.ToString(),
+                    FormatMoney(nDeltaFees),
+                    FormatMoney(::incrementalRelayFee.GetFee(nSize))));
+    }
+    return true;
+}

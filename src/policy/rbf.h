@@ -72,4 +72,15 @@ bool SpendsAndConflictsDisjoint(const CTxMemPool::setEntries& setAncestors,
 bool PaysMoreThanConflicts(const CTxMemPool::setEntries& setIterConflicting, CFeeRate newFeeRate,
                            TxValidationState& state, const uint256& hash);
 
+/** Enforce BIP125 Rules 3 and 4 to ensure that replacement transaction fees are sufficient to
+ * replace all conflicting mempool entries.
+ * @param[in]   nConflictingFees    Total modified fees of original transaction(s).
+ * @param[in]   nModifiedFees       Total modified fees of replacement transaction(s).
+ * @param[in]   nSize               Total virtual size of replacement transaction(s).
+ * @param[in]   hash                Transaction ID, included in the error message if violation occurs.
+ * returns true if fees are sufficient, false if otherwise.
+ */
+bool PaysForRBF(CAmount nConflictingFees, CAmount nModifiedFees, size_t nSize,
+                TxValidationState& state, const uint256& hash);
+
 #endif // BITCOIN_POLICY_RBF_H
