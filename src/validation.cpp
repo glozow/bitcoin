@@ -771,18 +771,23 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     // pathological case by making sure setConflicts and setAncestors don't
     // intersect.
     if (!EntriesAndTxidsDisjoint(setAncestors, setConflicts, hash, errString)) {
+        // We classify this as a consensus error because a transaction depending on something it
+        // conflicts with would be inconsistent.
         return state.Invalid(TxValidationResult::TX_CONSENSUS, "bad-txns-spends-conflicting-tx", errString);
     }
 
 
-    // If we don't hold the lock allConflicting might be incomplete; the
-    // subsequent RemoveStaged() and addUnchecked() calls don't guarantee
-    // mempool consistency for us.
     fReplacementTransaction = setConflicts.size();
     if (fReplacementTransaction)
     {
         std::string err_string;
         CFeeRate newFeeRate(nModifiedFees, nSize);
+        // It's possible that the replacement pays more fees than its direct conflicts but not more
+        // than all conflicts (i.e. the direct conflicts have high-fee descendants). However, if the
+        // replacement doesn't pay more fees than its direct conflicts, then we can be sure it's not
+        // more economically rational to mine. Before we go digging through the mempool for all
+        // transactions that would need to be removed (direct conflicts and all descendants), check
+        // that the replacement transaction pays more than its direct conflicts.
         if (!PaysMoreThanConflicts(setIterConflicting, newFeeRate, hash, err_string)) {
             return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "insufficient fee", err_string);
         }

@@ -58,19 +58,19 @@ bool GetEntriesForConflicts(const CTransaction& tx,
     uint64_t nConflictingCount = 0;
     for (const auto& mi : iters_conflicting) {
         nConflictingCount += mi->GetCountWithDescendants();
-        // This potentially overestimates the number of actual descendants
-        // but we just want to be conservative to avoid doing too much
-        // work.
+        // BIP125 Rule #5: don't consider replacing more than MAX_BIP125_REPLACEMENT_CANDIDATES
+        // entries from the mempool. This potentially overestimates the number of actual
+        // descendants (i.e. if multiple conflicts share a descendant, it will be counted multiple
+        // times), but we just want to be conservative to avoid doing too much work.
         if (nConflictingCount > MAX_BIP125_REPLACEMENT_CANDIDATES) {
             err_string = strprintf("rejecting replacement %s; too many potential replacements (%d > %d)\n",
-                        hash.ToString(),
-                        nConflictingCount,
-                        MAX_BIP125_REPLACEMENT_CANDIDATES);
+                                   hash.ToString(),
+                                   nConflictingCount,
+                                   MAX_BIP125_REPLACEMENT_CANDIDATES);
             return false;
         }
     }
-    // If not too many to replace, then calculate the set of
-    // transactions that would have to be evicted
+    // Calculate the set of all transactions that would have to be evicted.
     for (CTxMemPool::txiter it : iters_conflicting) {
         pool.CalculateDescendants(it, all_conflicts);
     }
@@ -84,31 +84,25 @@ bool HasNoNewUnconfirmed(const CTransaction& tx, const CTxMemPool& pool,
     AssertLockHeld(pool.cs);
     std::set<uint256> parents_of_conflicts;
     for (const auto& mi : iters_conflicting) {
-        for (const CTxIn &txin : mi->GetTx().vin)
-        {
+        for (const CTxIn &txin : mi->GetTx().vin) {
             parents_of_conflicts.insert(txin.prevout.hash);
         }
     }
 
-    for (unsigned int j = 0; j < tx.vin.size(); j++)
-    {
-        // We don't want to accept replacements that require low
-        // feerate junk to be mined first. Ideally we'd keep track of
-        // the ancestor feerates and make the decision based on that,
-        // but for now requiring all new inputs to be confirmed works.
+    for (unsigned int j = 0; j < tx.vin.size(); j++) {
+        // BIP125 Rule #2: We don't want to accept replacements that require low feerate junk to be
+        // mined first.  Ideally we'd keep track of the ancestor feerates and make the decision
+        // based on that, but for now requiring all new inputs to be confirmed works.
         //
-        // Note that if you relax this to make RBF a little more useful,
-        // this may break the CalculateMempoolAncestors RBF relaxation,
-        // above. See the comment above the first CalculateMempoolAncestors
-        // call for more info.
-        if (!parents_of_conflicts.count(tx.vin[j].prevout.hash))
-        {
-            // Rather than check the UTXO set - potentially expensive -
-            // it's cheaper to just check if the new input refers to a
-            // tx that's in the mempool.
+        // Note that if you relax this to make RBF a little more useful, this may break the
+        // CalculateMempoolAncestors RBF relaxation which subtracts the conflict count/size from the
+        // descendant limit.
+        if (!parents_of_conflicts.count(tx.vin[j].prevout.hash)) {
+            // Rather than check the UTXO set - potentially expensive - it's cheaper to just check
+            // if the new input refers to a tx that's in the mempool.
             if (pool.exists(tx.vin[j].prevout.hash)) {
                 err_string = strprintf("replacement %s adds unconfirmed input, idx %d",
-                            tx.GetHash().ToString(), j);
+                                       tx.GetHash().ToString(), j);
                 return false;
             }
         }
@@ -120,14 +114,12 @@ bool EntriesAndTxidsDisjoint(const CTxMemPool::setEntries& ancestors,
                              const std::set<uint256>& direct_conflicts,
                              const uint256& txid, std::string& err_string)
 {
-    for (CTxMemPool::txiter ancestorIt : ancestors)
-    {
+    for (CTxMemPool::txiter ancestorIt : ancestors) {
         const uint256 &hashAncestor = ancestorIt->GetTx().GetHash();
-        if (direct_conflicts.count(hashAncestor))
-        {
+        if (direct_conflicts.count(hashAncestor)) {
             err_string = strprintf("%s spends conflicting transaction %s",
-                        txid.ToString(),
-                        hashAncestor.ToString());
+                                   txid.ToString(),
+                                   hashAncestor.ToString());
             return false;
         }
     }
@@ -138,27 +130,23 @@ bool PaysMoreThanConflicts(const CTxMemPool::setEntries& iters_conflicting, CFee
                            const uint256& hash, std::string& err_string)
 {
     for (const auto& mi : iters_conflicting) {
-        // Don't allow the replacement to reduce the feerate of the
-        // mempool.
+        // Don't allow the replacement to reduce the feerate of the mempool.
         //
-        // We usually don't want to accept replacements with lower
-        // feerates than what they replaced as that would lower the
-        // feerate of the next block. Requiring that the feerate always
-        // be increased is also an easy-to-reason about way to prevent
-        // DoS attacks via replacements.
+        // We usually don't want to accept replacements with lower feerates than what they replaced
+        // as that would lower the feerate of the next block. Requiring that the feerate always be
+        // increased is also an easy-to-reason about way to prevent DoS attacks via replacements.
         //
-        // We only consider the feerates of transactions being directly
-        // replaced, not their indirect descendants. While that does
-        // mean high feerate children are ignored when deciding whether
-        // or not to replace, we do require the replacement to pay more
-        // overall fees too, mitigating most cases.
+        // We only consider the feerates of transactions being directly replaced, not their indirect
+        // descendants. While that does mean high feerate children are ignored when deciding whether
+        // or not to replace, we do require the replacement to pay more overall fees too, mitigating
+        // most cases.
         CFeeRate original_feerate(mi->GetModifiedFee(), mi->GetTxSize());
         if (replacement_feerate <= original_feerate)
         {
             err_string = strprintf("rejecting replacement %s; new feerate %s <= old feerate %s",
-                        hash.ToString(),
-                        replacement_feerate.ToString(),
-                        original_feerate.ToString());
+                                   hash.ToString(),
+                                   replacement_feerate.ToString(),
+                                   original_feerate.ToString());
             return false;
         }
     }
@@ -168,25 +156,28 @@ bool PaysMoreThanConflicts(const CTxMemPool::setEntries& iters_conflicting, CFee
 bool PaysForRBF(CAmount original_fees, CAmount replacement_fees, size_t replacement_vsize,
                 const uint256& hash, std::string& err_string)
 {
-    // The replacement must pay greater fees than the transactions it
-    // replaces - if we did the bandwidth used by those conflicting
-    // transactions would not be paid for.
+    // BIP125 Rule #3: The replacement fees must be greater than or equal to fees of the
+    // transactions it replaces, otherwise the bandwidth used by those conflicting transactions
+    // would not be paid for.
     if (replacement_fees < original_fees)
     {
         err_string = strprintf("rejecting replacement %s, less fees than conflicting txs; %s < %s",
-                    hash.ToString(), FormatMoney(replacement_fees), FormatMoney(original_fees));
+                               hash.ToString(),
+                               FormatMoney(replacement_fees),
+                               FormatMoney(original_fees));
         return false;
     }
 
-    // Finally in addition to paying more fees than the conflicts the
-    // new transaction must pay for its own bandwidth.
+    // BIP125 Rule #4: The new transaction must pay for its own bandwidth. Otherwise, we have a DoS
+    // vector where attackers can cause a transaction to be replaced (and relayed) repeatedly by
+    // increasing the fee by tiny amounts.
     CAmount additional_fees = replacement_fees - original_fees;
     if (additional_fees < ::incrementalRelayFee.GetFee(replacement_vsize))
     {
         err_string = strprintf("rejecting replacement %s, not enough additional fees to relay; %s < %s",
-                    hash.ToString(),
-                    FormatMoney(additional_fees),
-                    FormatMoney(::incrementalRelayFee.GetFee(replacement_vsize)));
+                               hash.ToString(),
+                               FormatMoney(additional_fees),
+                               FormatMoney(::incrementalRelayFee.GetFee(replacement_vsize)));
         return false;
     }
     return true;

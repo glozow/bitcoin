@@ -39,9 +39,9 @@ RBFTransactionState IsRBFOptInEmptyMempool(const CTransaction& tx);
  * transactions to be replaced and their descendant transactions which will be evicted from the
  * mempool must not exceed a total of 100 transactions." Quit as early as possible. There cannot be
  * more than MAX_BIP125_REPLACEMENT_CANDIDATES potential entries.
- * @param[in]   iters_conflicting  The set of iterators to mempool entries.
+ * @param[in]   iters_conflicting   The set of iterators to mempool entries.
  * @param[out]  err_string          Used to return errors, if any.
- * @param[out]  all_conflicts      Populated with all the mempool entries that would be replaced,
+ * @param[out]  all_conflicts       Populated with all the mempool entries that would be replaced,
  *                                  which includes descendants of iters_conflicting. Not cleared at
  *                                  the start; any existing mempool entries will remain in the set.
  * @returns false if Rule 5 is broken.
@@ -59,11 +59,11 @@ bool HasNoNewUnconfirmed(const CTransaction& tx, const CTxMemPool& pool,
 
 /** Check the intersection between two sets of transactions (a set of mempool entries and a set of
  * txids) to make sure they are disjoint.
- * @param[in]   ancestors    Set of mempool entries corresponding to ancestors of the
- *                              replacement transactions.
+ * @param[in]   ancestors           Set of mempool entries corresponding to ancestors of the
+ *                                  replacement transactions.
  * @param[in]   direct_conflicts    Set of txids corresponding to the mempool conflicts
- *                              (candidates to be replaced).
- * @param[in]   txid            Transaction ID, included in the error message if violation occurs.
+ *                                  (candidates to be replaced).
+ * @param[in]   txid                Transaction ID, included in the error message if violation occurs.
  * returns true if the two sets are disjoint (i.e. intersection is empty), false if otherwise.
  */
 bool EntriesAndTxidsDisjoint(const CTxMemPool::setEntries& ancestors,
@@ -79,9 +79,9 @@ bool PaysMoreThanConflicts(const CTxMemPool::setEntries& iters_conflicting, CFee
 /** Enforce BIP125 Rule #3 "The replacement transaction pays an absolute fee of at least the sum
  * paid by the original transactions." Enforce BIP125 Rule #4 "The replacement transaction must also
  * pay for its own bandwidth at or above the rate set by the node's minimum relay fee setting."
- * @param[in]   original_fees    Total modified fees of original transaction(s).
- * @param[in]   replacement_fees       Total modified fees of replacement transaction(s).
- * @param[in]   replacement_vsize               Total virtual size of replacement transaction(s).
+ * @param[in]   original_fees       Total modified fees of original transaction(s).
+ * @param[in]   replacement_fees    Total modified fees of replacement transaction(s).
+ * @param[in]   replacement_vsize   Total virtual size of replacement transaction(s).
  * @param[in]   hash                Transaction ID, included in the error message if violation occurs.
  * returns true if fees are sufficient, false if otherwise.
  */
