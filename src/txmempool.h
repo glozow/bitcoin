@@ -672,6 +672,10 @@ public:
     /** Translate a set of hashes into a set of pool iterators to avoid repeated lookups */
     setEntries GetIterSet(const std::set<uint256>& hashes) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
+    typedef std::function<bool(const CTxMemPoolEntry&)> EntryFilter;
+    /** Get a set of entries for which a filter applies to. */
+    setEntries GetFiltered(const EntryFilter& filter) const EXCLUSIVE_LOCKS_REQUIRED(cs);
+
     /** Remove a set of transactions from the mempool.
      *  If a transaction is in this set, then all in-mempool descendants must
      *  also be in the set, unless this transaction is being removed for being

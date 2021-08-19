@@ -966,6 +966,18 @@ CTxMemPool::setEntries CTxMemPool::GetIterSet(const std::set<uint256>& hashes) c
     return ret;
 }
 
+CTxMemPool::setEntries CTxMemPool::GetFiltered(const EntryFilter& filter) const
+{
+    AssertLockHeld(cs);
+    CTxMemPool::setEntries filtered_entries;
+    for (auto it = mapTx.cbegin(); it != mapTx.cend(); ++it) {
+        if (filter(*it)) {
+            filtered_entries.insert(it);
+        }
+    }
+    return filtered_entries;
+}
+
 bool CTxMemPool::HasNoInputsOf(const CTransaction &tx) const
 {
     for (unsigned int i = 0; i < tx.vin.size(); i++)
