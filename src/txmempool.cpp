@@ -778,12 +778,12 @@ void CTxMemPool::check(CChainState& active_chainstate) const
     LOCK(cs);
     LogPrint(BCLog::MEMPOOL, "Checking mempool with %u transactions and %u inputs\n", (unsigned int)mapTx.size(), (unsigned int)mapNextTx.size());
 
-    CCoinsViewCache& active_coins_tip = active_chainstate.CoinsTip();
-    CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(&active_coins_tip));
-    const int64_t spendheight = active_chainstate.m_chain.Height() + 1;
+    const auto filter_unavailable_inputs = [this, &active_chainstate](const txiter it) {
+        CCoinsViewCache& active_coins_tip = active_chainstate.CoinsTip();
+        CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(&active_coins_tip));
+        const int64_t spendheight = active_chainstate.m_chain.Height() + 1;
 
-    std::list<const CTxMemPoolEntry*> waitingOnDependants;
-    for (indexed_transaction_set::const_iterator it = mapTx.begin(); it != mapTx.end(); it++) {
+        std::list<const CTxMemPoolEntry*> waitingOnDependants;
         const CTransaction& tx = it->GetTx();
         bool fDependsWait = false;
         CTxMemPoolEntry::Parents setParentCheck;
@@ -792,38 +792,41 @@ void CTxMemPool::check(CChainState& active_chainstate) const
             indexed_transaction_set::const_iterator it2 = mapTx.find(txin.prevout.hash);
             if (it2 != mapTx.end()) {
                 const CTransaction& tx2 = it2->GetTx();
-                assert(tx2.vout.size() > txin.prevout.n && !tx2.vout[txin.prevout.n].IsNull());
+                if (!(tx2.vout.size() > txin.prevout.n && !tx2.vout[txin.prevout.n].IsNull())) return true;
                 fDependsWait = true;
                 setParentCheck.insert(*it2);
             } else {
-                assert(active_coins_tip.HaveCoin(txin.prevout));
+                if (!(active_coins_tip.HaveCoin(txin.prevout))) return true;
             }
         }
         auto comp = [](const CTxMemPoolEntry& a, const CTxMemPoolEntry& b) -> bool {
             return a.GetTx().GetHash() == b.GetTx().GetHash();
         };
-        assert(setParentCheck.size() == it->GetMemPoolParentsConst().size());
-        assert(std::equal(setParentCheck.begin(), setParentCheck.end(), it->GetMemPoolParentsConst().begin(), comp));
+        if (!(setParentCheck.size() == it->GetMemPoolParentsConst().size())) return true;
+        if (!(std::equal(setParentCheck.begin(), setParentCheck.end(), it->GetMemPoolParentsConst().begin(), comp))) return true;
 
         if (fDependsWait)
             waitingOnDependants.push_back(&(*it));
         else {
             CheckInputsAndUpdateCoins(tx, mempoolDuplicate, spendheight);
         }
-    }
-    unsigned int stepsSinceLastRemove = 0;
-    while (!waitingOnDependants.empty()) {
-        const CTxMemPoolEntry* entry = waitingOnDependants.front();
-        waitingOnDependants.pop_front();
-        if (!mempoolDuplicate.HaveInputs(entry->GetTx())) {
-            waitingOnDependants.push_back(entry);
-            stepsSinceLastRemove++;
-            assert(stepsSinceLastRemove < waitingOnDependants.size());
-        } else {
-            CheckInputsAndUpdateCoins(entry->GetTx(), mempoolDuplicate, spendheight);
-            stepsSinceLastRemove = 0;
+        unsigned int stepsSinceLastRemove = 0;
+        while (!waitingOnDependants.empty()) {
+            const CTxMemPoolEntry* entry = waitingOnDependants.front();
+            waitingOnDependants.pop_front();
+            if (!mempoolDuplicate.HaveInputs(entry->GetTx())) {
+                waitingOnDependants.push_back(entry);
+                stepsSinceLastRemove++;
+                if (!(stepsSinceLastRemove < waitingOnDependants.size())) return true;
+            } else {
+                CheckInputsAndUpdateCoins(entry->GetTx(), mempoolDuplicate, spendheight);
+                stepsSinceLastRemove = 0;
+            }
         }
-    }
+        return false;
+    };
+    setEntries entries_spending_unavailable_inputs = GetFiltered(filter_unavailable_inputs);
+    assert(entries_spending_unavailable_inputs.empty());
 }
 
 bool CTxMemPool::CompareDepthAndScore(const uint256& hasha, const uint256& hashb, bool wtxid)
@@ -996,7 +999,7 @@ CTxMemPool::setEntries CTxMemPool::GetFiltered(const EntryFilter& filter) const
     AssertLockHeld(cs);
     CTxMemPool::setEntries filtered_entries;
     for (auto it = mapTx.cbegin(); it != mapTx.cend(); ++it) {
-        if (filter(*it)) {
+        if (filter(it)) {
             filtered_entries.insert(it);
         }
     }

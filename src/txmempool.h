@@ -673,7 +673,7 @@ public:
     /** Translate a set of hashes into a set of pool iterators to avoid repeated lookups */
     setEntries GetIterSet(const std::set<uint256>& hashes) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
-    typedef std::function<bool(const CTxMemPoolEntry&)> EntryFilter;
+    typedef std::function<bool(txiter)> EntryFilter;
     /** Get a set of entries for which a filter applies to. */
     setEntries GetFiltered(const EntryFilter& filter) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
