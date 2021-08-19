@@ -596,6 +596,14 @@ void CTxMemPool::removeForReorg(CChainState& active_chainstate, int flags)
             mapTx.modify(it, update_lock_points(lp));
         }
     }
+    removeForReorg(txToRemove);
+}
+
+void CTxMemPool::removeForReorg(const setEntries& txToRemove)
+{
+    AssertLockHeld(cs);
+    AssertLockHeld(cs_main);
+
     setEntries setAllRemoves;
     for (txiter it : txToRemove) {
         CalculateDescendants(it, setAllRemoves);
