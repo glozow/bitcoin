@@ -949,6 +949,9 @@ bool MemPoolAccept::PackageMempoolChecks(const ATMPArgs& args,
     for (const auto& ws : workspaces) {
         for (const auto& it : ws.m_ancestors) m_collective_ancestors.insert(it);
     }
+    // CheckPackageLimits expects the package transactions to not already be in the mempool.
+    assert(std::all_of(txns.cbegin(), txns.cend(), [this](const auto& tx)
+                       { return !m_pool.exists(GenTxid(false, tx->GetHash()));}));
 
     std::string err_string;
     if (!m_pool.CheckPackageLimits(txns, m_limit_ancestors, m_limit_ancestor_size, m_limit_descendants,
@@ -1256,15 +1259,52 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
         package_state.Invalid(PackageValidationResult::PCKG_POLICY, "not-child-with-parents");
         return PackageMempoolAcceptResult(package_state, {});
     }
-
-    std::vector<Workspace> workspaces{};
-    workspaces.reserve(txns.size());
-    std::transform(txns.cbegin(), txns.cend(), std::back_inserter(workspaces), [this](const auto& tx) {
-        return Workspace(tx, m_limit_descendants, m_limit_descendant_size);
-    });
     std::map<const uint256, const MempoolAcceptResult> results;
 
     LOCK(m_pool.cs);
+
+    // As node operators are free to set their mempool policies however they please, it's possible
+    // for package transaction(s) to already be in the mempool, and we don't want to reject the
+    // entire package in that case (as that could be a censorship vector).  Filter the transactions
+    // that are already in mempool and add their information to results, since we already have it.
+    // Only construct workspaces for the transactions that were not already in mempool and still
+    // need to be validated.
+    std::vector<CTransactionRef> txns_new;
+    std::vector<Workspace> workspaces{};
+    for (const auto& tx : txns) {
+        const auto& wtxid = tx->GetWitnessHash();
+        const auto& txid = tx->GetHash();
+        // There are 3 possibilities: already in mempool, same-txid-diff-wtxid already in mempool,
+        // or not in mempool. An already confirmed tx is treated as one not in mempool.
+        if (m_pool.exists(GenTxid(true, wtxid))) {
+            // Exact transaction already exists in the mempool.
+            auto iter = m_pool.GetIter(wtxid);
+            assert(iter != std::nullopt);
+            results.emplace(wtxid, MempoolAcceptResult::MempoolTx(iter.value()->GetTxSize(), iter.value()->GetFee()));
+        } else if (m_pool.exists(GenTxid(false, txid))) {
+            // Transaction with the same non-witness data but different witness (same txid, different
+            // wtxid) already exists in the mempool.
+            //
+            // We don't allow replacement transactions right now, so just swap the package
+            // transaction for the mempool one.  Note that we are ignoring the validity of the
+            // package transaction passed in.
+            // TODO: allow witness replacement in packages. Only swap mempool and package
+            // transactions if the mempool tx has a smaller witness.
+            auto iter = m_pool.GetIter(wtxid);
+            assert(iter != std::nullopt);
+            results.emplace(txid, MempoolAcceptResult::MempoolTx(iter.value()->GetTxSize(), iter.value()->GetFee()));
+        } else {
+            // Transaction does not already exist in the mempool.
+            workspaces.push_back(Workspace(tx, m_limit_descendants, m_limit_descendant_size));
+            txns_new.push_back(tx);
+        }
+    }
+    assert(txns_new.size() == workspaces.size());
+    // Nothing to do if the entire package has already been submitted.
+    if (txns_new.empty()) return PackageMempoolAcceptResult(package_state, std::move(results));
+    if (IsChildWithParents(txns, /* exact */ true)) {
+        assert(txns_new.size() < 2 || IsChildWithParents(txns_new, /* exact */ false));
+    }
 
     // Do all PreChecks first and fail fast to avoid running expensive script checks when unnecessary.
     for (Workspace& ws : workspaces) {
@@ -1282,7 +1322,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
         // of another transaction in the package. We also need to make sure that no package tx
         // replaces (or replaces the ancestor of) the parent of another package tx. As long as we
         // do these two things, we don't need to track the coins spent.
-        assert(!args.m_allow_bip125_replacement || IsChildWithParents(txns));
+        assert(!args.m_allow_bip125_replacement || IsChildWithParents(txns, /* exact */ true));
         m_viewmempool.PackageAddTransaction(ws.m_ptx);
     }
 
@@ -1305,7 +1345,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     // because it's unnecessary. Also, CPFP carve out can increase the limit for individual
     // transactions, but this exemption is not extended to packages in CheckPackageLimits().
     std::string err_string;
-    if (txns.size() > 1 && !PackageMempoolChecks(args, txns, workspaces, package_state)) {
+    if (txns.size() > 1 && !PackageMempoolChecks(args, txns_new, workspaces, package_state)) {
         return PackageMempoolAcceptResult(package_state, std::move(results));
     }
 

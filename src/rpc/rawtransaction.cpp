@@ -984,9 +984,14 @@ static RPCHelpMan testmempoolaccept()
         }
         auto it = package_result.m_tx_results.find(tx->GetWitnessHash());
         if (exit_early || it == package_result.m_tx_results.end()) {
-            // Validation unfinished. Just return the txid and wtxid.
-            rpc_result.push_back(result_inner);
-            continue;
+            // Try looking it up by txid too. It's possible that a same-txid-different-wtxid
+            // transaction already existed in the mempool.
+            it = package_result.m_tx_results.find(tx->GetHash());
+            if (exit_early || it == package_result.m_tx_results.end()) {
+                // Validation unfinished. Just return the txid and wtxid.
+                rpc_result.push_back(result_inner);
+                continue;
+            }
         }
         const auto& tx_result = it->second;
         if (tx_result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
@@ -1007,6 +1012,12 @@ static RPCHelpMan testmempoolaccept()
                 fees.pushKV("base", ValueFromAmount(fee));
                 result_inner.pushKV("fees", fees);
             }
+        } else if (tx_result.m_result_type == MempoolAcceptResult::ResultType::MEMPOOL_ENTRY) {
+            result_inner.pushKV("allowed", true);
+            result_inner.pushKV("vsize", (int64_t)tx_result.m_vsize.value());
+            UniValue fees(UniValue::VOBJ);
+            fees.pushKV("base", ValueFromAmount(tx_result.m_base_fees.value()));
+            result_inner.pushKV("fees", fees);
         } else {
             result_inner.pushKV("allowed", false);
             const TxValidationState state = tx_result.m_state;
@@ -1139,7 +1150,8 @@ static RPCHelpMan submitrawpackage()
         UniValue result_inner{UniValue::VOBJ};
         result_inner.pushKV("txid", tx->GetHash().GetHex());
         result_inner.pushKV("wtxid", tx->GetWitnessHash().GetHex());
-        CHECK_NONFATAL(it->second.m_result_type == MempoolAcceptResult::ResultType::VALID);
+        CHECK_NONFATAL(it->second.m_result_type == MempoolAcceptResult::ResultType::VALID ||
+                       it->second.m_result_type == MempoolAcceptResult::ResultType::MEMPOOL_ENTRY);
         result_inner.pushKV("vsize", (int64_t)it->second.m_vsize.value());
         UniValue fees(UniValue::VOBJ);
         fees.pushKV("base", ValueFromAmount(it->second.m_base_fees.value()));
