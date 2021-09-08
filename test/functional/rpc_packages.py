@@ -322,7 +322,7 @@ class RPCPackagesTest(BitcoinTestFramework):
             if testres_tx["allowed"] == False:
                 assert_equal(submitres_tx["reject-reason"], testres_tx["reject-reason"])
 
-    def test_submit_child_with_parents(self, num_parents):
+    def test_submit_child_with_parents(self, num_parents, partial_submit=False):
         node = self.nodes[0]
         # Test a package with num_parents parents and 1 child transaction.
         package_hex = []
@@ -337,6 +337,8 @@ class RPCPackagesTest(BitcoinTestFramework):
             package_txns.append(tx)
             values.append(value)
             scripts.append(spk)
+            if partial_submit and random.choice([True, False]):
+                node.sendrawtransaction(txhex)
         child_hex = create_child_with_parents(node, self.address, self.privkeys, package_txns, values, scripts)
         package_hex.append(child_hex)
         package_txns.append(tx_from_hex(child_hex))
@@ -370,6 +372,7 @@ class RPCPackagesTest(BitcoinTestFramework):
         self.log.info("Submitrawpackage valid packages with 1 child and some number of parents")
         for num_parents in [1, 2, 10, 24]:
             self.test_submit_child_with_parents(num_parents)
+            self.test_submit_child_with_parents(num_parents, partial_submit=True)
 
         self.log.info("Submitrawpackage only allows packages of 1 child with its parents")
         # Chain of 3 transactions has too many generations
