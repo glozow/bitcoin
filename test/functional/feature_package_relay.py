@@ -166,7 +166,6 @@ class PackageRelayTest(BitcoinTestFramework):
 
         self.test_package_rbf_basic()
         self.test_package_rbf_rule1()
-        self.test_package_rbf_rule2()
         self.test_package_rbf_rule3()
         self.test_package_rbf_rule4()
         self.test_package_rbf_rule5()
@@ -218,30 +217,6 @@ class PackageRelayTest(BitcoinTestFramework):
 
         assert_raises_rpc_error(-26, "txn-mempool-conflict", node.submitrawpackage, package_hex)
         self.assert_mempool_contents(expected=[tx_from_hex(txhex)] + singleton_txns, unexpected=package_txns)
-        node.generate(1)
-
-    def test_package_rbf_rule2(self):
-        self.log.info("Test that packages cannot RBF if they introduce other unconfirmed inputs")
-        node = self.nodes[0]
-        num_parents = 2
-        parent_coins = self.coins[:num_parents]
-        del self.coins[:num_parents]
-        (package_hex1, package_txns1) = self.create_simple_package(parent_coins, DEFAULT_FEE)
-        node.submitrawpackage(package_hex1)
-        self.assert_mempool_contents(expected=package_txns1)
-
-        # Create a mempool transaction for additional unconfirmed input
-        coin = self.coins.pop()
-        value = coin["amount"]
-        (tx, txhex, _, _) = make_chain(node, self.address, self.privkeys, coin["txid"], value)
-        node.sendrawtransaction(txhex)
-        parent_coins.append({
-            "txid": tx.rehash(),
-            "amount": value - DEFAULT_FEE,
-            "scriptPubKey": tx.vout[0].scriptPubKey.hex(),
-        })
-        (package_hex2, package_txns2) = self.create_simple_package(parent_coins, DEFAULT_FEE * 2)
-        assert_raises_rpc_error(-25, "package RBF failed: replacement adds unconfirmed", node.submitrawpackage, package_hex2)
         node.generate(1)
 
     def test_package_rbf_rule3(self):

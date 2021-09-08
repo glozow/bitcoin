@@ -474,7 +474,7 @@ public:
                             /* m_allow_bip125_replacement */ true,
                             /* m_package_submission */ false,
                             /* m_package_feerates */ false,
-                            /* m_enforce_bip125_rule2 */ true,
+                            /* m_enforce_bip125_rule2 */ false,
             };
         }
 
@@ -503,7 +503,7 @@ public:
                             /* m_allow_bip125_replacement */ true,
                             /* m_package_submission */ true,
                             /* m_package_feerates */ true,
-                            /* m_enforce_bip125_rule2 */ true,
+                            /* m_enforce_bip125_rule2 */ false,
             };
         }
 
