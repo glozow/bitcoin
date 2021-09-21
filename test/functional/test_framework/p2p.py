@@ -468,6 +468,12 @@ class P2PInterface(P2PConnection):
 
         self.wait_until(test_function, timeout=timeout)
 
+    def wait_for_notfound(self, timeout=60):
+        def test_function():
+            return "notfound" in self.last_message
+
+        self.wait_until(test_function, timeout=timeout)
+
     def wait_for_block(self, blockhash, timeout=60):
         def test_function():
             return self.last_message.get("block") and self.last_message["block"].block.rehash() == blockhash
