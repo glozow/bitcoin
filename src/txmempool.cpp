@@ -457,7 +457,7 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, setEntries &setAnces
     nTransactionsUpdated++;
     totalTxSize += entry.GetTxSize();
     m_total_fee += entry.GetFee();
-    if (minerPolicyEstimator) {
+    if (minerPolicyEstimator && entry.GetCountWithAncestors() == 1) {
         minerPolicyEstimator->processTransaction(entry, validFeeEstimate);
     }
 
