@@ -941,7 +941,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
 
     if (!Finalize(args, ws)) return MempoolAcceptResult::Failure(ws.m_state);
 
-    GetMainSignals().TransactionAddedToMempool(ptx, m_pool.GetAndIncrementSequence());
+    GetMainSignals().TransactionAddedToMempool(ptx, *ws.m_entry, m_pool.GetAndIncrementSequence());
 
     return MempoolAcceptResult::Success(std::move(ws.m_replaced_transactions), ws.m_base_fees);
 }

@@ -1008,3 +1008,4 @@ CAmount FeeFilterRounder::round(CAmount currentMinFee)
     }
     return static_cast<CAmount>(*it);
 }
+

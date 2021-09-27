@@ -18,6 +18,7 @@ class CBlock;
 class CBlockIndex;
 struct CBlockLocator;
 class CConnman;
+class CTxMemPoolEntry;
 class CValidationInterface;
 class uint256;
 class CScheduler;
@@ -97,7 +98,7 @@ protected:
      *
      * Called on a background thread.
      */
-    virtual void TransactionAddedToMempool(const CTransactionRef& tx, uint64_t mempool_sequence) {}
+    virtual void TransactionAddedToMempool(const CTransactionRef& tx, const CTxMemPoolEntry& entry, uint64_t mempool_sequence) {}
 
     /**
      * Notifies listeners of a transaction leaving mempool.
@@ -198,7 +199,7 @@ public:
 
 
     void UpdatedBlockTip(const CBlockIndex *, const CBlockIndex *, bool fInitialDownload);
-    void TransactionAddedToMempool(const CTransactionRef&, uint64_t mempool_sequence);
+    void TransactionAddedToMempool(const CTransactionRef& tx, const CTxMemPoolEntry& entry, uint64_t mempool_sequence);
     void TransactionRemovedFromMempool(const CTransactionRef&, MemPoolRemovalReason, uint64_t mempool_sequence);
     void BlockConnected(const std::shared_ptr<const CBlock> &, const CBlockIndex *pindex);
     void BlockDisconnected(const std::shared_ptr<const CBlock> &, const CBlockIndex* pindex);
