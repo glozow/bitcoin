@@ -10,6 +10,8 @@
 #include <uint256.h>
 #include <random.h>
 #include <sync.h>
+#include <txmempool.h>
+#include <validationinterface.h>
 
 #include <array>
 #include <map>
@@ -19,8 +21,6 @@
 
 class CAutoFile;
 class CFeeRate;
-class CTxMemPoolEntry;
-class CTxMemPool;
 class TxConfirmStats;
 
 /* Identifier for each of the 3 different TxConfirmStats which will track
@@ -128,7 +128,7 @@ struct FeeCalculation
  * a certain number of blocks.  Every time a block is added to the best chain, this class records
  * stats on the transactions included in that block
  */
-class CBlockPolicyEstimator
+class CBlockPolicyEstimator : public CValidationInterface
 {
 private:
     /** Track confirm delays up to 12 blocks for short horizon */
