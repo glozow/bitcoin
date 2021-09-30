@@ -290,57 +290,63 @@ class EstimateFeeTest(BitcoinTestFramework):
         self.restart_node(1)
 
     def sanity_check_rbf_estimates(self, utxos):
-        """During 5 blocks, broadcast low fee transactions. Only 10% of them get
-        confirmed and the remaining ones get RBF'd with a high fee transaction at
-        the next block.
-        The block policy estimator should return the high feerate.
+        """During 5 blocks, broadcast low fee transactions. None of them get confirmed.
+        RBF them with high fee transactions and confirm them in the next block.
+        The block policy estimator should only return the high feerate.
         """
         # The broadcaster and block producer
         node = self.nodes[0]
         miner = self.nodes[1]
         # In sat/vb
         low_feerate = 1
-        high_feerate = 10
-        # Cache the utxos of which to replace the spender after it failed to get
-        # confirmed
-        utxos_to_respend = []
-        txids_to_replace = []
+        high_feerate = 50
 
         assert len(utxos) >= 250
         for _ in range(5):
+            utxos_to_respend = []
+            original_txids = []
+            replacement_txids = []
             # Broadcast 45 low fee transactions that will need to be RBF'd
             for _ in range(45):
                 u = utxos.pop(0)
                 txid = send_tx(node, u, low_feerate)
                 utxos_to_respend.append(u)
-                txids_to_replace.append(txid)
-            # Broadcast 5 low fee transaction which don't need to
-            for _ in range(5):
-                send_tx(node, utxos.pop(0), low_feerate)
-            # Mine the transactions on another node
+                original_txids.append(txid)
+
             self.sync_mempools(wait=.1, nodes=[node, miner])
-            for txid in txids_to_replace:
+            # deprioritise transactions to make sure they aren't mined
+            for txid in original_txids:
+                assert txid in node.getrawmempool()
+                assert txid in miner.getrawmempool()
                 miner.prioritisetransaction(txid=txid, fee_delta=-COIN)
+            # Generate blocks on another node
             self.generate(miner, 1)
             self.sync_blocks(wait=.1, nodes=[node, miner])
+            # Everything should still be in the mempool
+            for txid in original_txids:
+                assert txid in node.getrawmempool()
+                assert txid in miner.getrawmempool()
             # RBF the low-fee transactions
-            while True:
-                try:
-                    u = utxos_to_respend.pop(0)
-                    send_tx(node, u, high_feerate)
-                except IndexError:
-                    break
+            for u in utxos_to_respend:
+                new_txid = send_tx(node, u, high_feerate)
+                replacement_txids.append(new_txid)
+            self.sync_mempools(wait=.1, nodes=[node, miner])
+            for txid in original_txids:
+                assert txid not in node.getrawmempool()
+                assert txid not in miner.getrawmempool()
+            for txid in replacement_txids:
+                assert txid in node.getrawmempool()
+                assert txid in miner.getrawmempool()
+            # Mine the replacement transactions into a block
+            self.generate(miner, 1)
+            self.sync_all()
 
-        # Mine the last replacement txs
-        self.sync_mempools(wait=.1, nodes=[node, miner])
-        self.generate(miner, 1)
-        self.sync_blocks(wait=.1, nodes=[node, miner])
-
-        # Only 10% of the transactions were really confirmed with a low feerate,
-        # the rest needed to be RBF'd. We must return the 90% conf rate feerate.
-        high_feerate_kvb = Decimal(high_feerate) / COIN * 10**3
+        assert_equal(0, miner.getmempoolinfo()["size"])
+        assert_equal(0, node.getmempoolinfo()["size"])
+        # estimatesmartfee should return the high feerate; the low feerate transactions never confirmed.
+        high_feerate_kvb = Decimal(high_feerate) / COIN * 1000
         est_feerate = node.estimatesmartfee(2)["feerate"]
-        assert est_feerate == high_feerate_kvb
+        assert_equal(est_feerate, high_feerate_kvb)
 
     def run_test(self):
         self.log.info("This test is time consuming, please be patient")
