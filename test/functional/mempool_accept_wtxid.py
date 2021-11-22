@@ -62,7 +62,7 @@ class MempoolWtxidTest(BitcoinTestFramework):
         privkeys = [node.get_deterministic_priv_key().key]
         raw_parent = node.signrawtransactionwithkey(hexstring=parent.serialize().hex(), privkeys=privkeys)['hex']
         parent_txid = node.sendrawtransaction(hexstring=raw_parent, maxfeerate=0)
-        self.generate(node, 1)
+        self.generate(node, 1) # LMR see what happens if parent is still in mempool
 
         peer_wtxid_relay = node.add_p2p_connection(P2PTxInvStore())
 
@@ -78,6 +78,9 @@ class MempoolWtxidTest(BitcoinTestFramework):
         child_one.wit.vtxinwit[0].scriptWitness.stack = [b'Preimage', b'\x01', witness_script]
         child_one_wtxid = child_one.getwtxid()
         child_one_txid = child_one.rehash()
+        self.log.info("child_txid {}".format(child_one_txid))
+        self.log.info("child_one_wtxid {}".format(child_one_wtxid))
+
 
         # Create another identical transaction with witness solving second branch
         child_two = deepcopy(child_one)
@@ -87,41 +90,81 @@ class MempoolWtxidTest(BitcoinTestFramework):
 
         assert_equal(child_one_txid, child_two_txid)
         assert child_one_wtxid != child_two_wtxid
+        self.log.info("child_two_wtxid {}".format(child_two_wtxid))
+        child_txid = child_one_txid
+
+        # This child of child_one should not be removed from the mempool
+        # when child_two replaces child_one, since grandchild's input
+        # also refers to child_two.
+        # TODO: need to test more than one descendant (e.g. great-grandchile)
+        grandchild = deepcopy(child_one)
+        grandchild.vin[0] = CTxIn(COutPoint(int(child_txid, 16), 0), b"")
+        grandchild.vout[0] = CTxOut(int(9.99992 * COIN), child_script_pubkey)
+        grandchild.wit.vtxinwit[0].scriptWitness.stack = [child_witness_script]
+        grandchild_txid = grandchild.rehash()
 
         self.log.info("Submit child_one to the mempool")
         txid_submitted = node.sendrawtransaction(child_one.serialize().hex())
-        assert_equal(node.getmempoolentry(txid_submitted)['wtxid'], child_one_wtxid)
+        assert_equal(txid_submitted, child_txid)
+        assert_equal(node.getmempoolentry(child_txid)['wtxid'], child_one_wtxid)
 
+        self.log.info("waiting child_one to broadcast")
         peer_wtxid_relay.wait_for_broadcast([child_one_wtxid])
         assert_equal(node.getmempoolinfo()["unbroadcastcount"], 0)
 
-        # testmempoolaccept reports the "already in mempool" error
+        self.log.info("testmempoolaccept child_one, expect already-in-mempool error")
         assert_equal(node.testmempoolaccept([child_one.serialize().hex()]), [{
-            "txid": child_one_txid,
+            "txid": child_txid,
             "wtxid": child_one_wtxid,
             "allowed": False,
             "reject-reason": "txn-already-in-mempool"
         }])
-        assert_equal(node.testmempoolaccept([child_two.serialize().hex()])[0], {
-            "txid": child_two_txid,
-            "wtxid": child_two_wtxid,
-            "allowed": False,
-            "reject-reason": "txn-same-nonwitness-data-in-mempool"
-        })
 
-        # sendrawtransaction will not throw but quits early when the exact same transaction is already in mempool
-        node.sendrawtransaction(child_one.serialize().hex())
+        self.log.info("Submit grandchild (child of child_one) to the mempool")
+        txid_submitted = node.sendrawtransaction(grandchild.serialize().hex())
+        assert_equal(txid_submitted, grandchild_txid)
+        grandchild_wtxid = grandchild.getwtxid()
+        assert_equal(node.getmempoolentry(grandchild_txid)['wtxid'], grandchild_wtxid)
+        self.log.info("grandchild_txid {}".format(grandchild_txid))
+        self.log.info("grandchild_wtxid {}".format(grandchild_wtxid))
+        # TODO this hangs, maybe node doesn't broadcast a tx whose inputs
+        # are from an unconfirmed tx (child_one)?
+        # peer_wtxid_relay.wait_for_broadcast([grandchild_wtxid])
+        mempoolinfo = node.getmempoolinfo()
+        assert_equal(mempoolinfo["size"], 2)
+        # XXX figure this out (0 != 1) assert_equal(mempoolinfo["unbroadcastcount"], 1)
+
+        self.log.info("testmempoolaccept child_two, should allow replacement")
+        mempoolaccept = node.testmempoolaccept([child_two.serialize().hex()])[0]
+        assert_equal(mempoolaccept["txid"], child_txid)
+        assert_equal(mempoolaccept["wtxid"], child_two_wtxid)
+        assert_equal(mempoolaccept["allowed"], True)
+
+        self.log.info("Test child_one remains in the mempool")
+        mempoolentry = node.getmempoolentry(child_txid)
+        assert_equal(mempoolentry["wtxid"], child_one_wtxid)
 
         self.log.info("Connect another peer that hasn't seen child_one before")
         peer_wtxid_relay_2 = node.add_p2p_connection(P2PTxInvStore())
 
         self.log.info("Submit child_two to the mempool")
-        # sendrawtransaction will not throw but quits early when a transaction with the same non-witness data is already in mempool
         node.sendrawtransaction(child_two.serialize().hex())
+        self.log.info("Verify child_two is in the mempool")
+        mempoolentry = node.getmempoolentry(child_txid)
+        assert_equal(mempoolentry["wtxid"], child_two_wtxid)
 
+        self.log.info("Verify grandchild is still in mempool")
+        #x = node.getmempooldescendants(child_txid, 1)
+        x = node.getrawmempool(True)
+        # LMR grandchild is gone, only child_two in the mempool (following will throw)
+        assert_equal(node.getmempoolentry(grandchild_txid)['wtxid'], grandchild_wtxid)
+        self.log.info("Verify there are 2 entries in mempool")
+        mempoolinfo = node.getmempoolinfo()
+        assert_equal(mempoolinfo["size"], 2)
+        
         # The node should rebroadcast the transaction using the wtxid of the correct transaction
-        # (child_one, which is in its mempool).
-        peer_wtxid_relay_2.wait_for_broadcast([child_one_wtxid])
+        # (child_twi, which is in its mempool).
+        peer_wtxid_relay_2.wait_for_broadcast([child_two_wtxid])
         assert_equal(node.getmempoolinfo()["unbroadcastcount"], 0)
 
 if __name__ == '__main__':

@@ -766,6 +766,7 @@ void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendhei
             assert(it3->first == &txin.prevout);
             assert(it3->second == &tx);
         }
+        // LMR this could just compare &a==&b (more efficient)
         auto comp = [](const CTxMemPoolEntry& a, const CTxMemPoolEntry& b) -> bool {
             return a.GetTx().GetHash() == b.GetTx().GetHash();
         };

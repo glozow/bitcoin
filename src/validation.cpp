@@ -518,6 +518,7 @@ private:
          * of the transaction and sigops. */
         int64_t m_vsize;
         /** Fees paid by this transaction: total input amounts subtracted by total output amounts. */
+        bool m_witness_replace{false};      // same txid but better (smaller) witness
         CAmount m_base_fees;
         /** Base fees + any fee delta set by the user with prioritisetransaction. */
         CAmount m_modified_fees;
@@ -642,10 +643,16 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     if (m_pool.exists(GenTxid::Wtxid(tx.GetWitnessHash()))) {
         // Exact transaction already exists in the mempool.
         return state.Invalid(TxValidationResult::TX_CONFLICT, "txn-already-in-mempool");
-    } else if (m_pool.exists(GenTxid::Txid(tx.GetHash()))) {
+    }
+    if (auto mempool_tx = m_pool.get(hash); mempool_tx) {
         // Transaction with the same non-witness data but different witness (same txid, different
         // wtxid) already exists in the mempool.
-        return state.Invalid(TxValidationResult::TX_CONFLICT, "txn-same-nonwitness-data-in-mempool");
+        // As a DoS protection, require the replacement tx to be smaller than the existing
+        // tx by at least 5% (XXX revisit)
+        if (tx.GetTotalSize() > mempool_tx->GetTotalSize() * 95 / 100) {
+            return state.Invalid(TxValidationResult::TX_CONFLICT, "txn-same-nonwitness-data-in-mempool");
+        }
+        ws.m_witness_replace = true;
     }
 
     // Check for conflicts with in-memory transactions
@@ -666,7 +673,11 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                 // Applications relying on first-seen mempool behavior should
                 // check all unconfirmed ancestors; otherwise an opt-in ancestor
                 // might be replaced, causing removal of this descendant.
-                if (!SignalsOptInRBF(*ptxConflicting)) {
+                //
+                // If witness-replace (same txid), the tx is replaceable even
+                // if it is not signaled as RBF. This is because it pays the
+                // same outputs (else txid would be different).
+                if (!ws.m_witness_replace && !SignalsOptInRBF(*ptxConflicting)) {
                     return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "txn-mempool-conflict");
                 }
 
@@ -870,9 +881,11 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
         ws.m_conflicting_fees += it->GetModifiedFee();
         ws.m_conflicting_size += it->GetTxSize();
     }
-    if (const auto err_string{PaysForRBF(ws.m_conflicting_fees, ws.m_modified_fees, ws.m_vsize,
+    if (!ws.m_witness_replace) {
+        if (auto err_string{PaysForRBF(ws.m_conflicting_fees, ws.m_modified_fees, ws.m_vsize,
                                          ::incrementalRelayFee, hash)}) {
-        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "insufficient fee", *err_string);
+            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "insufficient fee", *err_string);
+        }
     }
     return true;
 }
@@ -960,6 +973,7 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
     std::unique_ptr<CTxMemPoolEntry>& entry = ws.m_entry;
 
     // Remove conflicting transactions from the mempool
+    assert(ws.m_replaced_transactions.empty());
     for (CTxMemPool::txiter it : ws.m_all_conflicting)
     {
         LogPrint(BCLog::MEMPOOL, "replacing tx %s with %s for %s additional fees, %d delta bytes\n",
@@ -1014,6 +1028,23 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
     if (!Finalize(args, ws)) return MempoolAcceptResult::Failure(ws.m_state);
 
     GetMainSignals().TransactionAddedToMempool(ptx, m_pool.GetAndIncrementSequence());
+
+    if (ws.m_witness_replace) {
+        // Restore the replaced descendent transactions because they're still valid (txid of the
+        // new transaction is the same as the replaced transaction).
+        ws.m_replaced_transactions.pop_back();
+        ws.m_replaced_transactions.reverse();
+        // XXX the order of these (i.e. when more than one descendant) has not yet been tested
+        for (auto& it : ws.m_replaced_transactions) {
+            CTransaction tx{*it};
+            CTransactionRef txref(MakeTransactionRef(tx));
+            // XXX not sure if we should check for error here, not sure what to do with
+            // an error, and anyway, shouldn't happen because these transactions were
+            // previously in the mempool (and we've held m_pool.cs throughout).
+            // XXX this will lock m_pool.cs recursively
+            AcceptSingleTransaction(txref, args);
+        }
+    }
 
     return MempoolAcceptResult::Success(std::move(ws.m_replaced_transactions), ws.m_vsize, ws.m_base_fees);
 }

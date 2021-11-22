@@ -55,18 +55,10 @@ TransactionError BroadcastTransaction(NodeContext& node, const CTransactionRef t
             // So if the output does exist, then this transaction exists in the chain.
             if (!existingCoin.IsSpent()) return TransactionError::ALREADY_IN_CHAIN;
         }
-
-        if (auto mempool_tx = node.mempool->get(txid); mempool_tx) {
-            // There's already a transaction in the mempool with this txid. Don't
-            // try to submit this transaction to the mempool (since it'll be
-            // rejected as a TX_CONFLICT), but do attempt to reannounce the mempool
-            // transaction if relay=true.
-            //
-            // The mempool transaction may have the same or different witness (and
-            // wtxid) as this transaction. Use the mempool's wtxid for reannouncement.
-            wtxid = mempool_tx->GetWitnessHash();
-        } else {
-            // Transaction is not already in the mempool.
+        if (!node.mempool->exists(GenTxid::Wtxid(wtxid))) {
+            // Exact transaction (including witness) is not already in the mempool,
+            // but tx with different witness may be in the mempool, treat that case
+            // as RBF (except don't remove decendents).
             if (max_tx_fee > 0) {
                 // First, call ATMP with test_accept and check the fee. If ATMP
                 // fails here, return error immediately.
@@ -115,7 +107,9 @@ TransactionError BroadcastTransaction(NodeContext& node, const CTransactionRef t
     }
 
     if (relay) {
-        node.peerman->RelayTransaction(txid, wtxid);
+        if (auto mempool_tx = node.mempool->get(txid); mempool_tx) {
+            node.peerman->RelayTransaction(txid, mempool_tx->GetWitnessHash());
+        }
     }
 
     return TransactionError::OK;
