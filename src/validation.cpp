@@ -1004,8 +1004,11 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
     // This transaction should only count for fee estimation if:
     // - it's not being re-added during a reorg which bypasses typical mempool fee limits
     // - the node is not behind
+    // - this is not a witness replacement. Miners may not have witness replacement implemented
+    //   (yet). TODO: re-include witness replacements in v25.0
     // - the transaction is not dependent on any other transactions in the mempool
-    bool validForFeeEstimation = !bypass_limits && IsCurrentForFeeEstimation(m_active_chainstate) && m_pool.HasNoInputsOf(tx);
+    bool validForFeeEstimation = !bypass_limits && !ws.m_witness_replace &&
+        IsCurrentForFeeEstimation(m_active_chainstate) && m_pool.HasNoInputsOf(tx);
 
     // Store transaction in memory
     m_pool.addUnchecked(*entry, ws.m_ancestors, validForFeeEstimation);
