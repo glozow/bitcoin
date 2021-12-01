@@ -451,6 +451,8 @@ public:
          * any transaction spending the same inputs as a transaction in the mempool is considered
          * a conflict. */
         const bool m_allow_bip125_replacement;
+        /** Whether we allow replacements of same-txid-different-witness transactions. */
+        const bool m_allow_witness_replacement;
 
         /** Parameters for single transaction mempool validation. */
         static ATMPArgs SingleAccept(const CChainParams& chainparams, int64_t accept_time,
@@ -462,6 +464,7 @@ public:
                             /* m_coins_to_uncache */ coins_to_uncache,
                             /* m_test_accept */ test_accept,
                             /* m_allow_bip125_replacement */ true,
+                            /* m_allow_witness_replacement */ false,
             };
         }
 
@@ -474,6 +477,7 @@ public:
                             /* m_coins_to_uncache */ coins_to_uncache,
                             /* m_test_accept */ true,
                             /* m_allow_bip125_replacement */ false,
+                            /* m_allow_witness_replacement */ false,
             };
         }
 
@@ -644,12 +648,10 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
         // Exact transaction already exists in the mempool.
         return state.Invalid(TxValidationResult::TX_CONFLICT, "txn-already-in-mempool");
     }
-    if (auto mempool_tx = m_pool.get(hash); mempool_tx) {
+    if (m_pool.exists(GenTxid::Txid(tx.GetHash()))) {
         // Transaction with the same non-witness data but different witness (same txid, different
         // wtxid) already exists in the mempool.
-        // As a DoS protection, require the replacement tx to be smaller than the existing
-        // tx by at least 5% (XXX revisit)
-        if (tx.GetTotalSize() > mempool_tx->GetTotalSize() * 95 / 100) {
+        if (!args.m_allow_witness_replacement) {
             return state.Invalid(TxValidationResult::TX_CONFLICT, "txn-same-nonwitness-data-in-mempool");
         }
         ws.m_witness_replace = true;
@@ -673,11 +675,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                 // Applications relying on first-seen mempool behavior should
                 // check all unconfirmed ancestors; otherwise an opt-in ancestor
                 // might be replaced, causing removal of this descendant.
-                //
-                // If witness-replace (same txid), the tx is replaceable even
-                // if it is not signaled as RBF. This is because it pays the
-                // same outputs (else txid would be different).
-                if (!ws.m_witness_replace && !SignalsOptInRBF(*ptxConflicting)) {
+                if (!SignalsOptInRBF(*ptxConflicting)) {
                     return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "txn-mempool-conflict");
                 }
 
@@ -685,6 +683,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
             }
         }
     }
+    if (ws.m_witness_replace) Assume(ws.m_conflicts.size() == 1);
 
     LockPoints lp;
     m_view.SetBackend(m_viewmempool);
@@ -854,6 +853,7 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
     const uint256& hash = ws.m_hash;
     TxValidationState& state = ws.m_state;
 
+    if (ws.m_witness_replace) Assume(ws.m_iters_conflicting.size() == 1);
     CFeeRate newFeeRate(ws.m_modified_fees, ws.m_vsize);
     // It's possible that the replacement pays more fees than its direct conflicts but not more
     // than all conflicts (i.e. the direct conflicts have high-fee descendants). However, if the
@@ -870,6 +870,7 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
         return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
                              "too many potential replacements", *err_string);
     }
+
     // Enforce BIP125 Rule #2.
     if (const auto err_string{HasNoNewUnconfirmed(tx, m_pool, ws.m_iters_conflicting)}) {
         return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
@@ -877,13 +878,23 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
     }
     // Check if it's economically rational to mine this transaction rather than the ones it
     // replaces and pays for its own relay fees. Enforce BIP125 Rules #3 and #4.
-    for (CTxMemPool::txiter it : ws.m_all_conflicting) {
-        ws.m_conflicting_fees += it->GetModifiedFee();
-        ws.m_conflicting_size += it->GetTxSize();
-    }
-    if (!ws.m_witness_replace) {
+    if (ws.m_witness_replace) {
+        for (CTxMemPool::txiter it : ws.m_iters_conflicting) {
+            ws.m_conflicting_fees += it->GetModifiedFee();
+            ws.m_conflicting_size += it->GetTxSize();
+        }
+        // As a DoS protection, require the replacement tx to be smaller than the existing
+        // tx by at least 5% (XXX revisit)
+        if (ws.m_vsize * 100 >= ws.m_conflicting_size * 95) {
+            return state.Invalid(TxValidationResult::TX_CONFLICT, "insufficient fees");
+        }
+    } else {
+        for (CTxMemPool::txiter it : ws.m_all_conflicting) {
+            ws.m_conflicting_fees += it->GetModifiedFee();
+            ws.m_conflicting_size += it->GetTxSize();
+        }
         if (auto err_string{PaysForRBF(ws.m_conflicting_fees, ws.m_modified_fees, ws.m_vsize,
-                                         ::incrementalRelayFee, hash)}) {
+                                     ::incrementalRelayFee, hash)}) {
             return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "insufficient fee", *err_string);
         }
     }
@@ -1009,6 +1020,7 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
         if (!m_pool.exists(GenTxid::Txid(hash)))
             return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "mempool full");
     }
+
     return true;
 }
 
