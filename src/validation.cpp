@@ -464,7 +464,7 @@ public:
                             /* m_coins_to_uncache */ coins_to_uncache,
                             /* m_test_accept */ test_accept,
                             /* m_allow_bip125_replacement */ true,
-                            /* m_allow_witness_replacement */ false,
+                            /* m_allow_witness_replacement */ true,
             };
         }
 
