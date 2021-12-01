@@ -49,7 +49,7 @@ class MempoolWtxidTest(BitcoinTestFramework):
         assert_equal(node.getmempoolinfo()['size'], 0)
 
         self.log.info("Submit parent with multiple script branches to mempool")
-        hashlock = hash160(b'Preimage')
+        hashlock = hash160(b'PreimageWhichMakesTheWitnessSignificantlyLargerThanTheOther')
         witness_script = CScript([OP_IF, OP_HASH160, hashlock, OP_EQUAL, OP_ELSE, OP_TRUE, OP_ENDIF])
         witness_program = sha256(witness_script)
         script_pubkey = CScript([OP_0, witness_program])
@@ -75,7 +75,7 @@ class MempoolWtxidTest(BitcoinTestFramework):
         child_one.vin.append(CTxIn(COutPoint(int(parent_txid, 16), 0), b""))
         child_one.vout.append(CTxOut(int(9.99996 * COIN), child_script_pubkey))
         child_one.wit.vtxinwit.append(CTxInWitness())
-        child_one.wit.vtxinwit[0].scriptWitness.stack = [b'Preimage', b'\x01', witness_script]
+        child_one.wit.vtxinwit[0].scriptWitness.stack = [b'PreimageWhichMakesTheWitnessSignificantlyLargerThanTheOther', b'\x01', witness_script]
         child_one_wtxid = child_one.getwtxid()
         child_one_txid = child_one.rehash()
         self.log.info("child_txid {}".format(child_one_txid))
@@ -92,6 +92,7 @@ class MempoolWtxidTest(BitcoinTestFramework):
         assert child_one_wtxid != child_two_wtxid
         self.log.info("child_two_wtxid {}".format(child_two_wtxid))
         child_txid = child_one_txid
+        assert child_one.get_vsize() * 95 > child_two.get_vsize() * 100
 
         # This child of child_one should not be removed from the mempool
         # when child_two replaces child_one, since grandchild's input
