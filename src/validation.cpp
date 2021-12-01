@@ -983,7 +983,12 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
                 (int)entry->GetTxSize() - (int)ws.m_conflicting_size);
         ws.m_replaced_transactions.push_back(it->GetSharedTx());
     }
-    m_pool.RemoveStaged(ws.m_all_conflicting, false, MemPoolRemovalReason::REPLACED);
+    if (ws.m_witness_replace) {
+        // Only remove the direct conflict. Update the descendants.
+        m_pool.RemoveStaged(ws.m_iters_conflicting, /* updateDescendants */ true, MemPoolRemovalReason::REPLACED);
+    } else {
+        m_pool.RemoveStaged(ws.m_all_conflicting, /* updateDescendants */ false, MemPoolRemovalReason::REPLACED);
+    }
 
     // This transaction should only count for fee estimation if:
     // - it's not being re-added during a reorg which bypasses typical mempool fee limits
@@ -993,6 +998,10 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
 
     // Store transaction in memory
     m_pool.addUnchecked(*entry, ws.m_ancestors, validForFeeEstimation);
+    if (ws.m_witness_replace) {
+        // Remember to update the descendants, which were not removed with the original tx.
+        m_pool.UpdateTransactionsFromBlock({hash});
+    }
 
     // trim mempool and check if tx was trimmed
     if (!bypass_limits) {
@@ -1028,23 +1037,6 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
     if (!Finalize(args, ws)) return MempoolAcceptResult::Failure(ws.m_state);
 
     GetMainSignals().TransactionAddedToMempool(ptx, m_pool.GetAndIncrementSequence());
-
-    if (ws.m_witness_replace) {
-        // Restore the replaced descendent transactions because they're still valid (txid of the
-        // new transaction is the same as the replaced transaction).
-        ws.m_replaced_transactions.pop_back();
-        ws.m_replaced_transactions.reverse();
-        // XXX the order of these (i.e. when more than one descendant) has not yet been tested
-        for (auto& it : ws.m_replaced_transactions) {
-            CTransaction tx{*it};
-            CTransactionRef txref(MakeTransactionRef(tx));
-            // XXX not sure if we should check for error here, not sure what to do with
-            // an error, and anyway, shouldn't happen because these transactions were
-            // previously in the mempool (and we've held m_pool.cs throughout).
-            // XXX this will lock m_pool.cs recursively
-            AcceptSingleTransaction(txref, args);
-        }
-    }
 
     return MempoolAcceptResult::Success(std::move(ws.m_replaced_transactions), ws.m_vsize, ws.m_base_fees);
 }
