@@ -2890,6 +2890,18 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             nCMPCTBLOCKVersion = 1;
             m_connman.PushMessage(&pfrom, msgMaker.Make(NetMsgType::SENDCMPCT, fAnnounceUsingCMPCTBLOCK, nCMPCTBLOCKVersion));
         }
+
+        if (m_txreconciliation) {
+            if (!peer->m_wtxid_relay) {
+                // We could have optimistically pre-registered the peer on sending SENDRECON, or
+                // registered upon receiving SENDRECON afterwards.
+                // Now we are sure they won't announce WTXIDRELAY (can't happen after VERACK).
+                // We should clear the reconciliation state of the peer (because we support
+                // reconciliations only based on wtxids).
+                m_txreconciliation->ForgetPeer(pfrom.GetId());
+            }
+        }
+
         pfrom.fSuccessfullyConnected = true;
         return;
     }
