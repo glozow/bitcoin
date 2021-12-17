@@ -165,6 +165,7 @@ const CLogCategoryDesc LogCategories[] =
 #endif
     {BCLog::UTIL, "util"},
     {BCLog::BLOCKSTORE, "blockstorage"},
+    {BCLog::TXRECON, "txrecon"},
     {BCLog::ALL, "1"},
     {BCLog::ALL, "all"},
 };
