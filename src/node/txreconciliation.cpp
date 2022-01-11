@@ -74,6 +74,14 @@ public:
             LogPrint(BCLog::TXRECON, "Forget reconciliation state of peer=%d.\n", peer_id);
         }
     }
+
+    bool IsPeerRegistered(NodeId peer_id) const
+    {
+        LOCK(m_mutex);
+        auto recon_state = m_states.find(peer_id);
+        return (recon_state != m_states.end() &&
+                std::holds_alternative<ReconciliationState>(recon_state->second));
+    }
 };
 
 TxReconciliationTracker::TxReconciliationTracker(uint32_t recon_version) : m_impl{std::make_unique<TxReconciliationTracker::Impl>(recon_version)} {}
@@ -88,4 +96,9 @@ uint64_t TxReconciliationTracker::PreRegisterPeer(NodeId peer_id)
 void TxReconciliationTracker::ForgetPeer(NodeId peer_id)
 {
     m_impl->ForgetPeer(peer_id);
+}
+
+bool TxReconciliationTracker::IsPeerRegistered(NodeId peer_id) const
+{
+    return m_impl->IsPeerRegistered(peer_id);
 }
