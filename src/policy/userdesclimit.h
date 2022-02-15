@@ -8,10 +8,13 @@
 #include <primitives/transaction.h>
 #include <txmempool.h>
 #include <uint256.h>
+#include <util/rbf.h>
 
 #include <optional>
 #include <string>
 
+/** Whether or not we enforce BIPX user-elected descendant limits by default. */
+static constexpr bool DEFAULT_ENFORCE_USER_DESCENDANT_LIMIT{false};
 /** Default floor for user-elected descendant limit, in virtual bytes. */
 static constexpr uint64_t USER_DESCENDANT_LIMIT_FLOOR{5000};
 static constexpr uint64_t USER_DESCENDANT_LIMIT_MULTIPLIER{2};

@@ -4,8 +4,6 @@
 
 #include <policy/userdesclimit.h>
 
-#include <policy/rbf.h>
-
 bool SignalsUserDescendantLimit(const CTransaction& tx)
 {
     for (const CTxIn &txin : tx.vin) {

@@ -457,6 +457,7 @@ class MemPoolAccept
 {
 public:
     explicit MemPoolAccept(CTxMemPool& mempool, CChainState& active_chainstate) : m_pool(mempool), m_view(&m_dummy), m_viewmempool(&active_chainstate.CoinsTip(), m_pool), m_active_chainstate(active_chainstate),
+        m_enforce_user_descendant_limits(gArgs.GetBoolArg("-userdescendantlimits", DEFAULT_ENFORCE_USER_DESCENDANT_LIMIT)),
         m_limit_ancestors(gArgs.GetIntArg("-limitancestorcount", DEFAULT_ANCESTOR_LIMIT)),
         m_limit_ancestor_size(gArgs.GetIntArg("-limitancestorsize", DEFAULT_ANCESTOR_SIZE_LIMIT)*1000),
         m_limit_descendants(gArgs.GetIntArg("-limitdescendantcount", DEFAULT_DESCENDANT_LIMIT)),
@@ -649,6 +650,9 @@ private:
     CCoinsView m_dummy;
 
     CChainState& m_active_chainstate;
+
+    /** Whether we are enforcing BIPX user-elected descendant limits. */
+    const bool m_enforce_user_descendant_limits;
 
     // The package limits in effect at the time of invocation.
     const size_t m_limit_ancestors;
@@ -885,9 +889,10 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
             return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-long-mempool-chain", errString);
         }
     }
-    // Check user-elected descendant limits.
-    if (const auto err_string{CheckUserDescendantLimits(ws.m_ancestors, ws.m_vsize)}) {
-        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "BIPX-descendant-limit", *err_string);
+    if (m_enforce_user_descendant_limits) {
+        if (const auto err_string{CheckUserDescendantLimits(ws.m_ancestors, ws.m_vsize)}) {
+            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "BIPX-descendant-limit", *err_string);
+        }
     }
 
     // A transaction that spends outputs that would be replaced by it is invalid. Now
