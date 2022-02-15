@@ -142,6 +142,7 @@ BASE_SCRIPTS = [
     'interface_bitcoin_cli.py --descriptors',
     'feature_bind_extra.py',
     'mempool_resurrect.py',
+    'mempool_user_desclimits.py',
     'wallet_txn_doublespend.py --mineblock',
     'tool_wallet.py --legacy-wallet',
     'tool_wallet.py --descriptors',
