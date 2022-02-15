@@ -30,6 +30,7 @@
 #include <policy/fees.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
+#include <policy/userdesclimit.h>
 #include <primitives/transaction.h>
 #include <rpc/server.h>
 #include <rpc/server_util.h>
@@ -459,6 +460,7 @@ static std::vector<RPCResult> MempoolEntryDescription() { return {
     RPCResult{RPCResult::Type::ARR, "spentby", "unconfirmed transactions spending outputs from this transaction",
         {RPCResult{RPCResult::Type::STR_HEX, "transactionid", "child transaction id"}}},
     RPCResult{RPCResult::Type::BOOL, "bip125-replaceable", "Whether this transaction could be replaced due to BIP125 (replace-by-fee)"},
+    RPCResult{RPCResult::Type::BOOL, "user-descendant-limits", "Whether this transaction signals user-elected descendant limits"},
     RPCResult{RPCResult::Type::BOOL, "unbroadcast", "Whether this transaction is currently unbroadcast (initial broadcast not yet acknowledged by any peers)"},
 };}
 
@@ -530,6 +532,7 @@ static void entryToJSON(const CTxMemPool& pool, UniValue& info, const CTxMemPool
     }
 
     info.pushKV("bip125-replaceable", rbfStatus);
+    info.pushKV("user-descendant-limits", SignalsUserDescendantLimit(tx));
     info.pushKV("unbroadcast", pool.IsUnbroadcastTx(tx.GetHash()));
 }
 
