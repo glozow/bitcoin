@@ -197,6 +197,7 @@ BITCOIN_CORE_H = \
   policy/policy.h \
   policy/rbf.h \
   policy/settings.h \
+  policy/userdesclimit.h \
   pow.h \
   protocol.h \
   psbt.h \
@@ -363,6 +364,7 @@ libbitcoin_node_a_SOURCES = \
   policy/packages.cpp \
   policy/rbf.cpp \
   policy/settings.cpp \
+  policy/userdesclimit.cpp \
   pow.cpp \
   rest.cpp \
   rpc/blockchain.cpp \

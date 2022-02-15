@@ -29,6 +29,7 @@
 #include <policy/policy.h>
 #include <policy/rbf.h>
 #include <policy/settings.h>
+#include <policy/userdesclimit.h>
 #include <pow.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
@@ -883,6 +884,10 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                 !m_pool.CalculateMemPoolAncestors(*entry, ws.m_ancestors, 2, m_limit_ancestor_size, m_limit_descendants + 1, m_limit_descendant_size + EXTRA_DESCENDANT_TX_SIZE_LIMIT, dummy_err_string)) {
             return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-long-mempool-chain", errString);
         }
+    }
+    // Check user-elected descendant limits.
+    if (const auto err_string{CheckUserDescendantLimits(ws.m_ancestors, ws.m_vsize)}) {
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "BIPX-descendant-limit", *err_string);
     }
 
     // A transaction that spends outputs that would be replaced by it is invalid. Now
