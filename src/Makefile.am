@@ -184,6 +184,7 @@ BITCOIN_CORE_H = \
   node/coinstats.h \
   node/context.h \
   node/miner.h \
+  node/miner_util.h \
   node/minisketchwrapper.h \
   node/psbt.h \
   node/transaction.h \
