@@ -24,6 +24,7 @@
 #include <validationinterface.h>
 
 #include <cmath>
+#include <numeric>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -898,6 +899,19 @@ CTxMemPool::setEntries CTxMemPool::GetIterSet(const std::set<uint256>& hashes) c
     return ret;
 }
 
+std::vector<CTxMemPool::txiter> CTxMemPool::GetIterVec(const std::vector<uint256>& txids) const
+{
+    AssertLockHeld(cs);
+    std::vector<txiter> ret;
+    ret.reserve(txids.size());
+    for (const auto& txid : txids) {
+        const auto it{GetIter(txid)};
+        if (!it) return {};
+        ret.push_back(*it);
+    }
+    return ret;
+}
+
 bool CTxMemPool::HasNoInputsOf(const CTransaction &tx) const
 {
     for (unsigned int i = 0; i < tx.vin.size(); i++)
@@ -1127,7 +1141,6 @@ void CTxMemPool::SetLoadTried(bool load_tried)
     m_load_tried = load_tried;
 }
 
-
 std::string RemovalReasonToString(const MemPoolRemovalReason& r) noexcept
 {
     switch (r) {
@@ -1139,4 +1152,48 @@ std::string RemovalReasonToString(const MemPoolRemovalReason& r) noexcept
         case MemPoolRemovalReason::REPLACED: return "replaced";
     }
     assert(false);
+}
+
+std::vector<CTxMemPool::txiter> CTxMemPool::CalculateCluster(const std::vector<uint256>& txids) const
+{
+    AssertLockHeld(cs);
+    std::vector<txiter> cluster{GetIterVec(txids)};
+    if (cluster.size() != txids.size()) {
+        // We can't continue because the caller specified a tx that doesn't exist in the mempool.
+        // Return an empty vector to let them know this failed.
+        return {};
+    }
+    // Reserve total ancestor + descendant counts of each transaction.  This is an approximation; it
+    // may overestimate because transactions may share ancestors/descendants, and may underestimate
+    // because the cluster may include more than just ancestors and descendants.
+    cluster.reserve(std::accumulate(cluster.cbegin(), cluster.cend(), 0, [](size_t sum, const auto it) {
+        return sum + it->GetCountWithAncestors() + it->GetCountWithDescendants() - 1; }));
+    {
+        // Use epoch: visiting an entry means we have added it to the cluster vector. It does not
+        // necessarily mean the entry has been processed.
+        WITH_FRESH_EPOCH(m_epoch);
+        for (const auto& it : cluster) {
+            visited(it);
+        }
+        // i = index of where the list of entries to process starts
+        for (size_t i{0}, to_process_count{txids.size()}; i < to_process_count; ++i) {
+            for (const CTxMemPoolEntry& parent_entry : cluster.at(i)->GetMemPoolParentsConst()) {
+                const auto parent_it = mapTx.iterator_to(parent_entry);
+                if (!visited(parent_it)) {
+                    cluster.push_back(parent_it);
+                    // we still need to process this
+                    ++to_process_count;
+                }
+            }
+            for (const CTxMemPoolEntry& child_entry : cluster.at(i)->GetMemPoolChildrenConst()) {
+                const auto child_it = mapTx.iterator_to(child_entry);
+                if (!visited(child_it)) {
+                    cluster.push_back(child_it);
+                    // we still need to process this
+                    ++to_process_count;
+                }
+            }
+        }
+    }
+    return cluster;
 }
