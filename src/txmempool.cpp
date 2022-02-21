@@ -22,6 +22,7 @@
 #include <validationinterface.h>
 
 #include <cmath>
+#include <numeric>
 #include <optional>
 
 // Helpers for modifying CTxMemPool::mapTx, which is a boost multi_index.
@@ -996,6 +997,24 @@ CTxMemPool::setEntries CTxMemPool::GetIterSet(const std::set<uint256>& hashes) c
     return ret;
 }
 
+std::vector<CTxMemPool::txiter> CTxMemPool::GetIterVec(const std::vector<uint256>& txids) const
+{
+    std::vector<txiter> ret;
+    ret.reserve(txids.size());
+    for (const auto& txid : txids) {
+        const auto it = GetIter(txid);
+        assert(it);
+        if (it) {
+            ret.push_back(*it);
+        } else {
+            // return empty vector to let the caller know this failed.
+            std::vector<txiter> empty_vector;
+            return empty_vector;
+        }
+    }
+    return ret;
+}
+
 bool CTxMemPool::HasNoInputsOf(const CTransaction &tx) const
 {
     for (unsigned int i = 0; i < tx.vin.size(); i++)
@@ -1226,4 +1245,59 @@ void CTxMemPool::SetLoadTried(bool load_tried)
 {
     LOCK(cs);
     m_load_tried = load_tried;
+}
+
+std::vector<CTxMemPool::txiter> CTxMemPool::CalculateCluster(const std::vector<uint256>& txids) const
+{
+    AssertLockHeld(cs);
+    std::vector<txiter> cluster{GetIterVec(txids)};
+    assert(cluster.size() == txids.size());
+    cluster.reserve(std::accumulate(cluster.cbegin(), cluster.cend(), 0, [](size_t sum, const auto it) {
+        return sum + it->GetCountWithAncestors() + it->GetCountWithDescendants(); }));
+    {
+        // Use epoch: visiting an entry means we have added it to the cluster vector.
+        WITH_FRESH_EPOCH(m_epoch);
+        for (const auto& it : cluster) {
+            visited(it);
+        }
+        // i = index of where the list of unprocessed starts
+        for (size_t i{0}, unprocessed_count{txids.size()}; i < unprocessed_count; ++i) {
+            const auto curr = cluster[i];
+            for (const CTxMemPoolEntry& parent_entry : curr->GetMemPoolParentsConst()) {
+                const auto parent_it = mapTx.iterator_to(parent_entry);
+                if (!visited(parent_it)) {
+                    if (parent_entry.GetCountWithAncestors() == 1 &&
+                        parent_entry.GetCountWithDescendants() == 1) {
+                        // We don't need to process this entry. Just add it to the processed
+                        // transactions and skip.
+                        std::swap(cluster[i+1], cluster.back());
+                        cluster[i+1] = parent_it;
+                        ++i; 
+                    } else {
+                        cluster.push_back(parent_it);
+                        // we still need to process this 
+                        ++unprocessed_count;
+                    }
+                }
+            }
+            for (const CTxMemPoolEntry& child_entry : curr->GetMemPoolChildrenConst()) {
+                const auto child_it = mapTx.iterator_to(child_entry);
+                if (!visited(child_it)) {
+                    if (child_entry.GetCountWithAncestors() == 1 &&
+                        child_entry.GetCountWithDescendants() == 1) {
+                        // We don't need to process this entry. Just add it to the processed
+                        // transactions and skip.
+                        std::swap(cluster[i+1], cluster.back());
+                        cluster[i+1] = child_it;
+                        ++i; 
+                    } else {
+                        cluster.push_back(child_it);
+                        // we still need to process this 
+                        ++unprocessed_count;
+                    }
+                }
+            }
+        }
+    }
+    return cluster;
 }
