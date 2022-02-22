@@ -430,4 +430,91 @@ void BlockAssembler::addPackageTxs(int& nPackagesSelected, int& nDescendantsUpda
         nDescendantsUpdated += UpdatePackagesForAdded(ancestors, mapModifiedTx);
     }
 }
+
+std::map<uint256, std::pair<CAmount, uint64_t>> BlockAssembler::CalculateScores(const std::vector<uint256>& txids)
+{
+    pblocktemplate.reset(new CBlockTemplate());
+    std::map<uint256, std::pair<CAmount, uint64_t>> txid_to_scores;
+
+    LOCK(m_mempool.cs);
+    // Get the cluster of related transactions for txids and sort by ancestor feerate
+    std::vector<CTxMemPool::txiter> cluster{m_mempool.CalculateCluster(txids)};
+    std::sort(cluster.begin(), cluster.end(),
+        [](const auto& a, const auto& b){ return CompareTxMemPoolEntryByAncestorFee()(*a, *b);});
+    auto cluster_iter = cluster.begin();
+
+    // mapModifiedTx will store sorted packages after they are modified
+    // because some of their txs are already in the block
+    indexed_modified_transaction_set mapModifiedTx;
+    CTxMemPool::setEntries placeholder_failed_set;
+
+    CTxMemPool::txiter iter;
+    CFeeRate last_score(MAX_MONEY, 1);
+
+    while (cluster_iter != cluster.end() || !mapModifiedTx.empty()) {
+        // First try to find a new transaction in mapTx to evaluate.
+        if (cluster_iter != cluster.end() &&
+            SkipMapTxEntry(*cluster_iter, mapModifiedTx, placeholder_failed_set)) {
+            ++cluster_iter;
+            continue;
+        }
+
+        // Decide which entry to use next (the top entry from cluster or from mapModifiedTx) based
+        // on which has the higher ancestor feerate.
+        // Set the mining score as cluster_iter's ancestor feerate for now. The value of this var
+        // might change if we decide the mapModifiedTx entry is better instead.
+        CAmount ancestor_set_fee{(*cluster_iter)->GetModFeesWithAncestors()};
+        uint64_t ancestor_set_size{(*cluster_iter)->GetSizeWithAncestors()};
+        CFeeRate mining_score(ancestor_set_fee, ancestor_set_size);
+        modtxscoreiter modit = mapModifiedTx.get<ancestor_score>().begin();
+        if (cluster_iter == cluster.end()) {
+            // We're out of entries in mapTx; use the entry from mapModifiedTx
+            iter = modit->iter;
+            ancestor_set_fee = modit->nModFeesWithAncestors;
+            ancestor_set_size = modit->nSizeWithAncestors;
+            mining_score = CFeeRate(ancestor_set_fee, ancestor_set_size);
+        } else {
+            // Try to compare the mapTx entry to the mapModifiedTx entry
+            iter = *cluster_iter;
+            if (modit != mapModifiedTx.get<ancestor_score>().end() &&
+                CompareTxMemPoolEntryByAncestorFee()(*modit, CTxMemPoolModifiedEntry(iter))) {
+                // The best entry in mapModifiedTx has higher score
+                // than the one from mapTx.
+                // Switch which transaction (package) to consider
+                iter = modit->iter;
+                ancestor_set_fee = modit->nModFeesWithAncestors;
+                ancestor_set_size = modit->nSizeWithAncestors;
+                mining_score = CFeeRate(ancestor_set_fee, ancestor_set_size);
+            } else {
+                // Either no entry in mapModifiedTx, or it's worse than mapTx.
+                // Increment for the next loop iteration.
+                ++cluster_iter;
+            }
+        }
+
+        // We skip mapTx entries that are inBlock, and mapModifiedTx shouldn't
+        // contain anything that is inBlock.
+        assert(!inBlock.count(iter));
+        // Sanity check: we should be going in descending mining score order
+        assert(mining_score <= last_score);
+        last_score = mining_score;
+
+        CTxMemPool::setEntries ancestors;
+        uint64_t nNoLimit = std::numeric_limits<uint64_t>::max();
+        std::string dummy;
+        m_mempool.CalculateMemPoolAncestors(*iter, ancestors, nNoLimit, nNoLimit, nNoLimit, nNoLimit, dummy, false);
+        onlyUnconfirmed(ancestors);
+        ancestors.insert(iter);
+
+        for (auto iter : ancestors) {
+            txid_to_scores.emplace(iter->GetTx().GetHash(), std::make_pair(ancestor_set_fee, ancestor_set_size));
+            AddToBlock(iter);
+            mapModifiedTx.erase(iter);
+        }
+
+        // Update transactions that depend on each of these
+        UpdatePackagesForAdded(ancestors, mapModifiedTx);
+    }
+    return txid_to_scores;
+}
 } // namespace node

@@ -163,6 +163,9 @@ public:
     /** Construct a new block template with coinbase to scriptPubKeyIn */
     std::unique_ptr<CBlockTemplate> CreateNewBlock(const CScript& scriptPubKeyIn);
 
+    /** Calculate the scores of these transactions by building a block template of its connected family. */
+    [[nodiscard]] std::map<uint256, std::pair<CAmount, uint64_t>> CalculateScores(const std::vector<uint256>& txids);
+
     inline static std::optional<int64_t> m_last_block_num_txs{};
     inline static std::optional<int64_t> m_last_block_weight{};
 
