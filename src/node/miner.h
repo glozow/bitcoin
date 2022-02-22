@@ -118,6 +118,20 @@ int64_t UpdateTime(CBlockHeader* pblock, const Consensus::Params& consensusParam
 
 /** Update an old GenerateCoinbaseCommitment from CreateNewBlock after the block txs have changed */
 void RegenerateCommitments(CBlock& block, ChainstateManager& chainman);
+
+class MiningScoreCalculator
+{
+    /** Mempool reference */
+    const CTxMemPool& m_mempool;
+
+    /** Requested txids */
+    const std::vector<uint256>& m_txids;
+public:
+    MiningScoreCalculator(const CTxMemPool& pool, const std::vector<uint256>& txids) :
+        m_mempool{pool}, m_txids(txids) {}
+    std::map<uint256, CFeeRate> GetScores();
+};
+
 } // namespace node
 
 #endif // BITCOIN_NODE_MINER_H
