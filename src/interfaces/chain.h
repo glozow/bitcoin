@@ -205,6 +205,33 @@ public:
     //! Calculate mempool ancestor and descendant counts for the given transaction.
     virtual void getTransactionAncestry(const uint256& txid, size_t& ancestors, size_t& descendants, size_t* ancestorsize = nullptr, CAmount* ancestorfees = nullptr) = 0;
 
+    //! For each outpoint, calculate the fee-bumping cost to spend this outpoint at the specified
+    //  feerate, including bumping its ancestors. For example, if the target feerate is 10sat/vbyte
+    //  and this outpoint refers to a mempool transaction at 5sat/vbyte, the bump fee includes the
+    //  cost to bump the mempool transaction to 10sat/vbyte (i.e. 5 * mempooltx.vsize). If that
+    //  transaction also has, say, an unconfirmed parent with a feerate of 1sat/vbyte, the bump fee
+    //  includes the cost to bump the parent (i.e. 9 * parentmempooltx.vsize).
+    //
+    //  If the outpoint comes from an unconfirmed transaction that is already above the target
+    //  feerate or bumped by its descendant(s) already, it does not need to be bumped. Its bump fee
+    //  is 0. Likewise, if any of the transaction's ancestors are already bumped, they are not
+    //  included in the transaction's bump fee.
+    //
+    //  This includes fee-bumping in RBFs. If an outpoint conflicts with another transaction in the
+    //  mempool, it is assumed that the goal is to replace that transaction. As such, the
+    //  calculation will exclude the to-be-replaced transaction, but will include the fee-bumping
+    //  cost. If bump fees of descendants of the to-be-replaced transaction are requested, the value
+    //  will be 0. Fee-related RBF rules are not included as they are logically distinct.
+    //
+    //  Any outpoints that otherwise unavailable from the mempool (e.g. UTXOs from confirmed
+    //  transactions or transactions not yet broadcast by the wallet) are given a bump fee of 0.
+    //
+    //  If multiple outpoints come from the same transaction (this should be very rare because
+    //  the transaction essentially multiple change outputs or paid the same wallet using multiple
+    //  outputs in the same transaction) or have shared ancestry, the bump fees are calculated
+    //  independently, i.e. as if only one of them is spent. This may result in double-fee-bumping.
+    virtual std::map<COutPoint, CAmount> CalculateBumpFees(const std::vector<COutPoint>& outpoints, const CFeeRate& target_feerate) = 0;
+
     //! Get the node's package limits.
     //! Currently only returns the ancestor and descendant count limits, but could be enhanced to
     //! return more policy settings.
