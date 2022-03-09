@@ -21,6 +21,7 @@
 #include <node/blockstorage.h>
 #include <node/coin.h>
 #include <node/context.h>
+#include <node/miner.h>
 #include <node/transaction.h>
 #include <node/ui_interface.h>
 #include <policy/feerate.h>
@@ -602,6 +603,14 @@ public:
         ancestors = descendants = 0;
         if (!m_node.mempool) return;
         m_node.mempool->GetTransactionAncestry(txid, ancestors, descendants, ancestorsize, ancestorfees);
+    }
+    std::optional<std::map<uint256, std::pair<CAmount, uint64_t>>> getClusterMiningScores(const std::vector<uint256>& txids) override
+    {
+        if (!m_node.mempool) return std::nullopt;
+        for (const auto& txid : txids) {
+            if (!m_node.mempool->exists(GenTxid::Txid(txid))) return std::nullopt;
+        }
+        return node::BlockAssembler(chainman().ActiveChainstate(), *m_node.mempool, Params()).CalculateScores(txids);
     }
     void getPackageLimits(unsigned int& limit_ancestor_count, unsigned int& limit_descendant_count) override
     {
