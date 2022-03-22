@@ -10,6 +10,7 @@
 #include <uint256.h>
 #include <random.h>
 #include <sync.h>
+#include <validationinterface.h>
 
 #include <array>
 #include <map>
@@ -128,7 +129,7 @@ struct FeeCalculation
  * a certain number of blocks.  Every time a block is added to the best chain, this class records
  * stats on the transactions included in that block
  */
-class CBlockPolicyEstimator
+class CBlockPolicyEstimator : public CValidationInterface
 {
 private:
     /** Track confirm delays up to 12 blocks for short horizon */
@@ -192,6 +193,8 @@ public:
     /** Process a transaction accepted to the mempool*/
     void processTransaction(const CTxMemPoolEntry& entry, bool validFeeEstimate)
         EXCLUSIVE_LOCKS_REQUIRED(!m_cs_fee_estimator);
+
+    void TransactionAddedToMempool(const CTransactionRef& ptx, const TxMempoolInfo& txinfo, uint64_t mempool_sequence) override;
 
     /** Remove a transaction from the mempool tracking stats*/
     bool removeTx(uint256 hash, bool inBlock)
