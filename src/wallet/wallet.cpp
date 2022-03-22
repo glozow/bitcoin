@@ -1260,11 +1260,11 @@ void CWallet::SyncTransaction(const CTransactionRef& ptx, const SyncTxState& sta
     MarkInputsDirty(ptx);
 }
 
-void CWallet::transactionAddedToMempool(const CTransactionRef& tx, uint64_t mempool_sequence) {
+void CWallet::transactionAddedToMempool(const TxMempoolInfo& txinfo, uint64_t mempool_sequence) {
     LOCK(cs_wallet);
-    SyncTransaction(tx, TxStateInMempool{});
+    SyncTransaction(txinfo.tx, TxStateInMempool{});
 
-    auto it = mapWallet.find(tx->GetHash());
+    auto it = mapWallet.find(txinfo.tx->GetHash());
     if (it != mapWallet.end()) {
         RefreshMempoolStatus(it->second, chain());
     }

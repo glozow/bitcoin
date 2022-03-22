@@ -28,6 +28,7 @@ enum class RBFTransactionState;
 struct bilingual_str;
 struct CBlockLocator;
 struct FeeCalculation;
+struct TxMempoolInfo;
 namespace node {
 struct NodeContext;
 } // namespace node
@@ -233,7 +234,7 @@ public:
     {
     public:
         virtual ~Notifications() {}
-        virtual void transactionAddedToMempool(const CTransactionRef& tx, uint64_t mempool_sequence) {}
+        virtual void transactionAddedToMempool(const TxMempoolInfo& txinfo, uint64_t mempool_sequence) {}
         virtual void transactionRemovedFromMempool(const CTransactionRef& tx, MemPoolRemovalReason reason, uint64_t mempool_sequence) {}
         virtual void blockConnected(const CBlock& block, int height) {}
         virtual void blockDisconnected(const CBlock& block, int height) {}
