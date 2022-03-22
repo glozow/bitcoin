@@ -339,6 +339,9 @@ struct TxMempoolInfo
 
     /** The fee delta. */
     int64_t nFeeDelta;
+
+    /** Chain height at which the transaction was added to the mempool. */
+    uint64_t entry_height;
 };
 
 /** Reason why a transaction was removed from the mempool,
