@@ -109,6 +109,30 @@ class SendReconTest(BitcoinTestFramework):
             peer.send_message(create_sendrecon_msg())
             peer.send_message(msg_verack())
 
+        # Outbound
+        self.log.info('SENDRECON sent to an outbound')
+        peer = self.nodes[0].add_outbound_p2p_connection(
+            SendReconSender(), wait_for_verack=False, p2p_idx=1, connection_type="outbound-full-relay")
+        peer.wait_until(lambda: peer.sendrecon_msg_received)
+        assert peer.sendrecon_msg_received.initiator
+        assert not peer.sendrecon_msg_received.responder
+        assert_equal(peer.sendrecon_msg_received.version, 1)
+
+        self.log.info('SENDRECON should not be sent if block-relay-only')
+        peer = self.nodes[0].add_outbound_p2p_connection(
+            SendReconSender(), wait_for_verack=False, p2p_idx=2, connection_type="block-relay-only")
+        peer.wait_for_verack()
+        assert not peer.sendrecon_msg_received
+
+        self.log.info('SENDRECON with initiator=1 and responder=0 from outbound triggers a disconnect')
+        sendrecon_wrong_role = create_sendrecon_msg()
+        sendrecon_wrong_role.initiator = True
+        sendrecon_wrong_role.responder = False
+        peer = self.nodes[0].add_outbound_p2p_connection(
+            SendReconSender(), wait_for_verack=False, p2p_idx=3, connection_type="outbound-full-relay")
+        peer.send_message(sendrecon_wrong_role)
+        peer.wait_for_disconnect()
+
 class SendReconBlocksOnlyTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
