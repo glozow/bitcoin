@@ -2733,25 +2733,6 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         if (greatest_common_version >= WTXID_RELAY_VERSION) {
             m_connman.PushMessage(&pfrom, msg_maker.Make(NetMsgType::WTXIDRELAY));
 
-            if (m_txreconciliation) {
-                // We announce reconciliation support only if this connection supports relaying
-                // transactions when they arrive (which is not the case for blocks-only nodes,
-                // block-relay-only connections, etc.).
-                // Also, we announce reconciliation support only for protocol versions above
-                // WTXID_RELAY per BIP-330.
-                if (peer->m_tx_relay && !m_ignore_incoming_txs) {
-                    const uint64_t recon_salt = m_txreconciliation->PreRegisterPeer(pfrom.GetId());
-                    // Per the protocol, only the inbound peer initiate reconciliations and the
-                    // outbound peer is supposed to only respond. Here we suggest our roles in
-                    // reconciliations (initiator/responder) based on the connection direction.
-                    // If the way we assign reconciliation roles is updated, reconciliation
-                    // protocol version should be bumped.
-                    m_connman.PushMessage(&pfrom, msg_maker.Make(NetMsgType::SENDRECON,
-                                                                 !pfrom.IsInboundConn(),
-                                                                 pfrom.IsInboundConn(),
-                                                                 RECON_VERSION, recon_salt));
-                }
-            }
         }
 
         // Signal ADDRv2 support (BIP155).
@@ -2791,6 +2772,25 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 tx_relay->m_relay_txs = fRelay; // set to true after we get the first filter* message
             }
             if (fRelay) pfrom.m_relays_txs = true;
+            if (greatest_common_version >= WTXID_RELAY_VERSION && m_txreconciliation) {
+                // We announce reconciliation support only if this connection supports relaying
+                // transactions when they arrive (which is not the case for blocks-only nodes,
+                // block-relay-only connections, etc.).
+                // Also, we announce reconciliation support only for protocol versions above
+                // WTXID_RELAY per BIP-330.
+                if (pfrom.m_relays_txs && !m_ignore_incoming_txs) {
+                    const uint64_t recon_salt = m_txreconciliation->PreRegisterPeer(pfrom.GetId());
+                    // Per the protocol, only the inbound peer initiate reconciliations and the
+                    // outbound peer is supposed to only respond. Here we suggest our roles in
+                    // reconciliations (initiator/responder) based on the connection direction.
+                    // If the way we assign reconciliation roles is updated, reconciliation
+                    // protocol version should be bumped.
+                    m_connman.PushMessage(&pfrom, msg_maker.Make(NetMsgType::SENDRECON,
+                                                                 !pfrom.IsInboundConn(),
+                                                                 pfrom.IsInboundConn(),
+                                                                 RECON_VERSION, recon_salt));
+                }
+            }
         }
 
         if((nServices & NODE_WITNESS))
@@ -3030,6 +3030,13 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         if (pfrom.fSuccessfullyConnected) {
             // Disconnect peers that send a SENDRECON message after VERACK.
             LogPrint(BCLog::NET, "sendrecon received after verack from peer=%d; disconnecting\n", pfrom.GetId());
+            pfrom.fDisconnect = true;
+            return;
+        }
+
+        if (!peer->GetTxRelay()) {
+            // Disconnect peers that send a SENDRECON message if transaction relay is turned off.
+            LogPrint(BCLog::NET, "sendrecon received from non-transaction relaying peer=%d; disconnecting\n", pfrom.GetId());
             pfrom.fDisconnect = true;
             return;
         }
