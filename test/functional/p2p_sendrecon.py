@@ -15,6 +15,7 @@ from test_framework.p2p import (
     P2PInterface,
     P2P_SERVICES,
     P2P_SUBVERSION,
+    P2P_VERSION,
 )
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import assert_equal
@@ -66,6 +67,17 @@ class SendReconTest(BitcoinTestFramework):
         peer.wait_for_verack()
         assert not peer.sendrecon_msg_received
 
+        self.log.info('SENDRECON for fRelay=false should not be sent')
+        peer = self.nodes[0].add_p2p_connection(SendReconSender(), send_version=False, wait_for_verack=False)
+        no_txrelay_version_msg = msg_version()
+        no_txrelay_version_msg.nVersion = P2P_VERSION
+        no_txrelay_version_msg.strSubVer = P2P_SUBVERSION
+        no_txrelay_version_msg.nServices = P2P_SERVICES
+        no_txrelay_version_msg.relay = 0
+        peer.send_message(no_txrelay_version_msg)
+        peer.wait_for_verack()
+        assert not peer.sendrecon_msg_received
+
         # Checks for the node *receiving* SENDRECON
         self.log.info('valid SENDRECON')
         peer = self.nodes[0].add_p2p_connection(SendReconSender(), send_version=True, wait_for_verack=False)
@@ -104,7 +116,7 @@ class SendReconTest(BitcoinTestFramework):
         peer.wait_for_disconnect()
 
         self.log.info('SENDRECON without WTXIDRELAY is ignored (recon state is erased after VERACK)')
-        with self.nodes[0].assert_debug_log(['Forget reconciliation state of peer=7']):
+        with self.nodes[0].assert_debug_log(['Forget reconciliation state of peer=8']):
             peer = self.nodes[0].add_p2p_connection(SendReconSender(wtxidrelay=False), send_version=True, wait_for_verack=False)
             peer.send_message(create_sendrecon_msg())
             peer.send_message(msg_verack())
