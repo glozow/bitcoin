@@ -33,11 +33,6 @@ The following rules are enforced for all packages:
 * Packages cannot have conflicting transactions, i.e. no two transactions in a package can spend
    the same inputs. Packages cannot have duplicate transactions. (#20833)
 
-* No transaction in a package can conflict with a mempool transaction. Replace By Fee is
-  currently disabled for packages. (#20833)
-
-   - Package RBF may be enabled in the future.
-
 * When packages are evaluated against ancestor/descendant limits, the union of all transactions'
   descendants and ancestors is considered. (#21800)
 
@@ -77,6 +72,12 @@ enforced for test accepts):
      a competing package or transaction with a mutated witness, even though the two
      same-txid-different-witness transactions are conflicting and cannot replace each other, the
      honest package should still be considered for acceptance.
+
+* To meet the two feerate requirements of a mempool, i.e., the pre-configured minimum relay feerate
+  (`minRelayTxFee`) and the dynamic mempool minimum feerate, the [package
+feerate](#Package-Fees-and-Feerate) is used in place of the individual feerate.
+
+* Package RBF is allowed, under [certain conditions](#Package-Replace-by-Fee).
 
 ### Package Fees and Feerate
 
@@ -122,3 +123,53 @@ backward-compatible for users and applications that rely on p2p transaction rela
 package validation should not prevent the acceptance of a transaction that would otherwise be
 policy-valid on its own. By always accepting a transaction that passes individual validation before
 trying package validation, we prevent any unintentional restriction of policy.
+
+### Package Replace by Fee
+
+A transaction conflicts with an in-mempool transaction ("directly conflicting transaction") if they
+spend one or more of the same inputs. A transaction may conflict with multiple in-mempool
+transactions. A directly conflicting transaction's and its descendants (together, "original
+transactions") must be evicted if the replacement transaction is accepted.
+
+A package may contain one or more transactions that have directly conflicting transactions but do
+not have high enough fees to meet the [replacement policy for individual
+transactions](./mempool-replacements.md).  Similar to other fee-related requirements, [package
+feerate](#Package-Fees-and-Feerate) may allow these transactions to be replaced.
+
+A package may replace mempool transaction(s) ("Package RBF") under the following conditions:
+
+1. All package transactions with mempool conflicts must be V3. This also means the "sponsoring"
+   child transaction must be V3.
+
+*Note*: Combined with the V3 rules, this means the package must be a child-with-parents package.
+Since package validation is only attempted if the transactions do not pay sufficient fees to be
+accepted on their own, this effectively means that only V3 transactions can pay to replace their
+parents' conflicts.
+
+*Rationale*: The fee-related rules are economically rational for ancestor packages, but not
+necessarily other types of packages. A child-with-parents package is a type of ancestor package. It
+may be fine to allow any ancestor package, but it's more difficult to account for all of the
+possibilities, e.g. descendant limits.
+
+2. All original transactions signal replaceability, i.e., either through BIP125 or through being V3.
+
+3. The minimum between package feerate and ancestor feerate of the child is not lower than the
+   individual feerates of all directly conflicting transactions and the ancestor feerates of all
+   original transactions.
+
+*Rationale*: Attempt to ensure that the replacement transactions are not less incentive-compatible
+to mine.
+
+4. The deduplicated package fee pays an absolute fee of at least the sum paid by the original transactions.
+   The additional fees (difference between absolute fee paid by the package after deduplication and the
+   sum paid by the original transactions) pays for the package's bandwidth at or above the rate set
+   by the node's incremental relay feerate. For example, if the incremental relay feerate is 1
+   satoshi/vB and the package after deduplication contains 500 virtual bytes total, then the package
+   fees after deduplication is at least 500 satoshis higher than the sum of the original transactions.
+
+*Rationale*: Prevent network-wide DoS where replacements using the same outpoints are relayed over
+and over again; require the replacement transactions to pay for relay using "new" fees. This
+rule is taken from the [replacement policy for individual transactions](./mempool-replacements.md),
+treating the package as one composite transaction.
+
+5. The number of original transactions does not exceed 100.
