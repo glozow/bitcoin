@@ -33,11 +33,6 @@ The following rules are enforced for all packages:
 * Packages cannot have conflicting transactions, i.e. no two transactions in a package can spend
    the same inputs. Packages cannot have duplicate transactions. (#20833)
 
-* No transaction in a package can conflict with a mempool transaction. Replace By Fee is
-  currently disabled for packages. (#20833)
-
-   - Package RBF may be enabled in the future.
-
 * When packages are evaluated against ancestor/descendant limits, the union of all transactions'
   descendants and ancestors is considered. (#21800)
 
@@ -72,6 +67,12 @@ test accepts):
      a competing package or transaction with a mutated witness, even though the two
      same-txid-different-witness transactions are conflicting and cannot replace each other, the
      honest package should still be considered for acceptance.
+
+* To meet the two feerate requirements of a mempool, i.e., the pre-configured minimum relay feerate
+  (`minRelayTxFee`) and the dynamic mempool minimum feerate, the [package
+feerate](#Package-Fees-and-Feerate) is used in place of the individual feerate.
+
+* Package RBF is allowed, under [certain conditions](#Package-Replace-by-Fee).
 
 ### Package Fees and Feerate
 
@@ -117,3 +118,63 @@ backward-compatible for users and applications that rely on p2p transaction rela
 package validation should not prevent the acceptance of a transaction that would otherwise be
 policy-valid on its own. By always accepting a transaction that passes individual validation before
 trying package validation, we prevent any unintentional restriction of policy.
+
+### Package Replace by Fee
+
+A package may replace mempool transaction(s) ("Package RBF") under the following conditions:
+
+1. The package is child-with-parents.
+
+*Rationale*: The fee-related rules are economically rational for ancestor packages, but not
+necessarily other types of packages.
+
+However, allowing replacement for all ancestor packages also might not make sense due to the
+increased complexity.
+
+2. At least one of the following signaling conditions is met:
+
+    1a. All of the directly conflicting transactions signal BIP125 replaceability explicitly.
+
+	*Rationale*: Any transaction that is replaceable without package RBF should still be
+	replaceable.
+
+    1b. All directly conflicting transactions have `nVersion=3` and each package transaction that
+        conflicts with a mempool transaction also has `nVersion=3`.
+
+	*Rationale*: This helps preserve the mempool policy that any transaction spending an
+	unconfirmed `nVersion=3` transaction must also have `nVersion=3`. Otherwise, the child of a
+	`nVersion=3` transaction could be replaced by a non-`nVersion=3` transaction, and thus there
+	would be an `nVersion=3` transaction in the mempool with a non-`nVersion=3` child.
+
+	*Rationale*: Since V3 is inherited, this form of RBF signaling is implicitly inherited. That is,
+	while a V3 transaction is unconfirmed, any descendant(s) accepted to the mempool must also be
+	V3 and are thus also replaceable.
+
+3. The child transaction does not conflict with any transactions in the mempool.
+
+*Rationale*: Reduce complexity. Package RBF is intended for scenarios in which the user cannot
+change the parent transaction (e.g. they were presigned with an untrusted party), but has control
+over the child. For example, Package RBF can be used to replace the commitment transaction of an LN
+counterparty by attaching a high-fee child to an anchor output. If the user later wants to update
+the child (e.g. a further fee-bump), that can be done using a single transaction.
+
+4. The minimum between package feerate and ancestor feerate of the child is not lower than the
+   individual feerates of all directly conflicting transactions and the ancestor feerates of all
+   original transactions.
+
+*Rationale*: Attempt to ensure that the replacement transactions are not less incentive-compatible
+to mine.
+
+5. The package fee pays an absolute fee of at least the sum paid by the original transactions.
+   The additional fees (difference between absolute fee paid by the package after deduplication and the
+   sum paid by the original transactions) pays for the package's bandwidth at or above the rate set
+   by the node's incremental relay feerate. For example, if the incremental relay feerate is 1
+   satoshi/vB and the package after deduplication contains 500 virtual bytes total, then the package
+   fees after deduplication is at least 500 satoshis higher than the sum of the original transactions.
+
+*Rationale*: These fee-related rules are identical to the replacement [policy for individual
+transactions](./mempool-replacements.md), treating the package (after deduplication) as one
+composite transaction. This works because all of the transactions in a
+child-with-unconfirmed-parents package are in the ancestor set of the child transaction.
+
+6. The number of original transactions does not exceed 100.
