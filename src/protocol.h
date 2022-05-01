@@ -262,6 +262,14 @@ extern const char* WTXIDRELAY;
  * Indicates that a node wants to relay packages.
  */
 extern const char* SENDPACKAGES;
+/**
+ * Requests all or none of a list of transactions, specified by wtxid.
+ */
+extern const char* GETPKGTXNS;
+/**
+ * List of transactions.
+ */
+extern const char* PKGTXNS;
 }; // namespace NetMsgType
 
 /* Get a vector of all valid message types (see above) */

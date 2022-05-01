@@ -4,19 +4,45 @@
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 """Test package relay messages"""
 
+import time
+
 from test_framework.messages import (
+    msg_getpkgtxns,
+    msg_pkgtxns,
     msg_sendpackages,
     msg_verack,
     msg_wtxidrelay,
+    MSG_WTX,
 )
 from test_framework.p2p import (
     p2p_lock,
     P2PInterface,
+    P2PDataStore,
+    UNCONDITIONAL_RELAY_DELAY,
 )
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
 )
+from test_framework.wallet import (
+    COIN,
+    DEFAULT_FEE,
+    MiniWallet,
+)
+
+class PeerPackageRelayer(P2PDataStore):
+    def __init__(self):
+        super().__init__()
+        self.pkgtxns_received = []
+        self.txns_received = []
+
+    def on_pkgtxns(self, message):
+        super().on_pkgtxns(message)
+        self.pkgtxns_received.append(message)
+
+    def on_tx(self, message):
+        super().on_tx(message)
+        self.txns_received.append(message.tx)
 
 class PackageRelayer(P2PInterface):
     def __init__(self, send_sendpackages=True, send_wtxidrelay=True):
@@ -46,6 +72,25 @@ class PackageRelayTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
         self.extra_args = [["-packagerelay=1"]]
+
+    def create_package(self):
+        """Create package with these transactions:
+        - Parent 1: version=3, fee=default
+        - Parent 2: version=3, fee=0
+        - Child:    version=3, fee=high
+        """
+        parent1 = self.wallet.create_self_transfer(version=3)
+        parent2 = self.wallet.create_self_transfer(fee_rate=0, fee=0, version=3)
+        child = self.wallet.create_self_transfer_multi(
+            utxos_to_spend=[parent1['new_utxo'], parent2["new_utxo"]],
+            num_outputs=1,
+            fee_per_output=int(DEFAULT_FEE * COIN),
+            version=3
+        )
+        package_hex = [parent1["hex"], parent2["hex"], child["hex"]]
+        package_txns = [parent1["tx"], parent2["tx"], child["tx"]]
+        package_wtxids = [tx.getwtxid() for tx in package_txns]
+        return package_hex, package_txns, package_wtxids
 
     def test_sendpackages(self):
         self.log.info("Test sendpackages during version handshake")
@@ -81,8 +126,27 @@ class PackageRelayTest(BitcoinTestFramework):
         peer_sendpackages_after_verack.send_message(msg_sendpackages())
         peer_sendpackages_after_verack.wait_for_disconnect()
 
+    def test_pkgtxns(self):
+        node = self.nodes[0]
+        package_hex, package_txns, package_wtxids = self.create_package()
+        node.submitpackage(package_hex)
+        for tx in package_txns:
+            assert node.getmempoolentry(tx.rehash())
+        node.setmocktime(int(time.time() + UNCONDITIONAL_RELAY_DELAY))
+
+        peer_requester = node.add_p2p_connection(PackageRelayer())
+        getpkgtxns_request = msg_getpkgtxns([int(wtxid, 16) for wtxid in package_wtxids])
+        peer_requester.send_and_ping(getpkgtxns_request)
+        assert_equal(node.getpeerinfo()[0]["bytesrecv_per_msg"]["getpkgtxns"], 25 + len(package_txns) * 32)
+        assert_equal(node.getpeerinfo()[0]["bytessent_per_msg"]["pkgtxns"], 25 + sum(len(tx.serialize()) for tx in package_txns))
+
     def run_test(self):
+        self.wallet = MiniWallet(self.nodes[0])
+        self.generate(self.wallet, 160)
+
         self.test_sendpackages()
+        self.test_pkgtxns()
+
 
 if __name__ == '__main__':
     PackageRelayTest().main()
