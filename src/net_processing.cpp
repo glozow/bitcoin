@@ -21,6 +21,7 @@
 #include <netbase.h>
 #include <netmessagemaker.h>
 #include <node/blockstorage.h>
+#include <node/txdownloadman.h>
 #include <node/txreconciliation.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
@@ -35,8 +36,6 @@
 #include <timedata.h>
 #include <tinyformat.h>
 #include <txmempool.h>
-#include <txorphanage.h>
-#include <txrequest.h>
 #include <util/check.h> // For NDEBUG compile time check
 #include <util/strencodings.h>
 #include <util/trace.h>
@@ -709,10 +708,10 @@ private:
     ChainstateManager& m_chainman;
     CTxMemPool& m_mempool;
 
-    /** Protects tx download including TxRequest, rejection filter. */
+    /** Protects tx download including TxRequest, TxDownloadManager, rejection filter. */
     mutable Mutex m_tx_download_mutex;
-    TxRequestTracker m_txrequest GUARDED_BY(m_tx_download_mutex);
     std::unique_ptr<TxReconciliationTracker> m_txreconciliation;
+    node::TxDownloadManager m_txdownloadman GUARDED_BY(m_tx_download_mutex);
 
     /** The height of the best chain */
     std::atomic<int> m_best_height{-1};
@@ -936,9 +935,6 @@ private:
 
     /** Number of peers from which we're downloading blocks. */
     int m_peers_downloading_from GUARDED_BY(cs_main) = 0;
-
-    /** Storage for orphan information */
-    TxOrphanage m_orphanage;
 
     void AddToCompactExtraTransactions(const CTransactionRef& tx) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
 
@@ -1440,7 +1436,7 @@ void PeerManagerImpl::AddTxAnnouncement(const CNode& node, const GenTxid& gtxid,
     AssertLockHeld(::cs_main); // for State
     AssertLockHeld(m_tx_download_mutex); // For m_txrequest
     NodeId nodeid = node.GetId();
-    if (!node.HasPermission(NetPermissionFlags::Relay) && m_txrequest.Count(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) {
+    if (!node.HasPermission(NetPermissionFlags::Relay) && m_txdownloadman.TxRequestCount(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) {
         // Too many queued announcements from this peer
         return;
     }
@@ -1458,9 +1454,9 @@ void PeerManagerImpl::AddTxAnnouncement(const CNode& node, const GenTxid& gtxid,
     if (!preferred) delay += NONPREF_PEER_TX_DELAY;
     if (!gtxid.IsWtxid() && m_wtxid_relay_peers > 0) delay += TXID_RELAY_DELAY;
     const bool overloaded = !node.HasPermission(NetPermissionFlags::Relay) &&
-        m_txrequest.CountInFlight(nodeid) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
+        m_txdownloadman.TxRequestCountInFlight(nodeid) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
     if (overloaded) delay += OVERLOADED_PEER_TX_DELAY;
-    m_txrequest.ReceivedInv(nodeid, gtxid, preferred, current_time + delay);
+    m_txdownloadman.TxRequestReceivedInv(nodeid, gtxid, preferred, current_time + delay);
 }
 
 void PeerManagerImpl::UpdateLastBlockAnnounceTime(NodeId node, int64_t time_in_seconds)
@@ -1477,7 +1473,7 @@ void PeerManagerImpl::InitializeNode(CNode& node, ServiceFlags our_services)
         LOCK(cs_main); // For m_node_states
         m_node_states.emplace_hint(m_node_states.end(), std::piecewise_construct, std::forward_as_tuple(nodeid), std::forward_as_tuple(node.IsInboundConn()));
         LOCK(m_tx_download_mutex);
-        assert(m_txrequest.Count(nodeid) == 0);
+        assert(m_txdownloadman.TxRequestCount(nodeid) == 0);
     }
     PeerRef peer = std::make_shared<Peer>(nodeid, our_services);
     {
@@ -1544,10 +1540,10 @@ void PeerManagerImpl::FinalizeNode(const CNode& node)
             }
         }
     }
-    m_orphanage.EraseForPeer(nodeid);
     {
         LOCK(m_tx_download_mutex);
-        m_txrequest.DisconnectedPeer(nodeid);
+        m_txdownloadman.OrphanageEraseForPeer(nodeid);
+        m_txdownloadman.TxRequestDisconnectedPeer(nodeid);
     }
     if (m_txreconciliation) m_txreconciliation->ForgetPeer(nodeid);
     m_num_preferred_download_peers -= state->fPreferredDownload;
@@ -1566,8 +1562,8 @@ void PeerManagerImpl::FinalizeNode(const CNode& node)
         assert(m_outbound_peers_with_protect_from_disconnect == 0);
         assert(m_wtxid_relay_peers == 0);
         LOCK(m_tx_download_mutex);
-        assert(m_txrequest.Size() == 0);
-        assert(m_orphanage.Size() == 0);
+        assert(m_txdownloadman.TxRequestSize() == 0);
+        assert(m_txdownloadman.OrphanageSize() == 0);
     }
     } // cs_main
     if (node.fSuccessfullyConnected && misbehavior == 0 &&
@@ -1861,7 +1857,6 @@ void PeerManagerImpl::StartScheduledTasks(CScheduler& scheduler)
 void PeerManagerImpl::BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindex)
 {
     LOCK(cs_main);
-    m_orphanage.EraseForBlock(*pblock);
     m_last_tip_update = GetTime<std::chrono::seconds>();
 
     {
@@ -1875,9 +1870,10 @@ void PeerManagerImpl::BlockConnected(const std::shared_ptr<const CBlock>& pblock
     }
     {
         LOCK(m_tx_download_mutex);
+        m_txdownloadman.OrphanageEraseForBlock(*pblock);
         for (const auto& ptx : pblock->vtx) {
-            m_txrequest.ForgetTxHash(ptx->GetHash());
-            m_txrequest.ForgetTxHash(ptx->GetWitnessHash());
+            m_txdownloadman.TxRequestForgetTxHash(ptx->GetHash());
+            m_txdownloadman.TxRequestForgetTxHash(ptx->GetWitnessHash());
         }
     }
 
@@ -2056,7 +2052,7 @@ bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid)
 
     const uint256& hash = gtxid.GetHash();
 
-    if (m_orphanage.HaveTx(gtxid)) return true;
+    if (m_txdownloadman.OrphanageHaveTx(gtxid)) return true;
 
     {
         LOCK(m_recent_confirmed_transactions_mutex);
@@ -2965,7 +2961,7 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
 
     CTransactionRef porphanTx = nullptr;
 
-    while (CTransactionRef porphanTx = m_orphanage.GetTxToReconsider(peer.m_id)) {
+    while (CTransactionRef porphanTx = m_txdownloadman.OrphanageGetTxToReconsider(peer.m_id)) {
         const MempoolAcceptResult result = m_chainman.ProcessTransaction(porphanTx);
         const TxValidationState& state = result.m_state;
         const uint256& orphanHash = porphanTx->GetHash();
@@ -2978,8 +2974,8 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
                 m_mempool.size(), m_mempool.DynamicMemoryUsage() / 1000);
             LogPrint(BCLog::TXPACKAGES, "   accepted orphan tx %s\n", orphan_wtxid.ToString());
             RelayTransaction(orphanHash, porphanTx->GetWitnessHash());
-            m_orphanage.AddChildrenToWorkSet(*porphanTx);
-            m_orphanage.EraseTx(orphan_wtxid);
+            m_txdownloadman.OrphanageAddChildrenToWorkSet(*porphanTx);
+            m_txdownloadman.OrphanageEraseTx(orphan_wtxid);
             for (const CTransactionRef& removedTx : result.m_replaced_transactions.value()) {
                 AddToCompactExtraTransactions(removedTx);
             }
@@ -3024,7 +3020,7 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
                     m_recent_rejects.insert(porphanTx->GetHash());
                 }
             }
-            m_orphanage.EraseTx(orphan_wtxid);
+            m_txdownloadman.OrphanageEraseTx(orphan_wtxid);
             return true;
         }
     }
@@ -4156,8 +4152,8 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
         LOCK2(cs_main, m_tx_download_mutex);
 
-        m_txrequest.ReceivedResponse(pfrom.GetId(), txid);
-        if (tx.HasWitness()) m_txrequest.ReceivedResponse(pfrom.GetId(), wtxid);
+        m_txdownloadman.TxRequestReceivedResponse(pfrom.GetId(), txid);
+        if (tx.HasWitness()) m_txdownloadman.TxRequestReceivedResponse(pfrom.GetId(), wtxid);
 
         // We do the AlreadyHaveTx() check using wtxid, rather than txid - in the
         // absence of witness malleation, this is strictly better, because the
@@ -4208,10 +4204,10 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
             // As this version of the transaction was acceptable, we can forget about any
             // requests for it.
-            m_txrequest.ForgetTxHash(tx.GetHash());
-            m_txrequest.ForgetTxHash(tx.GetWitnessHash());
+            m_txdownloadman.TxRequestForgetTxHash(tx.GetHash());
+            m_txdownloadman.TxRequestForgetTxHash(tx.GetWitnessHash());
             RelayTransaction(tx.GetHash(), tx.GetWitnessHash());
-            m_orphanage.AddChildrenToWorkSet(tx);
+            m_txdownloadman.OrphanageAddChildrenToWorkSet(tx);
 
             pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
 
@@ -4258,16 +4254,16 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     if (!AlreadyHaveTx(gtxid)) AddTxAnnouncement(pfrom, gtxid, current_time);
                 }
 
-                if (m_orphanage.AddTx(ptx, pfrom.GetId())) {
+                if (m_txdownloadman.OrphanageAddTx(ptx, pfrom.GetId(), unique_parents)) {
                     AddToCompactExtraTransactions(ptx);
                 }
 
                 // Once added to the orphan pool, a tx is considered AlreadyHave, and we shouldn't request it anymore.
-                m_txrequest.ForgetTxHash(tx.GetHash());
-                m_txrequest.ForgetTxHash(tx.GetWitnessHash());
+                m_txdownloadman.TxRequestForgetTxHash(tx.GetHash());
+                m_txdownloadman.TxRequestForgetTxHash(tx.GetWitnessHash());
 
                 // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
-                m_orphanage.LimitOrphans(m_opts.max_orphan_txs);
+                m_txdownloadman.OrphanageLimitOrphans(m_opts.max_orphan_txs);
             } else {
                 LogPrint(BCLog::MEMPOOL, "not keeping orphan with rejected parents %s\n",tx.GetHash().ToString());
                 // We will continue to reject this tx since it has rejected
@@ -4278,8 +4274,8 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 // from any of our non-wtxidrelay peers.
                 m_recent_rejects.insert(tx.GetHash());
                 m_recent_rejects.insert(tx.GetWitnessHash());
-                m_txrequest.ForgetTxHash(tx.GetHash());
-                m_txrequest.ForgetTxHash(tx.GetWitnessHash());
+                m_txdownloadman.TxRequestForgetTxHash(tx.GetHash());
+                m_txdownloadman.TxRequestForgetTxHash(tx.GetWitnessHash());
             }
         } else {
             if (state.GetResult() != TxValidationResult::TX_WITNESS_STRIPPED) {
@@ -4297,7 +4293,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 // for concerns around weakening security of unupgraded nodes
                 // if we start doing this too early.
                 m_recent_rejects.insert(tx.GetWitnessHash());
-                m_txrequest.ForgetTxHash(tx.GetWitnessHash());
+                m_txdownloadman.TxRequestForgetTxHash(tx.GetWitnessHash());
                 // If the transaction failed for TX_INPUTS_NOT_STANDARD,
                 // then we know that the witness was irrelevant to the policy
                 // failure, since this check depends only on the txid
@@ -4308,7 +4304,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 // parent-fetching by txid via the orphan-handling logic).
                 if (state.GetResult() == TxValidationResult::TX_INPUTS_NOT_STANDARD && tx.GetWitnessHash() != tx.GetHash()) {
                     m_recent_rejects.insert(tx.GetHash());
-                    m_txrequest.ForgetTxHash(tx.GetHash());
+                    m_txdownloadman.TxRequestForgetTxHash(tx.GetHash());
                 }
                 if (RecursiveDynamicUsage(*ptx) < 100000) {
                     AddToCompactExtraTransactions(ptx);
@@ -4920,7 +4916,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     LOCK(m_tx_download_mutex);
                     // If we receive a NOTFOUND message for a tx we requested, mark the announcement for it as
                     // completed in TxRequestTracker.
-                    m_txrequest.ReceivedResponse(pfrom.GetId(), inv.hash);
+                    m_txdownloadman.TxRequestReceivedResponse(pfrom.GetId(), inv.hash);
                 }
             }
         }
@@ -5038,7 +5034,8 @@ bool PeerManagerImpl::ProcessMessages(CNode* pfrom, std::atomic<bool>& interrupt
         //  by another peer that was already processed; in that case,
         //  the extra work may not be noticed, possibly resulting in an
         //  unnecessary 100ms delay)
-        if (m_orphanage.HaveTxToReconsider(peer->m_id)) fMoreWork = true;
+        LOCK(m_tx_download_mutex);
+        if (m_txdownloadman.OrphanageHaveTxToReconsider(peer->m_id)) fMoreWork = true;
     } catch (const std::exception& e) {
         LogPrint(BCLog::NET, "%s(%s, %u bytes): Exception '%s' (%s) caught\n", __func__, SanitizeString(msg.m_type), msg.m_message_size, e.what(), typeid(e).name());
     } catch (...) {
@@ -5917,7 +5914,7 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
         //
         LOCK(m_tx_download_mutex);
         std::vector<std::pair<NodeId, GenTxid>> expired;
-        auto requestable = m_txrequest.GetRequestable(pto->GetId(), current_time, &expired);
+        auto requestable = m_txdownloadman.TxRequestGetRequestable(pto->GetId(), current_time, &expired);
         for (const auto& entry : expired) {
             LogPrint(BCLog::NET, "timeout of inflight %s %s from peer=%d\n", entry.second.IsWtxid() ? "wtx" : "tx",
                 entry.second.GetHash().ToString(), entry.first);
@@ -5931,11 +5928,11 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                     m_connman.PushMessage(pto, msgMaker.Make(NetMsgType::GETDATA, vGetData));
                     vGetData.clear();
                 }
-                m_txrequest.RequestedTx(pto->GetId(), gtxid.GetHash(), current_time + GETDATA_TX_INTERVAL);
+                m_txdownloadman.TxRequestRequestedTx(pto->GetId(), gtxid.GetHash(), current_time + GETDATA_TX_INTERVAL);
             } else {
                 // We have already seen this transaction, no need to download. This is just a belt-and-suspenders, as
                 // this should already be called whenever a transaction becomes AlreadyHaveTx().
-                m_txrequest.ForgetTxHash(gtxid.GetHash());
+                m_txdownloadman.TxRequestForgetTxHash(gtxid.GetHash());
             }
         }
 
