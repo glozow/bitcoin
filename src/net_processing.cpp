@@ -34,6 +34,7 @@
 #include <tinyformat.h>
 #include <txmempool.h>
 #include <txorphanage.h>
+#include <txpackagerelay.h>
 #include <txrequest.h>
 #include <util/check.h> // For NDEBUG compile time check
 #include <util/strencodings.h>
@@ -708,6 +709,7 @@ private:
     ChainstateManager& m_chainman;
     CTxMemPool& m_mempool;
     TxRequestTracker m_txrequest GUARDED_BY(::cs_main);
+    std::unique_ptr<TxPackageTracker> m_txpackagetracker;
 
     /** The height of the best chain */
     std::atomic<int> m_best_height{-1};
@@ -1781,6 +1783,7 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
       m_mempool(pool),
       m_ignore_incoming_txs(ignore_incoming_txs)
 {
+    m_txpackagetracker = std::make_unique<TxPackageTracker>();
 }
 
 void PeerManagerImpl::StartScheduledTasks(CScheduler& scheduler)
