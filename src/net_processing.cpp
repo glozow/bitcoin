@@ -36,6 +36,7 @@
 #include <tinyformat.h>
 #include <txmempool.h>
 #include <txorphanage.h>
+#include <txpackagerelay.h>
 #include <txrequest.h>
 #include <util/check.h> // For NDEBUG compile time check
 #include <util/strencodings.h>
@@ -709,6 +710,7 @@ private:
     CTxMemPool& m_mempool;
     TxRequestTracker m_txrequest GUARDED_BY(::cs_main);
     std::unique_ptr<TxReconciliationTracker> m_txreconciliation;
+    std::unique_ptr<TxPackageTracker> m_txpackagetracker;
 
     /** The height of the best chain */
     std::atomic<int> m_best_height{-1};
@@ -1790,6 +1792,7 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
     if (gArgs.GetBoolArg("-txreconciliation", DEFAULT_TXRECONCILIATION_ENABLE)) {
         m_txreconciliation = std::make_unique<TxReconciliationTracker>(TXRECONCILIATION_VERSION);
     }
+    m_txpackagetracker = std::make_unique<TxPackageTracker>();
 }
 
 void PeerManagerImpl::StartScheduledTasks(CScheduler& scheduler)
