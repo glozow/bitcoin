@@ -231,6 +231,8 @@ BITCOIN_CORE_H = \
   node/protocol_version.h \
   node/psbt.h \
   node/transaction.h \
+  node/txdownloadman.h \
+  node/txdownload_impl.h \
   node/txreconciliation.h \
   node/utxo_snapshot.h \
   node/validation_cache_args.h \
@@ -435,6 +437,7 @@ libbitcoin_node_a_SOURCES = \
   node/peerman_args.cpp \
   node/psbt.cpp \
   node/transaction.cpp \
+  node/txdownload_impl.cpp \
   node/txreconciliation.cpp \
   node/utxo_snapshot.cpp \
   node/validation_cache_args.cpp \
