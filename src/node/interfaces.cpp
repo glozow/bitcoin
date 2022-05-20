@@ -612,6 +612,23 @@ public:
         }
         return node::BlockAssembler(chainman().ActiveChainstate(), *m_node.mempool, Params()).CalculateScores(txids);
     }
+    std::optional<std::vector<CTransactionRef>> getAncestors(const CTransactionRef& tx) override
+    {
+        if (!m_node.mempool) return std::nullopt;
+        LockPoints lp;
+        CTxMemPoolEntry entry(tx, 0, 0, 0, false, 0, lp);
+        CTxMemPool::setEntries ancestors;
+        std::string unused_error_string;
+        const auto nolimit = std::numeric_limits<uint64_t>::max();
+        if (!m_node.mempool->CalculateMemPoolAncestors(entry, ancestors, nolimit, nolimit, nolimit, nolimit, unused_error_string)) {
+            return std::nullopt;
+        }
+        std::vector<CTransactionRef> result;
+        for (const auto& ancestor : ancestors) {
+            result.push_back(ancestor->GetSharedTx()); 
+        }
+        return result;
+    }
     void getPackageLimits(unsigned int& limit_ancestor_count, unsigned int& limit_descendant_count) override
     {
         limit_ancestor_count = gArgs.GetIntArg("-limitancestorcount", DEFAULT_ANCESTOR_LIMIT);

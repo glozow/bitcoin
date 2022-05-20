@@ -181,6 +181,9 @@ public:
     //! Calculate cluster and mining scores for the given transactions (must all be in mempool).
     virtual std::optional<std::map<uint256, std::pair<CAmount, uint64_t>>> getClusterMiningScores(const std::vector<uint256>& txids) = 0;
 
+    //! Calculate the in-mempool ancestors for a given transaction, referenced by txid.
+    virtual std::optional<std::vector<CTransactionRef>> getAncestors(const CTransactionRef& txid);
+
     //! Get the node's package limits.
     //! Currently only returns the ancestor and descendant count limits, but could be enhanced to
     //! return more policy settings.
