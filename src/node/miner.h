@@ -160,8 +160,9 @@ public:
     explicit BlockAssembler(CChainState& chainstate, const CTxMemPool& mempool);
     explicit BlockAssembler(CChainState& chainstate, const CTxMemPool& mempool, const Options& options);
 
-    /** Construct a new block template with coinbase to scriptPubKeyIn */
-    std::unique_ptr<CBlockTemplate> CreateNewBlock(const CScript& scriptPubKeyIn);
+    /** Construct a new block template with coinbase to scriptPubKeyIn.
+     * @param[in]   manual_txns     if true, don't add any non-coinbase transactions. */
+    std::unique_ptr<CBlockTemplate> CreateNewBlock(const CScript& scriptPubKeyIn, bool manual_txns = false);
 
     inline static std::optional<int64_t> m_last_block_num_txs{};
     inline static std::optional<int64_t> m_last_block_weight{};

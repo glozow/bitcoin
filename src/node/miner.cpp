@@ -103,7 +103,7 @@ void BlockAssembler::resetBlock()
     nFees = 0;
 }
 
-std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& scriptPubKeyIn)
+std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& scriptPubKeyIn, bool manual_txns)
 {
     int64_t nTimeStart = GetTimeMicros();
 
@@ -138,7 +138,9 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock(const CScript& sc
 
     int nPackagesSelected = 0;
     int nDescendantsUpdated = 0;
-    addPackageTxs(nPackagesSelected, nDescendantsUpdated);
+    if (!manual_txns) {
+        addPackageTxs(nPackagesSelected, nDescendantsUpdated);
+    }
 
     int64_t nTime1 = GetTimeMicros();
 
