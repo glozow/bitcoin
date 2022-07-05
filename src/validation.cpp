@@ -27,6 +27,7 @@
 #include <node/blockstorage.h>
 #include <node/interface_ui.h>
 #include <node/utxo_snapshot.h>
+#include <policy/contract_policy.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
 #include <policy/settings.h>
@@ -907,6 +908,13 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
         }
     }
 
+    if (const auto err_string{CheckV3Inheritance(ws.m_ptx, ws.m_ancestors)}) {
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "non-v3-tx-spends-v3", *err_string);
+    }
+    if (const auto err_string{ApplyV3Rules(ws.m_ptx, ws.m_ancestors)}) {
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-tx-nonstandard", *err_string);
+    }
+
     // A transaction that spends outputs that would be replaced by it is invalid. Now
     // that we have the set of all ancestors we can detect this
     // pathological case by making sure ws.m_conflicts and ws.m_ancestors don't
@@ -1211,6 +1219,16 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     std::transform(txns.cbegin(), txns.cend(), std::back_inserter(workspaces),
                    [](const auto& tx) { return Workspace(tx); });
     std::map<const uint256, const MempoolAcceptResult> results;
+
+    if (const auto v3_violation{CheckV3Inheritance(txns)}) {
+        const auto [parent_wtxid, child_wtxid] = v3_violation.value();
+        TxValidationState child_state;
+        child_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "non-v3-tx-spends-v3",
+                      strprintf("tx that spends from %s must be nVersion=3", parent_wtxid.ToString()));
+        package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
+        results.emplace(child_wtxid, MempoolAcceptResult::Failure(child_state));
+        return PackageMempoolAcceptResult(package_state, std::move(results));
+    }
 
     LOCK(m_pool.cs);
 
