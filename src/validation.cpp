@@ -24,6 +24,7 @@
 #include <node/blockstorage.h>
 #include <node/interface_ui.h>
 #include <node/utxo_snapshot.h>
+#include <policy/contract_policy.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
 #include <policy/settings.h>
@@ -895,6 +896,13 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                 !m_pool.CalculateMemPoolAncestors(*entry, ws.m_ancestors, 2, m_limit_ancestor_size, m_limit_descendants + 1, m_limit_descendant_size + EXTRA_DESCENDANT_TX_SIZE_LIMIT, dummy_err_string)) {
             return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-long-mempool-chain", errString);
         }
+    }
+
+    if (const auto err_string{CheckV3Inheritance(ws.m_ptx, ws.m_ancestors)}) {
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "non-v3-tx-spends-v3", *err_string);
+    }
+    if (const auto err_string{ApplyV3Rules(ws.m_ptx, ws.m_ancestors)}) {
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-tx-nonstandard", *err_string);
     }
 
     // A transaction that spends outputs that would be replaced by it is invalid. Now
