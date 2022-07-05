@@ -29,6 +29,7 @@
 #include <logging/timer.h>
 #include <node/blockstorage.h>
 #include <node/utxo_snapshot.h>
+#include <policy/v3_policy.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
 #include <policy/settings.h>
@@ -332,7 +333,9 @@ void Chainstate::MaybeUpdateMempoolForReorg(
     // Also updates valid entries' cached LockPoints if needed.
     // If false, the tx is still valid and its lockpoints are updated.
     // If true, the tx would be invalid in the next block; remove this entry and all of its descendants.
-    const auto filter_final_and_mature = [this](CTxMemPool::txiter it)
+    // Note that v3 rules are not applied here, so reorgs may cause violations of v3 inheritance or
+    // topology restrictions.
+    const auto filter_final_and_mature = [&](CTxMemPool::txiter it)
         EXCLUSIVE_LOCKS_REQUIRED(m_mempool->cs, ::cs_main) {
         AssertLockHeld(m_mempool->cs);
         AssertLockHeld(::cs_main);
@@ -374,7 +377,6 @@ void Chainstate::MaybeUpdateMempoolForReorg(
         // Transaction is still valid and cached LockPoints are updated.
         return false;
     };
-
     // We also need to remove any now-immature transactions
     m_mempool->removeForReorg(m_chain, filter_final_and_mature);
     // Re-limit mempool size, in case we added any transactions
@@ -636,6 +638,7 @@ private:
     // Enforce package mempool ancestor/descendant limits (distinct from individual
     // ancestor/descendant limits done in PreChecks).
     bool PackageMempoolChecks(const std::vector<CTransactionRef>& txns,
+                              const std::vector<Workspace>& workspaces,
                               int64_t total_vsize,
                               PackageValidationState& package_state) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
@@ -688,6 +691,8 @@ private:
 
     /** Whether the transaction(s) would replace any mempool transactions. If so, RBF rules apply. */
     bool m_rbf{false};
+    /** Union of all transactions' in-mempool ancestors. */
+    CTxMemPool::setEntries m_collective_ancestors;
 };
 
 bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
@@ -760,9 +765,11 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                 // check all unconfirmed ancestors; otherwise an opt-in ancestor
                 // might be replaced, causing removal of this descendant.
                 //
-                // If replaceability signaling is ignored due to node setting,
-                // replacement is always allowed.
-                if (!m_pool.m_full_rbf && !SignalsOptInRBF(*ptxConflicting)) {
+                // All V3 transactions are considered replaceable.
+                //
+                // Replaceability signaling of the original transactions may be
+                // ignored due to node setting.
+                if (!m_pool.m_full_rbf && !SignalsOptInRBF(*ptxConflicting) && ptxConflicting->nVersion != 3) {
                     return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "txn-mempool-conflict");
                 }
 
@@ -864,10 +871,12 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     // while a tx could be package CPFP'd when entering the mempool, we do not have a DoS-resistant
     // method of ensuring the tx remains bumped. For example, the fee-bumping child could disappear
     // due to a replacement.
-    if (!bypass_limits && ws.m_modified_fees < m_pool.m_min_relay_feerate.GetFee(ws.m_vsize)) {
+    // The only exception is v3 transactions.
+    if (!bypass_limits && ws.m_ptx->nVersion != 3 && ws.m_modified_fees < m_pool.m_min_relay_feerate.GetFee(ws.m_vsize)) {
         // Even though this is a fee-related failure, this result is TX_MEMPOOL_POLICY, not
         // TX_RECONSIDERABLE, because it cannot be bypassed using package validation.
-        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "min relay fee not met",
+        return state.Invalid(ws.m_ptx->nVersion == 3 ? TxValidationResult::TX_RECONSIDERABLE : TxValidationResult::TX_MEMPOOL_POLICY,
+                             "min relay fee not met",
                              strprintf("%d < %d", ws.m_modified_fees, m_pool.m_min_relay_feerate.GetFee(ws.m_vsize)));
     }
     // No individual transactions are allowed below the mempool min feerate except from disconnected
@@ -946,6 +955,18 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     }
 
     ws.m_ancestors = *ancestors;
+    // Even though just checking direct mempool parents would be sufficient, we check using the full
+    // ancestor set here because it's more convenient to use what we have already calculated.
+    if (const auto err_string{CheckV3Inheritance(ws.m_ptx, ws.m_ancestors)}) {
+        if (ws.m_ptx->nVersion == 3) {
+            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-tx-spends-non-v3", *err_string);
+        } else {
+            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "non-v3-tx-spends-v3", *err_string);
+        }
+    }
+    if (const auto err_string{ApplyV3Rules(ws.m_ptx, ws.m_ancestors, ws.m_conflicts, ws.m_vsize)}) {
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-tx-nonstandard", *err_string);
+    }
 
     // A transaction that spends outputs that would be replaced by it is invalid. Now
     // that we have the set of all ancestors we can detect this
@@ -1014,6 +1035,7 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
 }
 
 bool MemPoolAccept::PackageMempoolChecks(const std::vector<CTransactionRef>& txns,
+                                         const std::vector<Workspace>& workspaces,
                                          const int64_t total_vsize,
                                          PackageValidationState& package_state)
 {
@@ -1029,6 +1051,7 @@ bool MemPoolAccept::PackageMempoolChecks(const std::vector<CTransactionRef>& txn
         // This is a package-wide error, separate from an individual transaction error.
         return package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package-mempool-limits", err_string);
     }
+
    return true;
 }
 
@@ -1277,6 +1300,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
 PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::vector<CTransactionRef>& txns, ATMPArgs& args)
 {
     AssertLockHeld(cs_main);
+    m_collective_ancestors.clear();
 
     // These context-free package limits can be done before taking the mempool lock.
     PackageValidationState package_state;
@@ -1287,6 +1311,11 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     std::transform(txns.cbegin(), txns.cend(), std::back_inserter(workspaces),
                    [](const auto& tx) { return Workspace(tx); });
     std::map<uint256, MempoolAcceptResult> results;
+
+    if (const auto err_string{PackageV3SanityChecks(txns)}) {
+        package_state.Invalid(PackageValidationResult::PCKG_POLICY, "v3-violation", err_string.value());
+        return PackageMempoolAcceptResult(package_state, std::move(results));
+    }
 
     LOCK(m_pool.cs);
 
@@ -1304,6 +1333,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
         // updated if package replace-by-fee is allowed in the future.
         assert(!args.m_allow_replacement);
         m_viewmempool.PackageAddTransaction(ws.m_ptx);
+        m_collective_ancestors.insert(ws.m_ancestors.cbegin(), ws.m_ancestors.cend());
     }
 
     // Transactions must meet two minimum feerates: the mempool minimum fee and min relay fee.
@@ -1332,11 +1362,24 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
             MempoolAcceptResult::FeeFailure(placeholder_state, CFeeRate(m_total_modified_fees, m_total_vsize), all_package_wtxids)}});
     }
 
+    // Check the last transaction's v3 ancestor limits again, assuming that all transactions
+    // are in the ancestor set of the last tx (which is the case when a package IsChildWithParents)
+    if (txns.back()->nVersion == 3) {
+        if (txns.size() + m_collective_ancestors.size() > V3_ANCESTOR_LIMIT) {
+            const auto& child_wtxid = txns.back()->GetWitnessHash();
+            auto& child_state = workspaces.back().m_state;
+            child_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-nonstandard",
+                                strprintf("tx %s would have too many ancestors", child_wtxid.ToString()));
+            results.emplace(child_wtxid.ToUint256(), MempoolAcceptResult::Failure(child_state));
+            package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
+            return PackageMempoolAcceptResult(package_state, std::move(results));
+        }
+    }
     // Apply package mempool ancestor/descendant limits. Skip if there is only one transaction,
     // because it's unnecessary. Also, CPFP carve out can increase the limit for individual
     // transactions, but this exemption is not extended to packages in CheckPackageLimits().
     std::string err_string;
-    if (txns.size() > 1 && !PackageMempoolChecks(txns, m_total_vsize, package_state)) {
+    if (txns.size() > 1 && !PackageMempoolChecks(txns, workspaces, m_total_vsize, package_state)) {
         return PackageMempoolAcceptResult(package_state, std::move(results));
     }
 
