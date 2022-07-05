@@ -27,6 +27,7 @@
 #include <node/blockstorage.h>
 #include <node/interface_ui.h>
 #include <node/utxo_snapshot.h>
+#include <policy/v3_policy.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
 #include <policy/settings.h>
@@ -322,11 +323,12 @@ void Chainstate::MaybeUpdateMempoolForReorg(
     m_mempool->UpdateTransactionsFromBlock(vHashUpdate);
 
     // Predicate to use for filtering transactions in removeForReorg.
+    // Checks whether a non-v3 transaction spends v3 and or vice versa.
     // Checks whether the transaction is still final and, if it spends a coinbase output, mature.
     // Also updates valid entries' cached LockPoints if needed.
     // If false, the tx is still valid and its lockpoints are updated.
     // If true, the tx would be invalid in the next block; remove this entry and all of its descendants.
-    const auto filter_final_and_mature = [this](CTxMemPool::txiter it)
+    const auto filter_valid_after_reorg = [this](CTxMemPool::txiter it)
         EXCLUSIVE_LOCKS_REQUIRED(m_mempool->cs, ::cs_main) {
         AssertLockHeld(m_mempool->cs);
         AssertLockHeld(::cs_main);
@@ -365,11 +367,18 @@ void Chainstate::MaybeUpdateMempoolForReorg(
             }
         }
         // Transaction is still valid and cached LockPoints are updated.
+        const bool tx_is_v3 = it->GetTx().nVersion == 3;
+        CTxMemPool::setEntries ancestors;
+        std::string placeholder_string;
+        m_mempool->CalculateMemPoolAncestors(*it, ancestors, CTxMemPool::Limits::NoLimits(), placeholder_string);
+        for (const auto& entry: ancestors) {
+            const bool anc_is_v3 = entry->GetTx().nVersion == 3;
+            if (tx_is_v3 != anc_is_v3) return true;
+        }
         return false;
     };
-
     // We also need to remove any now-immature transactions
-    m_mempool->removeForReorg(m_chain, filter_final_and_mature);
+    m_mempool->removeForReorg(m_chain, filter_valid_after_reorg);
     // Re-limit mempool size, in case we added any transactions
     LimitMempoolSize(*m_mempool, this->CoinsTip());
 }
@@ -752,9 +761,11 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                 // check all unconfirmed ancestors; otherwise an opt-in ancestor
                 // might be replaced, causing removal of this descendant.
                 //
-                // If replaceability signaling is ignored due to node setting,
-                // replacement is always allowed.
-                if (!m_pool.m_full_rbf && !SignalsOptInRBF(*ptxConflicting)) {
+                // All V3 transactions are considered replaceable.
+                //
+                // Replaceability signaling of the original transactions may be
+                // ignored due to node setting.
+                if (!m_pool.m_full_rbf && !SignalsOptInRBF(*ptxConflicting) && ptxConflicting->nVersion != 3) {
                     return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "txn-mempool-conflict");
                 }
 
@@ -921,6 +932,17 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                                                   dummy_err_string)) {
             return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-long-mempool-chain", errString);
         }
+    }
+
+    if (const auto err_string{CheckV3Inheritance(ws.m_ptx, ws.m_ancestors)}) {
+        if (ws.m_ptx->nVersion == 3) {
+            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-tx-spends-non-v3", *err_string);
+        } else {
+            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "non-v3-tx-spends-v3", *err_string);
+        }
+    }
+    if (const auto err_string{ApplyV3Rules(ws.m_ptx, ws.m_ancestors, ws.m_conflicts)}) {
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-tx-nonstandard", *err_string);
     }
 
     // A transaction that spends outputs that would be replaced by it is invalid. Now
@@ -1226,6 +1248,21 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     std::transform(txns.cbegin(), txns.cend(), std::back_inserter(workspaces),
                    [](const auto& tx) { return Workspace(tx); });
     std::map<const uint256, const MempoolAcceptResult> results;
+
+    if (const auto v3_violation{CheckV3Inheritance(txns)}) {
+        const auto [parent_wtxid, child_wtxid, child_v3] = v3_violation.value();
+        TxValidationState child_state;
+        if (child_v3) {
+            child_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-tx-spends-non-v3",
+                          strprintf("tx that spends from %s cannot be nVersion=3", parent_wtxid.ToString()));
+        } else {
+            child_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "non-v3-tx-spends-v3",
+                          strprintf("tx that spends from %s must be nVersion=3", parent_wtxid.ToString()));
+        }
+        package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
+        results.emplace(child_wtxid, MempoolAcceptResult::Failure(child_state));
+        return PackageMempoolAcceptResult(package_state, std::move(results));
+    }
 
     LOCK(m_pool.cs);
 
