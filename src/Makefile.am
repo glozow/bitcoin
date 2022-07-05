@@ -208,6 +208,7 @@ BITCOIN_CORE_H = \
   node/utxo_snapshot.h \
   noui.h \
   outputtype.h \
+  policy/contract_policy.h \
   policy/feerate.h \
   policy/fees.h \
   policy/fees_args.h \
@@ -630,6 +631,7 @@ libbitcoin_common_a_SOURCES = \
   netbase.cpp \
   net_permissions.cpp \
   outputtype.cpp \
+  policy/contract_policy.cpp \
   policy/feerate.cpp \
   policy/policy.cpp \
   protocol.cpp \
@@ -891,6 +893,7 @@ libbitcoinkernel_la_SOURCES = \
   node/blockstorage.cpp \
   node/chainstate.cpp \
   node/interface_ui.cpp \
+  policy/contract_policy.cpp \
   policy/feerate.cpp \
   policy/fees.cpp \
   policy/packages.cpp \
