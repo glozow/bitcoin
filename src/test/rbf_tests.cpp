@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #include <policy/policy.h>
 #include <policy/rbf.h>
+#include <random.h>
 #include <txmempool.h>
 #include <util/system.h>
 #include <util/time.h>
@@ -25,6 +26,10 @@ inline CTransactionRef make_tx(std::vector<CAmount>&& output_values,
     for (size_t i = 0; i < inputs.size(); ++i) {
         tx.vin[i].prevout.hash = inputs[i]->GetHash();
         tx.vin[i].prevout.n = input_indices.size() > i ? input_indices[i] : 0;
+        // Add a witness so wtxid != txid
+        CScriptWitness witness;
+        witness.stack.push_back(std::vector<unsigned char>(i + 10));
+        tx.vin[i].scriptWitness = witness;
     }
     for (size_t i = 0; i < output_values.size(); ++i) {
         tx.vout[i].scriptPubKey = CScript() << OP_11 << OP_EQUAL;
@@ -62,6 +67,8 @@ BOOST_AUTO_TEST_CASE(rbf_helper_functions)
     pool.addUnchecked(entry.Fee(low_fee).FromTx(tx5));
     CTransactionRef tx6 = make_tx(/*output_values=*/ {1098 * CENT}, /*inputs=*/ {tx3});
     pool.addUnchecked(entry.Fee(low_fee).FromTx(tx6));
+    // tx6 has a high modified fee
+    pool.PrioritiseTransaction(tx6->GetHash(), 1 * COIN);
 
     // Two independent high-feerate transactions, tx7 and tx8
     CTransactionRef tx7 = make_tx(/*output_values=*/ {999 * CENT});
@@ -91,7 +98,22 @@ BOOST_AUTO_TEST_CASE(rbf_helper_functions)
     CTxMemPool::setEntries set_34_cpfp{entry3, entry4};
     CTxMemPool::setEntries set_56_low{entry5, entry6};
     CTxMemPool::setEntries set_78_high{entry7, entry8};
+    CTxMemPool::setEntries all_entries{entry1, entry2, entry3, entry4, entry5, entry6, entry7, entry8};
     CTxMemPool::setEntries empty_set;
+
+    const auto unused_txid{GetRandHash()};
+
+    // Tests for PaysMoreThanConflicts
+    // These tests use feerate, not absolute fee.
+    BOOST_CHECK(PaysMoreThanConflicts(set_12_normal, CFeeRate(entry1->GetModifiedFee() + 1, entry1->GetTxSize() + 2), unused_txid).has_value());
+    // Replacement must be strictly greater than the originals.
+    BOOST_CHECK(PaysMoreThanConflicts(set_12_normal, CFeeRate(entry1->GetModifiedFee(), entry1->GetTxSize()), unused_txid).has_value());
+    BOOST_CHECK(PaysMoreThanConflicts(set_12_normal, CFeeRate(entry1->GetModifiedFee() + 1, entry1->GetTxSize()), unused_txid) == std::nullopt);
+    // These tests use modified fees (including prioritisation), not base fees.
+    BOOST_CHECK(PaysMoreThanConflicts({entry6}, CFeeRate(entry6->GetFee() + 1, entry6->GetTxSize()), unused_txid).has_value());
+    BOOST_CHECK(PaysMoreThanConflicts({entry6}, CFeeRate(entry6->GetModifiedFee() + 1, entry6->GetTxSize()), unused_txid) == std::nullopt);
+    // These tests only check individual feerate. Ancestor feerate does not matter.
+    BOOST_CHECK(PaysMoreThanConflicts(set_34_cpfp, CFeeRate(entry4->GetModifiedFee(), entry4->GetTxSize()), unused_txid).has_value());
 
     // Tests for CheckMinerScores
     // Don't allow replacements with a low ancestor feerate.
@@ -146,6 +168,35 @@ BOOST_AUTO_TEST_CASE(rbf_helper_functions)
                                  {entry3},
                                  set_34_cpfp) == std::nullopt);
 
+    // Tests for EntriesAndTxidsDisjoint
+    BOOST_CHECK(EntriesAndTxidsDisjoint(empty_set, {tx1->GetHash()}, unused_txid) == std::nullopt);
+    BOOST_CHECK(EntriesAndTxidsDisjoint(set_12_normal, {tx3->GetHash(), tx8->GetHash()}, unused_txid) == std::nullopt);
+    // EntriesAndTxidsDisjoint uses txids, not wtxids.
+    BOOST_CHECK(EntriesAndTxidsDisjoint({entry2}, {tx2->GetWitnessHash()}, unused_txid) == std::nullopt);
+    // If entry2 is an ancestor of a tx, that tx cannot replace entry1.  However,
+    // EntriesAndTxidsDisjoint uses the ancestors directly. It does not calculate descendants.
+    BOOST_CHECK(EntriesAndTxidsDisjoint(set_12_normal, {tx1->GetHash()}, unused_txid).has_value());
+    BOOST_CHECK(EntriesAndTxidsDisjoint(set_12_normal, {tx2->GetHash()}, unused_txid).has_value());
+    BOOST_CHECK(EntriesAndTxidsDisjoint({entry2}, {tx1->GetHash()}, unused_txid) == std::nullopt);
+
+    // Tests for PaysForRBF
+    const auto incremental_relay_fee{CFeeRate(DEFAULT_INCREMENTAL_RELAY_FEE)};
+    const auto higher_relay_fee{CFeeRate(3000)};
+    // Must pay at least as much as the original.
+    BOOST_CHECK(PaysForRBF(/*original_fees=*/high_fee,
+                           /*replacement_fees=*/high_fee,
+                           /*replacement_vsize=*/1,
+                           /*relay_fee=*/CFeeRate(0),
+                           /*txid=*/unused_txid)
+                           == std::nullopt);
+    BOOST_CHECK(PaysForRBF(high_fee, high_fee - 1, 1, CFeeRate(0), unused_txid).has_value());
+    BOOST_CHECK(PaysForRBF(high_fee + 1, high_fee, 1, CFeeRate(0), unused_txid).has_value());
+    // Additional fees must cover the replacement's vsize at incremental relay fee
+    BOOST_CHECK(PaysForRBF(high_fee, high_fee + 1, 2, incremental_relay_fee, unused_txid) .has_value());
+    BOOST_CHECK(PaysForRBF(high_fee, high_fee + 2, 2, incremental_relay_fee, unused_txid) == std::nullopt);
+    BOOST_CHECK(PaysForRBF(high_fee, high_fee + 2, 2, CFeeRate(2, 1), unused_txid) .has_value());
+    BOOST_CHECK(PaysForRBF(high_fee, high_fee + 4, 2, CFeeRate(2, 1), unused_txid) == std::nullopt);
+    BOOST_CHECK(PaysForRBF(low_fee, high_fee, 99999999, incremental_relay_fee, unused_txid) .has_value());
 }
 
 BOOST_AUTO_TEST_SUITE_END()
