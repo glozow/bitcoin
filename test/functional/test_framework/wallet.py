@@ -358,7 +358,7 @@ def address_to_scriptpubkey(address):
         assert False
 
 
-def make_chain(node, address, privkeys, parent_txid, parent_value, n=0, parent_locking_script=None, fee=DEFAULT_FEE):
+def make_chain(node, address, privkeys, parent_txid, parent_value, n=0, parent_locking_script=None, fee=DEFAULT_FEE, version=2):
     """Build a transaction that spends parent_txid.vout[n] and produces one output with
     amount = parent_value with a fee deducted.
     Return tuple (CTransaction object, raw hex, nValue, scriptPubKey of the output created).
@@ -366,7 +366,9 @@ def make_chain(node, address, privkeys, parent_txid, parent_value, n=0, parent_l
     inputs = [{"txid": parent_txid, "vout": n}]
     my_value = parent_value - fee
     outputs = {address : my_value}
-    rawtx = node.createrawtransaction(inputs, outputs)
+    tx = tx_from_hex(node.createrawtransaction(inputs, outputs))
+    tx.nVersion = version
+    rawtx = tx.serialize().hex()
     prevtxs = [{
         "txid": parent_txid,
         "vout": n,
@@ -378,13 +380,15 @@ def make_chain(node, address, privkeys, parent_txid, parent_value, n=0, parent_l
     tx = tx_from_hex(signedtx["hex"])
     return (tx, signedtx["hex"], my_value, tx.vout[0].scriptPubKey.hex())
 
-def create_child_with_parents(node, address, privkeys, parents_tx, values, locking_scripts, fee=DEFAULT_FEE):
+def create_child_with_parents(node, address, privkeys, parents_tx, values, locking_scripts, fee=DEFAULT_FEE, version=2):
     """Creates a transaction that spends the first output of each parent in parents_tx."""
     num_parents = len(parents_tx)
     total_value = sum(values)
     inputs = [{"txid": tx.rehash(), "vout": 0} for tx in parents_tx]
     outputs = {address : total_value - fee}
-    rawtx_child = node.createrawtransaction(inputs, outputs)
+    tx_child = tx_from_hex(node.createrawtransaction(inputs, outputs))
+    tx_child.nVersion = version
+    rawtx_child = tx_child.serialize().hex()
     prevtxs = []
     for i in range(num_parents):
         prevtxs.append({"txid": parents_tx[i].rehash(), "vout": 0, "scriptPubKey": locking_scripts[i], "amount": values[i]})
