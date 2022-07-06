@@ -57,4 +57,13 @@ std::optional<std::string> ApplyV3Rules(const CTransactionRef& ptx,
                                         const CTxMemPool::setEntries& ancestors)
     EXCLUSIVE_LOCKS_REQUIRED(pool.cs);
 
+/** Check whether a replacement_transaction can replace a mempool transactions based on signaling
+ * requirements, i.e., replacement must be V3 and mempool conflict must be V3. */
+bool CanReplaceV3(const CTransaction& mempool_tx, const CTransaction& replacement_tx);
+
+/** Check whether replacement_transactions can replace all mempool transactions based on signaling
+ * requirements, i.e., all replacements must be V3 and all direct conflicts must be V3. */
+std::optional<std::string> CanReplaceV3(const CTxMemPool::setEntries& direct_conflicts,
+                                        const std::vector<CTransactionRef>& replacement_transactions);
+
 #endif // BITCOIN_POLICY_CONTRACT_POLICY_H

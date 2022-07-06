@@ -88,3 +88,24 @@ std::optional<std::string> ApplyV3Rules(const CTransactionRef& ptx,
     }
     return std::nullopt;
 }
+
+bool CanReplaceV3(const CTransaction& mempool_tx, const CTransaction& replacement_tx)
+{
+    return mempool_tx.nVersion == 3 && replacement_tx.nVersion == 3;
+}
+
+std::optional<std::string> CanReplaceV3(const CTxMemPool::setEntries& direct_conflicts,
+                                        const std::vector<CTransactionRef>& replacement_transactions)
+{
+    for (const auto& entry : direct_conflicts) {
+        if (entry->GetTx().nVersion != 3) {
+            return strprintf("mempool tx %u is not V3", entry->GetTx().GetWitnessHash().ToString());
+        }
+    }
+    for (const auto& tx : replacement_transactions) {
+        if (tx->nVersion != 3) {
+            return strprintf("replacement tx %u is not V3", tx->GetWitnessHash().ToString());
+        }
+    }
+    return std::nullopt;
+}

@@ -749,9 +749,13 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                 // check all unconfirmed ancestors; otherwise an opt-in ancestor
                 // might be replaced, causing removal of this descendant.
                 //
+                // A V3 transaction may replace another V3 transaction. Note
+                // that, for package RBF, any in-package descendants must also
+                // be V3 (CheckV3Inheritance).
+                //
                 // If replaceability signaling is ignored due to node setting,
                 // replacement is always allowed.
-                if (!m_pool.m_full_rbf && !SignalsOptInRBF(*ptxConflicting)) {
+                if (!m_pool.m_full_rbf && !SignalsOptInRBF(*ptxConflicting) && !CanReplaceV3(*ptxConflicting, tx)) {
                     return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "txn-mempool-conflict");
                 }
 
