@@ -6,6 +6,7 @@
 #include <policy/policy.h>
 #include <primitives/transaction.h>
 #include <uint256.h>
+#include <util/check.h>
 #include <util/hasher.h>
 
 #include <algorithm>
@@ -100,4 +101,48 @@ bool IsAncestorPackage(const Package& package)
                        [](const auto& input) { return input.prevout.hash; });
     }
     return true;
+}
+
+std::map<uint256, Package> CalculateAncestorPackages(const std::vector<CTransactionRef>& transactions)
+{
+    // wtxid to ancestor package for return result
+    std::map<uint256, Package> ancestor_packages;
+    // txid to transaction for quick lookup when looking at prevouts
+    std::unordered_map<uint256, CTransactionRef, SaltedTxidHasher> txid_to_tx;
+    auto iteration{0};
+    // txid to the iteration in which we last added this transaction to an ancestor set. Allows us
+    // to deduplicate ancestors without using a set (which will not preserve order).
+    std::unordered_map<uint256, decltype(iteration), SaltedTxidHasher> last_added;
+    for (const auto& tx : transactions) {
+        last_added.emplace(tx->GetHash(), iteration);
+    }
+    for (const auto& tx : transactions) {
+        ++iteration;
+        txid_to_tx.emplace(tx->GetHash(), tx);
+        Package ancestors;
+        for (const auto& input : tx->vin) {
+            // If this is an in-package parent, it must already have entries in txid_to_tx and
+            // ancestor_packages.
+            if (auto parent_tx_it{txid_to_tx.find(input.prevout.hash)}; parent_tx_it != txid_to_tx.end()) {
+                auto parent_package_it{ancestor_packages.find(parent_tx_it->second->GetWitnessHash())};
+                Assume(parent_package_it != ancestor_packages.end());
+                // Each ancestor of the parent is also an ancestor of the child.
+                for (const auto& parent_ancestor : parent_package_it->second) {
+                    if (last_added.at(parent_ancestor->GetHash()) != iteration) {
+                        ancestors.push_back(parent_ancestor);
+                        last_added.at(parent_ancestor->GetHash()) = iteration;
+                    }
+                }
+            }
+        }
+        ancestors.push_back(tx);
+        ancestor_packages.emplace(tx->GetWitnessHash(), ancestors);
+    }
+    Assume(txid_to_tx.size() == transactions.size());
+    Assume(ancestor_packages.size() == transactions.size());
+    for (const auto& tx : transactions) {
+        auto it = ancestor_packages.find(tx->GetWitnessHash());
+        Assume(IsAncestorPackage(it->second));
+    }
+    return ancestor_packages;
 }

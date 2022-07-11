@@ -65,4 +65,11 @@ bool IsChildWithParents(const Package& package);
  * is considered an ancestor package.
  */
 bool IsAncestorPackage(const Package& package);
+
+/** Break a list of transactions down into ancestor packages. The list must not contain conflicts
+ * and must be sorted. Returns a map from txid to the transaction's ancestor package. Each
+ * transaction in the package will have an entry. If a transaction had no dependencies in the
+ * package, its "package" just contains itself.
+ */
+std::map<uint256, Package> CalculateAncestorPackages(const std::vector<CTransactionRef>& transactions);
 #endif // BITCOIN_POLICY_PACKAGES_H
