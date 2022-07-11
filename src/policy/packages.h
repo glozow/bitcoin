@@ -59,4 +59,10 @@ bool CheckPackage(const Package& txns, PackageValidationState& state);
  */
 bool IsChildWithParents(const Package& package);
 
+/** Context-free check that a (sorted) package only contains a tx with its ancestors.
+ * Not all of the tx's ancestors need to be present, but the package must not contain any
+ * transactions that are not an ancestor of the last transaction. A package containing 1 transaction
+ * is considered an ancestor package.
+ */
+bool IsAncestorPackage(const Package& package);
 #endif // BITCOIN_POLICY_PACKAGES_H

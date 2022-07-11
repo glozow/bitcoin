@@ -144,6 +144,7 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
         BOOST_CHECK_EQUAL(state.GetResult(), PackageValidationResult::PCKG_POLICY);
         BOOST_CHECK_EQUAL(state.GetRejectReason(), "package-not-sorted");
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_child}));
+        BOOST_CHECK(IsAncestorPackage({tx_parent, tx_child}));
     }
 
     // 24 Parents and 1 Child
@@ -160,6 +161,7 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
 
         // The child must be in the package.
         BOOST_CHECK(!IsChildWithParents(package));
+        BOOST_CHECK(!IsAncestorPackage(package));
 
         // The parents can be in any order.
         FastRandomContext rng;
@@ -169,13 +171,16 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
         PackageValidationState state;
         BOOST_CHECK(CheckPackage(package, state));
         BOOST_CHECK(IsChildWithParents(package));
+        BOOST_CHECK(IsAncestorPackage(package));
 
         package.erase(package.begin());
         BOOST_CHECK(IsChildWithParents(package));
+        BOOST_CHECK(IsAncestorPackage(package));
 
         // The package cannot have unrelated transactions.
         package.insert(package.begin(), m_coinbase_txns[0]);
         BOOST_CHECK(!IsChildWithParents(package));
+        BOOST_CHECK(!IsAncestorPackage(package));
     }
 
     // 2 Parents and 1 Child where one parent depends on the other.
@@ -199,10 +204,13 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
 
         PackageValidationState state;
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_parent_also_child}));
+        BOOST_CHECK(IsAncestorPackage({tx_parent, tx_parent_also_child}));
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_child}));
+        BOOST_CHECK(IsAncestorPackage({tx_parent, tx_child}));
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_parent_also_child, tx_child}));
         // IsChildWithParents does not detect unsorted parents.
         BOOST_CHECK(IsChildWithParents({tx_parent_also_child, tx_parent, tx_child}));
+        BOOST_CHECK(IsAncestorPackage({tx_parent_also_child, tx_parent, tx_child}));
         BOOST_CHECK(CheckPackage({tx_parent, tx_parent_also_child, tx_child}, state));
         BOOST_CHECK(!CheckPackage({tx_parent_also_child, tx_parent, tx_child}, state));
         BOOST_CHECK_EQUAL(state.GetResult(), PackageValidationResult::PCKG_POLICY);

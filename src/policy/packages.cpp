@@ -81,3 +81,23 @@ bool IsChildWithParents(const Package& package)
     return std::all_of(package.cbegin(), package.cend() - 1,
                        [&input_txids](const auto& ptx) { return input_txids.count(ptx->GetHash()) > 0; });
 }
+
+bool IsAncestorPackage(const Package& package)
+{
+    const auto& dependent = package.back();
+    std::unordered_set<uint256, SaltedTxidHasher> dependency_txids;
+    for (auto it = package.rbegin(); it != package.rend(); ++it) {
+        const auto& tx = *it;
+        // Each transaction must be a dependency of the last transaction.
+        if (tx->GetWitnessHash() != dependent->GetWitnessHash() &&
+            dependency_txids.count(tx->GetHash()) == 0) {
+            return false;
+        }
+        // Add each transaction's dependencies to allow transactions which are ancestors but not
+        // necessarily direct parents of the last transaction.
+        std::transform(tx->vin.cbegin(), tx->vin.cend(),
+                       std::inserter(dependency_txids, dependency_txids.end()),
+                       [](const auto& input) { return input.prevout.hash; });
+    }
+    return true;
+}
