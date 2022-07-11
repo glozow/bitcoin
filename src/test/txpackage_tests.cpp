@@ -127,16 +127,19 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
     CKey placeholder_key_2;
     placeholder_key_2.MakeNewKey(true);
     CScript spk2 = GetScriptForDestination(PKHash(placeholder_key_2.GetPubKey()));
+    std::vector<CTransactionRef> all_transactions(m_coinbase_txns.cbegin(), m_coinbase_txns.cend());
 
     // Parent and Child Package
     {
         auto mtx_parent = CreateValidMempoolTransaction(m_coinbase_txns[0], 0, 0, coinbaseKey, spk,
                                                         CAmount(49 * COIN), /*submit=*/false);
         CTransactionRef tx_parent = MakeTransactionRef(mtx_parent);
+        all_transactions.push_back(tx_parent);
 
         auto mtx_child = CreateValidMempoolTransaction(tx_parent, 0, 101, placeholder_key, spk2,
                                                        CAmount(48 * COIN), /*submit=*/false);
         CTransactionRef tx_child = MakeTransactionRef(mtx_child);
+        all_transactions.push_back(tx_child);
 
         PackageValidationState state;
         BOOST_CHECK(CheckPackage({tx_parent, tx_child}, state));
@@ -145,6 +148,16 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
         BOOST_CHECK_EQUAL(state.GetRejectReason(), "package-not-sorted");
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_child}));
         BOOST_CHECK(IsAncestorPackage({tx_parent, tx_child}));
+        Package package({tx_parent, tx_child});
+        const auto package_breakdown{CalculateAncestorPackages({tx_parent, tx_child})};
+        BOOST_CHECK(package_breakdown.size() == 2);
+        const auto parent_it = package_breakdown.find(tx_parent->GetWitnessHash());
+        const auto child_it = package_breakdown.find(tx_child->GetWitnessHash());
+        BOOST_CHECK(parent_it != package_breakdown.end());
+        BOOST_CHECK(child_it != package_breakdown.end());
+        BOOST_CHECK(parent_it->second == Package{tx_parent});
+        BOOST_CHECK(child_it->second.size() == 2);
+        BOOST_CHECK(package == child_it->second);
     }
 
     // 24 Parents and 1 Child
@@ -155,6 +168,7 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
             auto parent = MakeTransactionRef(CreateValidMempoolTransaction(m_coinbase_txns[i + 1],
                                              0, 0, coinbaseKey, spk, CAmount(48 * COIN), false));
             package.emplace_back(parent);
+            all_transactions.push_back(parent);
             child.vin.push_back(CTxIn(COutPoint(parent->GetHash(), 0)));
         }
         child.vout.push_back(CTxOut(47 * COIN, spk2));
@@ -166,7 +180,21 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
         // The parents can be in any order.
         FastRandomContext rng;
         Shuffle(package.begin(), package.end(), rng);
-        package.push_back(MakeTransactionRef(child));
+        auto tx_child = MakeTransactionRef(child);
+        all_transactions.push_back(tx_child);
+        package.push_back(tx_child);
+
+        const auto package_breakdown{CalculateAncestorPackages(package)};
+        for (const auto& tx : package) {
+            const auto it = package_breakdown.find(tx->GetWitnessHash());
+            BOOST_CHECK(it != package_breakdown.end());
+            if (tx == tx_child) {
+                BOOST_CHECK(it->second.size() == package.size());
+                BOOST_CHECK(std::is_permutation(package.cbegin(), package.cend(), it->second.cbegin()));
+            } else {
+                BOOST_CHECK(it->second == Package({tx}));
+            }
+        }
 
         PackageValidationState state;
         BOOST_CHECK(CheckPackage(package, state));
@@ -190,17 +218,20 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
         mtx_parent.vout.push_back(CTxOut(20 * COIN, spk));
         mtx_parent.vout.push_back(CTxOut(20 * COIN, spk2));
         CTransactionRef tx_parent = MakeTransactionRef(mtx_parent);
+        all_transactions.push_back(tx_parent);
 
         CMutableTransaction mtx_parent_also_child;
         mtx_parent_also_child.vin.push_back(CTxIn(COutPoint(tx_parent->GetHash(), 0)));
         mtx_parent_also_child.vout.push_back(CTxOut(20 * COIN, spk));
         CTransactionRef tx_parent_also_child = MakeTransactionRef(mtx_parent_also_child);
+        all_transactions.push_back(tx_parent_also_child);
 
         CMutableTransaction mtx_child;
         mtx_child.vin.push_back(CTxIn(COutPoint(tx_parent->GetHash(), 1)));
         mtx_child.vin.push_back(CTxIn(COutPoint(tx_parent_also_child->GetHash(), 0)));
         mtx_child.vout.push_back(CTxOut(39 * COIN, spk));
         CTransactionRef tx_child = MakeTransactionRef(mtx_child);
+        all_transactions.push_back(tx_child);
 
         PackageValidationState state;
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_parent_also_child}));
@@ -215,6 +246,29 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
         BOOST_CHECK(!CheckPackage({tx_parent_also_child, tx_parent, tx_child}, state));
         BOOST_CHECK_EQUAL(state.GetResult(), PackageValidationResult::PCKG_POLICY);
         BOOST_CHECK_EQUAL(state.GetRejectReason(), "package-not-sorted");
+
+        Package package({tx_parent, tx_parent_also_child, tx_child});
+        const auto package_breakdown{CalculateAncestorPackages(package)};
+        BOOST_CHECK(package_breakdown.size() == package.size());
+        const auto parent_it = package_breakdown.find(tx_parent->GetWitnessHash());
+        const auto parent_also_child_it = package_breakdown.find(tx_parent_also_child->GetWitnessHash());
+        const auto child_it = package_breakdown.find(tx_child->GetWitnessHash());
+        BOOST_CHECK(parent_it != package_breakdown.end());
+        BOOST_CHECK(parent_also_child_it != package_breakdown.end());
+        BOOST_CHECK(child_it != package_breakdown.end());
+        BOOST_CHECK(parent_it->second == Package{tx_parent});
+        BOOST_CHECK(parent_also_child_it->second.size() == 2);
+        BOOST_CHECK(parent_also_child_it->second == Package({tx_parent, tx_parent_also_child}));
+        BOOST_CHECK(child_it->second.size() == 3);
+        BOOST_CHECK(package == child_it->second);
+    }
+
+    const auto package_breakdown{CalculateAncestorPackages(all_transactions)};
+    BOOST_CHECK(package_breakdown.size() == all_transactions.size());
+    for (const auto& tx : all_transactions) {
+        const auto it{package_breakdown.find(tx->GetWitnessHash())};
+        BOOST_CHECK(it != package_breakdown.end());
+        BOOST_CHECK(IsAncestorPackage(it->second));
     }
 }
 
