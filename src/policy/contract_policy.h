@@ -66,4 +66,10 @@ bool CanReplaceV3(const CTransaction& mempool_tx, const CTransaction& replacemen
 std::optional<std::string> CanReplaceV3(const CTxMemPool::setEntries& direct_conflicts,
                                         const std::vector<CTransactionRef>& replacement_transactions);
 
+/** Allow dust outputs in V3 parent + child transactions under certain conditions.
+ * See doc/policy/version3_transactions.md#Ephemeral-Dust-Outputs for details.
+ * */
+std::optional<std::string> CheckEphemeralDust(const CTransactionRef& parent,
+                                              const CTransactionRef& child,
+                                              const CAmount& parent_fee);
 #endif // BITCOIN_POLICY_CONTRACT_POLICY_H

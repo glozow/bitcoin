@@ -720,8 +720,13 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
 
     // Rather not work on nonstandard transactions (unless -testnet/-regtest)
     std::string reason;
-    if (fRequireStandard && !IsStandardTx(tx, reason))
+    // Bypass the dust check for now if ephemeral dust is allowed. Remember to call
+    // CheckEphemeralDust() later with all transactions.
+    if (args.m_package_feerates && tx.nVersion == 3 && !IsStandardTx(tx, reason, /*check_dust=*/ false)) {
         return state.Invalid(TxValidationResult::TX_NOT_STANDARD, reason);
+    } else if (fRequireStandard && !IsStandardTx(tx, reason)) {
+        return state.Invalid(TxValidationResult::TX_NOT_STANDARD, reason);
+    }
 
     // Do not work on transactions that are too small.
     // A transaction with 1 segwit input and 1 P2WPHK output has non-witness size of 82 bytes.
@@ -1365,10 +1370,21 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
         [](CAmount sum, auto& ws) { return sum + ws.m_modified_fees; });
     const CFeeRate package_feerate(m_total_modified_fees, m_total_vsize);
     TxValidationState placeholder_state;
-    if (args.m_package_feerates &&
-        !CheckFeeRate(m_total_vsize, m_total_modified_fees, placeholder_state)) {
-        package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package-fee-too-low");
-        return PackageMempoolAcceptResult(package_state, package_feerate, {});
+    if (args.m_package_feerates) {
+        if (!CheckFeeRate(m_total_vsize, m_total_modified_fees, placeholder_state)) {
+            package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package-fee-too-low");
+            return PackageMempoolAcceptResult(package_state, package_feerate, {});
+        }
+        if (IsChildWithParents(txns)) {
+            const auto& child = txns.back();
+            for (Workspace& ws : workspaces) {
+                if (ws.m_ptx == child || ws.m_ptx->nVersion != 3) continue;
+                if (const auto err_string{CheckEphemeralDust(ws.m_ptx, child, ws.m_modified_fees)}) {
+                    package_state.Invalid(PackageValidationResult::PCKG_POLICY, "dust-not-ephemeral", *err_string);
+                    return PackageMempoolAcceptResult(package_state, package_feerate, {});
+                } 
+            }
+        }
     }
 
     // Apply package mempool ancestor/descendant limits. Skip if there is only one transaction,
