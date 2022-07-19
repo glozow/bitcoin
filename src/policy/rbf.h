@@ -19,7 +19,7 @@
 class CFeeRate;
 class uint256;
 
-/** Maximum number of transactions that can be replaced by BIP125 RBF (Rule #5). This includes all
+/** Maximum number of transactions that can be replaced by RBF Rule #5. This includes all
  * mempool conflicts and their descendants. */
 static constexpr uint32_t MAX_REPLACEMENT_CANDIDATES{100};
 
@@ -47,9 +47,8 @@ enum class RBFTransactionState {
 RBFTransactionState IsRBFOptIn(const CTransaction& tx, const CTxMemPool& pool) EXCLUSIVE_LOCKS_REQUIRED(pool.cs);
 RBFTransactionState IsRBFOptInEmptyMempool(const CTransaction& tx);
 
-/** Get all descendants of iters_conflicting. Also enforce BIP125 Rule #5, "The number of original
- * transactions to be replaced and their descendant transactions which will be evicted from the
- * mempool must not exceed a total of 100 transactions." Quit as early as possible. There cannot be
+/** Get all descendants of iters_conflicting. Also enforce Rule #5, "The number of original
+ * transactions does not exceed 100." Quit as early as possible. There cannot be
  * more than MAX_REPLACEMENT_CANDIDATES potential entries.
  * @param[in]   iters_conflicting   The set of iterators to mempool entries.
  * @param[out]  all_conflicts       Populated with all the mempool entries that would be replaced,
@@ -62,7 +61,7 @@ std::optional<std::string> GetEntriesForConflicts(const CTransaction& tx, CTxMem
                                                   CTxMemPool::setEntries& all_conflicts)
     EXCLUSIVE_LOCKS_REQUIRED(pool.cs);
 
-/** BIP125 Rule #2: "The replacement transaction may only include an unconfirmed input if that input
+/** Enforce Rule #2: "The replacement transaction may only include an unconfirmed input if that input
  * was included in one of the original transactions."
  * @returns error message if Rule #2 is broken, otherwise std::nullopt. */
 std::optional<std::string> HasNoNewUnconfirmed(const CTransaction& tx, const CTxMemPool& pool,
@@ -90,9 +89,9 @@ std::optional<std::string> EntriesAndTxidsDisjoint(const CTxMemPool::setEntries&
 std::optional<std::string> PaysMoreThanConflicts(const CTxMemPool::setEntries& iters_conflicting,
                                                  CFeeRate replacement_feerate, const uint256& txid);
 
-/** Enforce BIP125 Rule #3 "The replacement transaction pays an absolute fee of at least the sum
- * paid by the original transactions." Enforce BIP125 Rule #4 "The replacement transaction must also
- * pay for its own bandwidth at or above the rate set by the node's minimum relay fee setting."
+/** Enforce Rule #3 and #4 "The replacement transaction pays an absolute fee of at least the sum
+ * paid by the original transactions. The replacement transaction must also pay for its own
+ * bandwidth at or above the rate set by the node's minimum relay fee setting."
  * @param[in]   original_fees       Total modified fees of original transaction(s).
  * @param[in]   replacement_fees    Total modified fees of replacement transaction(s).
  * @param[in]   replacement_vsize   Total virtual size of replacement transaction(s).
