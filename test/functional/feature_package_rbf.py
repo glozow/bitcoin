@@ -157,7 +157,7 @@ class PackageRBFTest(BitcoinTestFramework):
         self.address = node.get_deterministic_priv_key().address
         self.coins = []
         # The last 100 coinbase transactions are premature
-        for b in self.generatetoaddress(node, 260, self.address)[:-100]:
+        for b in self.generatetoaddress(node, 262, self.address)[:-100]:
             coinbase = node.getblock(blockhash=b, verbosity=2)["tx"][0]
             self.coins.append({
                 "txid": coinbase["txid"],
@@ -172,6 +172,7 @@ class PackageRBFTest(BitcoinTestFramework):
         self.test_package_rbf_max_conflicts()
         self.test_package_rbf_conflicting_conflicts()
         self.test_package_rbf_partial()
+        self.test_ephemeral_dust()
 
     def test_package_rbf_basic(self):
         self.log.info("Test that packages can RBF")
@@ -343,6 +344,43 @@ class PackageRBFTest(BitcoinTestFramework):
         node.submitpackage(package_hex2)
         self.assert_mempool_contents(expected=package_txns2, unexpected=package_txns1)
         self.generate(node, 1)
+
+    def test_ephemeral_dust(self):
+        self.log.info("Test ephemeral dust (experimental)")
+        node = self.nodes[0]
+        coins = self.coins[:2]
+        del self.coins[:2]
+
+        # parent
+        txid = coins[0]["txid"]
+        value = coins[0]["amount"]
+        inputs = [{"txid": txid, "vout": 0, "sequence": MAX_BIP125_RBF_SEQUENCE + 1}]
+        # ephemeral output. transaction fee = 0
+        outputs = {self.address: 0}
+        tx_ephemeral_output = tx_from_hex(node.createrawtransaction(inputs, outputs))
+        tx_ephemeral_output.nVersion = 3
+        hex_parent = node.signrawtransactionwithkey(tx_ephemeral_output.serialize().hex(), self.privkeys)["hex"]
+        tx_parent = tx_from_hex(hex_parent)
+
+        # child
+        txid = coins[1]["txid"]
+        value = coins[1]["amount"]
+        inputs = [{"txid": txid, "vout": 0, "sequence": MAX_BIP125_RBF_SEQUENCE + 1},
+                  {"txid": tx_parent.rehash(), "vout": 0, "sequence": MAX_BIP125_RBF_SEQUENCE + 1}]
+        # high transaction fee
+        outputs = {self.address: value - DEFAULT_FEE * 3}
+        tx_ephemeral_output_spender = tx_from_hex(node.createrawtransaction(inputs, outputs))
+        tx_ephemeral_output_spender.nVersion = 3
+        hex_child = node.signrawtransactionwithkey(tx_ephemeral_output_spender.serialize().hex(), self.privkeys)["hex"]
+        tx_child = tx_from_hex(hex_child)
+
+        print("tx_parent: ".format(tx_parent.rehash()))
+        print("tx_child: ".format(tx_child.rehash()))
+
+        node.submitpackage([hex_parent, hex_child])
+        self.assert_mempool_contents(expected=[tx_parent.rehash(), tx_child.rehash()])
+
+
 
 if __name__ == "__main__":
     PackageRBFTest().main()

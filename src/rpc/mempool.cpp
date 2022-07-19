@@ -839,6 +839,12 @@ static RPCHelpMan submitpackage()
                     NONFATAL_UNREACHABLE();
                 }
             }
+            CHECK_NONFATAL(package_result.m_state.IsValid());
+            for (const auto& tx : txns) {
+                if (!mempool.exists(GenTxid::Txid(tx->GetHash()))) {
+                    throw JSONRPCTransactionError(err, strprintf("somehow this tx is not in mempool: %s", tx->GetHash()));
+                }
+            }
             for (const auto& tx : txns) {
                 size_t num_submitted{0};
                 std::string err_string;
