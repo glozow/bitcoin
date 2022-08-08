@@ -981,6 +981,9 @@ bool MemPoolAccept::PackageMempoolChecks(const std::vector<CTransactionRef>& txn
                        { return !m_pool.exists(GenTxid::Txid(tx->GetHash()));}));
 
     std::string err_string;
+    // Note that the MemPoolAccept::m_limit_descendants, not Workspace::m_tx_limit_descendants, are
+    // used as descendant limits. If any extra descendant carveouts were granted (see comments in
+    // PreChecks), they do not apply here.
     if (!m_pool.CheckPackageLimits(txns, m_limit_ancestors, m_limit_ancestor_size, m_limit_descendants,
                                    m_limit_descendant_size, err_string)) {
         // This is a package-wide error, separate from an individual transaction error.
