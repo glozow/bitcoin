@@ -12,6 +12,7 @@
 #include <util/moneystr.h>
 
 #include <algorithm>
+#include <numeric>
 #include <utility>
 
 namespace node {
@@ -124,9 +125,10 @@ void MiniMiner::BuildMockTemplate(const CFeeRate& target_feerate)
         // Pick highest ancestor feerate entry.
         auto best_iter = entries.begin();
         Assume(best_iter != entries.end());
+        const auto ancestor_package_size = (*best_iter)->second.GetSizeWithAncestors();
+        const auto ancestor_package_fee = (*best_iter)->second.GetModFeesWithAncestors();
         // Stop here. Everything that didn't "make it into the block" has bumpfee.
-        if (best_iter == entries.end() ||
-            (*best_iter)->second.GetModFeesWithAncestors() < target_feerate.GetFee((*best_iter)->second.GetSizeWithAncestors())) {
+        if (best_iter == entries.end() || ancestor_package_fee < target_feerate.GetFee(ancestor_package_size)) {
             break;
         }
 
@@ -148,7 +150,10 @@ void MiniMiner::BuildMockTemplate(const CFeeRate& target_feerate)
             }
             to_process.erase(iter);
         }
-        // TODO: Assume the ancestor size and fees match.
+        Assume(ancestor_package_size == std::accumulate(ancestors.cbegin(), ancestors.cend(), 0,
+            [](int64_t sum, const auto it) {return sum + it->second.GetTxSize();}));
+        Assume(ancestor_package_fee == std::accumulate(ancestors.cbegin(), ancestors.cend(), 0,
+            [](CAmount sum, const auto it) {return sum + it->second.GetModifiedFee();}));
         for (const auto& anc : ancestors) {
             in_block.insert(anc->second.GetTx().GetHash());
             total_fees += anc->second.GetModifiedFee();
