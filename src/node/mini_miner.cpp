@@ -27,13 +27,14 @@ MiniMiner::MiniMiner(const CTxMemPool& mempool, const std::vector<COutPoint>& ou
         if (const auto ptx{mempool.GetConflictTx(outpoint)}) {
             // The conflicting transaction is to-be-replaced
             to_be_replaced.insert(ptx->GetHash());
-        } else if (mempool.isSpent(outpoint)) {
+            this->bump_fees.emplace(std::make_pair(outpoint, 0));
+        } else if (mempool.isSpent(outpoint) || !mempool.exists(GenTxid::Txid(outpoint.hash))) {
             // This UTXO is either confirmed or not yet submitted to mempool.
             // In the former case, no bump fee is required.
             // In the latter case, we have no information, so just return 0.
-            bump_fees.emplace(std::make_pair(outpoint, 0));
+            this->bump_fees.emplace(std::make_pair(outpoint, 0));
         } else {
-            // This UTXO is unconfirmed and available to spend.
+            // This UTXO is unconfirmed, in the mempool, and available to spend.
             auto it = outpoints_needed_by_txid.find(outpoint.hash);
             if (it != outpoints_needed_by_txid.end()) {
                 it->second.push_back(outpoint);
@@ -55,6 +56,13 @@ MiniMiner::MiniMiner(const CTxMemPool& mempool, const std::vector<COutPoint>& ou
     for (const auto& txiter : cluster) {
         if (to_be_replaced.find(txiter->GetTx().GetHash()) == to_be_replaced.end()) {
             entries_by_txid.emplace(std::make_pair(txiter->GetTx().GetHash(), MockMempoolEntry(txiter)));
+        } else {
+            auto outpoints_it = outpoints_needed_by_txid.find(txiter->GetTx().GetHash());
+            if (outpoints_it != outpoints_needed_by_txid.end()) {
+                for (const auto& outpoint : outpoints_it->second) {
+                    this->bump_fees.emplace(std::make_pair(outpoint, 0));
+                }
+            }
         }
     }
 
@@ -197,12 +205,12 @@ std::map<COutPoint, CAmount> MiniMiner::CalculateBumpFees(const CFeeRate& target
         if (it != entries_by_txid.end()) {
             const CAmount bump_fee{target_feerate.GetFee(it->second.GetSizeWithAncestors())
                                    - it->second.GetModFeesWithAncestors()};
-            Assume(bump_fee >= 0);
+            assert(bump_fee >= 0);
             for (const auto& outpoint : outpoints) {
                 bump_fees.emplace(std::make_pair(outpoint, bump_fee));
             }
         }
     }
-    return bump_fees;
+    return this->bump_fees;
 }
 } // namespace node
