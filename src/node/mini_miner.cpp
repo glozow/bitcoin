@@ -154,6 +154,8 @@ void MiniMiner::BuildMockTemplate(const CFeeRate& target_feerate)
             [](int64_t sum, const auto it) {return sum + it->second.GetTxSize();}));
         Assume(ancestor_package_fee == std::accumulate(ancestors.cbegin(), ancestors.cend(), 0,
             [](CAmount sum, const auto it) {return sum + it->second.GetModifiedFee();}));
+
+        // "Mine" all transactions in this ancestor set.
         for (const auto& anc : ancestors) {
             in_block.insert(anc->second.GetTx().GetHash());
             total_fees += anc->second.GetModifiedFee();
@@ -195,6 +197,7 @@ std::map<COutPoint, CAmount> MiniMiner::CalculateBumpFees(const CFeeRate& target
         if (it != entries_by_txid.end()) {
             const CAmount bump_fee{target_feerate.GetFee(it->second.GetSizeWithAncestors())
                                    - it->second.GetModFeesWithAncestors()};
+            Assume(bump_fee >= 0);
             for (const auto& outpoint : outpoints) {
                 bump_fees.emplace(std::make_pair(outpoint, bump_fee));
             }
