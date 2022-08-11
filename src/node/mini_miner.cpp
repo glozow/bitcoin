@@ -104,7 +104,7 @@ struct AncestorFeerateComparator
     }
 };
 
-void MiniMiner::DeleteAncestorPackage(const std::vector<MockEntryMap::iterator>& ancestors)
+void MiniMiner::DeleteAncestorPackage(const std::set<MockEntryMap::iterator, IteratorComparator>& ancestors)
 {
     for (const auto& anc : ancestors) {
         // TODO: Delete everything
@@ -130,9 +130,25 @@ void MiniMiner::BuildMockTemplate(const CFeeRate& target_feerate)
             break;
         }
 
-        std::vector<MockEntryMap::iterator> ancestors;
-        // TODO: FIXME
-        /* auto ancestors = GetAncestors(*best_iter); */
+        // Calculate ancestors on the fly. This lookup should be fairly cheap, and ancestor sets
+        // change at every iteration, so this is more efficient than maintaining a cache.
+        std::set<MockEntryMap::iterator, IteratorComparator> ancestors;
+        std::set<MockEntryMap::iterator, IteratorComparator> to_process;
+        ancestors.insert(*best_iter);
+        to_process.insert(*best_iter);
+        while (!to_process.empty()) {
+            auto iter = to_process.begin();
+            Assume(iter != to_process.end());
+            const CTransaction& tx = (*iter)->second.GetTx();
+            for (const auto& input : tx.vin) {
+                if (auto parent_it{entries_by_txid.find(input.prevout.hash)}; parent_it != entries_by_txid.end()) {
+                    to_process.insert(parent_it);
+                    ancestors.insert(parent_it);
+                }
+            }
+            to_process.erase(iter);
+        }
+        // TODO: Assume the ancestor size and fees match.
         for (const auto& anc : ancestors) {
             in_block.insert(anc->second.GetTx().GetHash());
             total_fees += anc->second.GetModifiedFee();

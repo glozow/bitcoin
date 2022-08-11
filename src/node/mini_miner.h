@@ -39,6 +39,16 @@ public:
 
 void UpdateForMinedAncestor(const MockMempoolEntry& ancestor, const MockMempoolEntry& descendant);
 
+// Comparator needed for std::set<MockEntryMap::iterator>
+struct IteratorComparator
+{
+    template<typename I>
+    bool operator()(const I& a, const I& b) const
+    {
+        return &(*a) < &(*b);
+    }
+};
+
 /** A minimal version of BlockAssembler. Allows us to run the mining algorithm on a subset of
  * mempool transactions, ignoring consensus rules, to calculate mining scores. */
 class MiniMiner
@@ -73,8 +83,10 @@ class MiniMiner
     /** Map of txid to its descendants. Should be inclusive. */
     std::map<uint256, std::vector<MockEntryMap::iterator>> descendant_set_by_txid;
 
+    std::vector<MockEntryMap::iterator> GetAncestors(MockEntryMap::iterator entry);
+
     /** Consider this ancestor package "mined" so remove all these entries from our data structures. */
-    void DeleteAncestorPackage(const std::vector<MockEntryMap::iterator>& ancestors);
+    void DeleteAncestorPackage(const std::set<MockEntryMap::iterator, IteratorComparator>& ancestors);
 
     /** Build a block template until the target feerate is hit. */
     void BuildMockTemplate(const CFeeRate& target_feerate);
