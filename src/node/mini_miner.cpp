@@ -55,7 +55,9 @@ MiniMiner::MiniMiner(const CTxMemPool& mempool, const std::vector<COutPoint>& ou
     const auto& cluster = mempool.CalculateCluster(txids_needed);
     for (const auto& txiter : cluster) {
         if (to_be_replaced.find(txiter->GetTx().GetHash()) == to_be_replaced.end()) {
-            entries_by_txid.emplace(std::make_pair(txiter->GetTx().GetHash(), MockMempoolEntry(txiter)));
+            auto [mapiter, success] = entries_by_txid.emplace(std::make_pair(txiter->GetTx().GetHash(), MockMempoolEntry(txiter)));
+            assert(success);
+            entries.push_back(mapiter);
         } else {
             auto outpoints_it = outpoints_needed_by_txid.find(txiter->GetTx().GetHash());
             if (outpoints_it != outpoints_needed_by_txid.end()) {
@@ -94,9 +96,9 @@ MiniMiner::MiniMiner(const CTxMemPool& mempool, const std::vector<COutPoint>& ou
     }
     // Release the mempool lock; we now have all the information we need for a subset of the entries
     // we care about. We will solely operate on the MockMempoolEntry map from now on.
-    Assume(entries.size() == entries_by_txid.size());
-    Assume(entries.size() == descendant_set_by_txid.size());
-    Assume(in_block.empty());
+    assert(entries.size() == entries_by_txid.size());
+    assert(entries.size() == descendant_set_by_txid.size());
+    assert(in_block.empty());
 }
 
 // Compare by ancestor feerate, then iterator
@@ -118,7 +120,7 @@ void MiniMiner::DeleteAncestorPackage(const std::set<MockEntryMap::iterator, Ite
     for (const auto& anc : ancestors) {
         // TODO: Delete everything
         auto vec_it = std::find(entries.begin(), entries.end(), anc);
-        Assume(vec_it != entries.end());
+        assert(vec_it != entries.end());
         entries.erase(vec_it);
         entries_by_txid.erase(anc);
     }
@@ -132,7 +134,7 @@ void MiniMiner::BuildMockTemplate(const CFeeRate& target_feerate)
 
         // Pick highest ancestor feerate entry.
         auto best_iter = entries.begin();
-        Assume(best_iter != entries.end());
+        assert(best_iter != entries.end());
         const auto ancestor_package_size = (*best_iter)->second.GetSizeWithAncestors();
         const auto ancestor_package_fee = (*best_iter)->second.GetModFeesWithAncestors();
         // Stop here. Everything that didn't "make it into the block" has bumpfee.
@@ -148,7 +150,7 @@ void MiniMiner::BuildMockTemplate(const CFeeRate& target_feerate)
         to_process.insert(*best_iter);
         while (!to_process.empty()) {
             auto iter = to_process.begin();
-            Assume(iter != to_process.end());
+            assert(iter != to_process.end());
             const CTransaction& tx = (*iter)->second.GetTx();
             for (const auto& input : tx.vin) {
                 if (auto parent_it{entries_by_txid.find(input.prevout.hash)}; parent_it != entries_by_txid.end()) {
@@ -158,9 +160,9 @@ void MiniMiner::BuildMockTemplate(const CFeeRate& target_feerate)
             }
             to_process.erase(iter);
         }
-        Assume(ancestor_package_size == std::accumulate(ancestors.cbegin(), ancestors.cend(), 0,
+        assert(ancestor_package_size == std::accumulate(ancestors.cbegin(), ancestors.cend(), 0,
             [](int64_t sum, const auto it) {return sum + it->second.GetTxSize();}));
-        Assume(ancestor_package_fee == std::accumulate(ancestors.cbegin(), ancestors.cend(), 0,
+        assert(ancestor_package_fee == std::accumulate(ancestors.cbegin(), ancestors.cend(), 0,
             [](CAmount sum, const auto it) {return sum + it->second.GetModifiedFee();}));
 
         // "Mine" all transactions in this ancestor set.
@@ -169,7 +171,7 @@ void MiniMiner::BuildMockTemplate(const CFeeRate& target_feerate)
             total_fees += anc->second.GetModifiedFee();
             total_vsize += anc->second.GetTxSize();
             auto it = descendant_set_by_txid.find(anc->second.GetTx().GetHash());
-            Assume(it != descendant_set_by_txid.end());
+            assert(it != descendant_set_by_txid.end());
             for (const auto& descendant : it->second) {
                 descendant->second.vsize_with_ancestors -= anc->second.GetTxSize();
                 descendant->second.fee_with_ancestors -= anc->second.GetModifiedFee();
@@ -183,7 +185,7 @@ std::map<COutPoint, CAmount> MiniMiner::CalculateBumpFees(const CFeeRate& target
 {
     // Build a block template until the target feerate is hit.
     BuildMockTemplate(target_feerate);
-    Assume(in_block.empty() || CFeeRate(total_fees, total_vsize) >= target_feerate);
+    assert(in_block.empty() || CFeeRate(total_fees, total_vsize) >= target_feerate);
 
     // Each transaction that "made it into the block" has a bumpfee of 0, i.e. they are part of an
     // ancestor package that exceeds the target feerate and don't need to be bumped.
@@ -201,8 +203,9 @@ std::map<COutPoint, CAmount> MiniMiner::CalculateBumpFees(const CFeeRate& target
     // to the target feerate, target_feerate * ancestor_size - ancestor_fees
     for (const auto& [txid, outpoints] : outpoints_needed_by_txid) {
         auto it = entries_by_txid.find(txid);
-        Assume(it != entries_by_txid.end());
+        assert(it != entries_by_txid.end());
         if (it != entries_by_txid.end()) {
+            assert(target_feerate.GetFee(it->second.GetSizeWithAncestors()) > it->second.GetModFeesWithAncestors());
             const CAmount bump_fee{target_feerate.GetFee(it->second.GetSizeWithAncestors())
                                    - it->second.GetModFeesWithAncestors()};
             assert(bump_fee >= 0);
