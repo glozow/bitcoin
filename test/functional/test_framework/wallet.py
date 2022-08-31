@@ -247,7 +247,8 @@ class MiniWallet:
         amount_per_output=0,
         sequence=0,
         fee_per_output=1000,
-        target_weight=0
+        target_weight=0,
+        version=2
     ):
         """
         Create and return a transaction that spends the given UTXOs and creates a
@@ -260,7 +261,8 @@ class MiniWallet:
         # create simple tx template (1 input, 1 output)
         tx = self.create_self_transfer(
             fee_rate=0,
-            utxo_to_spend=utxos_to_spend[0])["tx"]
+            utxo_to_spend=utxos_to_spend[0],
+            version=version)["tx"]
 
         # duplicate inputs, witnesses and outputs
         tx.vin = [deepcopy(tx.vin[0]) for _ in range(len(utxos_to_spend))]
@@ -295,7 +297,7 @@ class MiniWallet:
             "tx": tx,
         }
 
-    def create_self_transfer(self, *, fee_rate=Decimal("0.003"), fee=Decimal("0"), utxo_to_spend=None, locktime=0, sequence=0, target_weight=0):
+    def create_self_transfer(self, *, fee_rate=Decimal("0.003"), fee=Decimal("0"), utxo_to_spend=None, locktime=0, sequence=0, target_weight=0, version=2):
         """Create and return a tx with the specified fee. If fee is 0, use fee_rate, where the resulting fee may be exact or at most one satoshi higher than needed."""
         utxo_to_spend = utxo_to_spend or self.get_utxo()
         assert fee_rate >= 0
@@ -313,6 +315,7 @@ class MiniWallet:
         tx.vin = [CTxIn(COutPoint(int(utxo_to_spend['txid'], 16), utxo_to_spend['vout']), nSequence=sequence)]
         tx.vout = [CTxOut(int(COIN * send_value), bytearray(self._scriptPubKey))]
         tx.nLockTime = locktime
+        tx.nVersion = version
         if self._mode == MiniWalletMode.RAW_P2PK:
             self.sign_tx(tx)
         elif self._mode == MiniWalletMode.RAW_OP_TRUE:
