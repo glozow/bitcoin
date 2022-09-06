@@ -33,6 +33,8 @@ from test_framework.messages import (
     MAX_HEADERS_RESULTS,
     msg_addr,
     msg_addrv2,
+    msg_ancpkginfo,
+    MSG_ANCPKGINFO,
     msg_block,
     MSG_BLOCK,
     msg_blocktxn,
@@ -102,6 +104,7 @@ UNCONDITIONAL_RELAY_DELAY = 2 * 60
 MESSAGEMAP = {
     b"addr": msg_addr,
     b"addrv2": msg_addrv2,
+    b"ancpkginfo": msg_ancpkginfo,
     b"block": msg_block,
     b"blocktxn": msg_blocktxn,
     b"cfcheckpt": msg_cfcheckpt,
