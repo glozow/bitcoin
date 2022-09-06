@@ -115,6 +115,7 @@ static RPCHelpMan getpeerinfo()
                         {RPCResult::Type::STR, "SERVICE_NAME", "the service name if it is recognised"}
                     }},
                     {RPCResult::Type::BOOL, "relaytxes", /*optional=*/true, "Whether peer has asked us to relay transactions to it"},
+                    {RPCResult::Type::BOOL, "relaytxpackages", /*optional=*/true, "Whether we relay packages with this peer"},
                     {RPCResult::Type::NUM_TIME, "lastsend", "The " + UNIX_EPOCH_TIME + " of the last send"},
                     {RPCResult::Type::NUM_TIME, "lastrecv", "The " + UNIX_EPOCH_TIME + " of the last receive"},
                     {RPCResult::Type::NUM_TIME, "last_transaction", "The " + UNIX_EPOCH_TIME + " of the last valid transaction received from this peer"},
@@ -236,6 +237,7 @@ static RPCHelpMan getpeerinfo()
             }
             obj.pushKV("inflight", heights);
             obj.pushKV("relaytxes", statestats.m_relay_txs);
+            obj.pushKV("relaytxpackages", statestats.m_package_relay);
             obj.pushKV("minfeefilter", ValueFromAmount(statestats.m_fee_filter_received));
             obj.pushKV("addr_relay_enabled", statestats.m_addr_relay_enabled);
             obj.pushKV("addr_processed", statestats.m_addr_processed);
