@@ -61,6 +61,7 @@ MSG_WTX = 5
 MSG_WITNESS_FLAG = 1 << 30
 MSG_TYPE_MASK = 0xffffffff >> 2
 MSG_WITNESS_TX = MSG_TX | MSG_WITNESS_FLAG
+MSG_ANCPKGINFO = 7
 
 FILTER_TYPE_BASIC = 0
 
@@ -370,6 +371,7 @@ class CInv:
         MSG_FILTERED_BLOCK: "filtered Block",
         MSG_CMPCT_BLOCK: "CompactBlock",
         MSG_WTX: "WTX",
+        MSG_ANCPKGINFO: "ancpkginfo",
     }
 
     def __init__(self, t=0, h=0):
@@ -1908,6 +1910,24 @@ class msg_sendpackages:
 
     def __repr__(self):
         return "msg_sendpackages(versions={})".format(self.versions)
+
+class msg_ancpkginfo:
+    __slots__ = ("wtxids")
+    msgtype = b"ancpkginfo"
+
+    def __init__(self, wtxids=None):
+        self.wtxids = wtxids if wtxids is not None else []
+
+    def deserialize(self, f):
+        self.wtxids = deser_uint256_vector(f)
+
+    def serialize(self):
+        r = b""
+        r += ser_uint256_vector(self.wtxids)
+        return r
+
+    def __repr__(self):
+        return "msg_ancpkginfo(wtxids=%s)" % (self.wtxids)
 
 class TestFrameworkScript(unittest.TestCase):
     def test_addrv2_encode_decode(self):

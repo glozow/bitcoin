@@ -33,6 +33,7 @@ from test_framework.messages import (
     MAX_HEADERS_RESULTS,
     msg_addr,
     msg_addrv2,
+    msg_ancpkginfo,
     msg_block,
     MSG_BLOCK,
     msg_blocktxn,
@@ -108,6 +109,7 @@ ORPHAN_ANCESTOR_GETDATA_INTERVAL = 60
 MESSAGEMAP = {
     b"addr": msg_addr,
     b"addrv2": msg_addrv2,
+    b"ancpkginfo": msg_ancpkginfo,
     b"block": msg_block,
     b"blocktxn": msg_blocktxn,
     b"cfcheckpt": msg_cfcheckpt,
