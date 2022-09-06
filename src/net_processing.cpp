@@ -1524,6 +1524,7 @@ bool PeerManagerImpl::GetNodeStateStats(NodeId nodeid, CNodeStateStats& stats) c
         stats.m_fee_filter_received = 0;
     }
 
+    stats.m_package_relay = m_txdownloadman.SupportsPackageRelay(nodeid);
     stats.m_ping_wait = ping_wait;
     stats.m_addr_processed = peer->m_addr_processed.load();
     stats.m_addr_rate_limited = peer->m_addr_rate_limited.load();

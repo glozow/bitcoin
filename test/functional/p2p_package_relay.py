@@ -73,6 +73,7 @@ class PackageRelayTest(BitcoinTestFramework):
         assert_equal(node.getpeerinfo()[0]["bytesrecv_per_msg"]["sendpackages"], 32)
         assert_equal(node.getpeerinfo()[0]["bytessent_per_msg"]["sendpackages"], 32)
         assert_equal(peer_normal.sendpackages_received, [SUPPORTED_PKG_RELAY])
+        assert node.getpeerinfo()[0]["relaytxpackages"]
         node.disconnect_p2ps()
 
         self.log.info("Test sendpackages without wtxid relay")
@@ -81,6 +82,7 @@ class PackageRelayTest(BitcoinTestFramework):
         assert_equal(node.getpeerinfo()[0]["bytesrecv_per_msg"]["sendpackages"], 32)
         assert_equal(node.getpeerinfo()[0]["bytessent_per_msg"]["sendpackages"], 32)
         assert_equal(peer_no_wtxidrelay.sendpackages_received, [SUPPORTED_PKG_RELAY])
+        assert not node.getpeerinfo()[0]["relaytxpackages"]
         node.disconnect_p2ps()
 
         self.log.info("Test sendpackages is sent even so")
@@ -90,6 +92,7 @@ class PackageRelayTest(BitcoinTestFramework):
         assert_equal(node.getpeerinfo()[0]["bytessent_per_msg"]["sendpackages"], 32)
         assert "sendpackages" not in node.getpeerinfo()[0]["bytesrecv_per_msg"]
         assert_equal(peer_no_sendpackages.sendpackages_received, [SUPPORTED_PKG_RELAY])
+        assert not node.getpeerinfo()[0]["relaytxpackages"]
         node.disconnect_p2ps()
 
         self.log.info("Test disconnection if sendpackages is sent after version handshake")
