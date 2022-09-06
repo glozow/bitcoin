@@ -33,6 +33,8 @@ from test_framework.messages import (
     MAX_HEADERS_RESULTS,
     msg_addr,
     msg_addrv2,
+    msg_ancpkginfo,
+    MSG_ANCPKGINFO,
     msg_block,
     MSG_BLOCK,
     msg_blocktxn,
@@ -95,10 +97,13 @@ P2P_SUBVERSION = "/python-p2p-tester:0.0.3/"
 P2P_VERSION_RELAY = 1
 # Delay after receiving a tx inv before requesting transactions from non-preferred peers, in seconds
 NONPREF_PEER_TX_DELAY = 2
+# How long a transaction has to be in the mempool before it can unconditionally be relayed, in seconds
+UNCONDITIONAL_RELAY_DELAY = 2 * 60
 
 MESSAGEMAP = {
     b"addr": msg_addr,
     b"addrv2": msg_addrv2,
+    b"ancpkginfo": msg_ancpkginfo,
     b"block": msg_block,
     b"blocktxn": msg_blocktxn,
     b"cfcheckpt": msg_cfcheckpt,
