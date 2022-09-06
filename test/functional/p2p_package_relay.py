@@ -129,7 +129,10 @@ class PackageRelayTest(BitcoinTestFramework):
     def test_pkgtxns(self):
         node = self.nodes[0]
         package_hex, package_txns, package_wtxids = self.create_package()
-        node.submitpackage(package_hex)
+        peer_originator = node.add_p2p_connection(PackageRelayer())
+        pkgtxns_message = msg_pkgtxns(package_txns)
+        peer_originator.send_and_ping(pkgtxns_message)
+        assert_equal(node.getpeerinfo()[0]["bytesrecv_per_msg"]["pkgtxns"], 25 + sum(len(tx.serialize()) for tx in package_txns))
         for tx in package_txns:
             assert node.getmempoolentry(tx.rehash())
         node.setmocktime(int(time.time() + UNCONDITIONAL_RELAY_DELAY))
@@ -137,8 +140,9 @@ class PackageRelayTest(BitcoinTestFramework):
         peer_requester = node.add_p2p_connection(PackageRelayer())
         getpkgtxns_request = msg_getpkgtxns([int(wtxid, 16) for wtxid in package_wtxids])
         peer_requester.send_and_ping(getpkgtxns_request)
-        assert_equal(node.getpeerinfo()[0]["bytesrecv_per_msg"]["getpkgtxns"], 25 + len(package_txns) * 32)
-        assert_equal(node.getpeerinfo()[0]["bytessent_per_msg"]["pkgtxns"], 25 + sum(len(tx.serialize()) for tx in package_txns))
+        assert_equal(node.getpeerinfo()[1]["bytesrecv_per_msg"]["getpkgtxns"], 25 + len(package_txns) * 32)
+        assert_equal(node.getpeerinfo()[1]["bytessent_per_msg"]["pkgtxns"], 25 + sum(len(tx.serialize()) for tx in package_txns))
+        node.disconnect_p2ps()
 
     def run_test(self):
         self.wallet = MiniWallet(self.nodes[0])

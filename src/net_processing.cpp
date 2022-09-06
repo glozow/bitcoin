@@ -4589,7 +4589,25 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
     }
 
     if (msg_type == NetMsgType::PKGTXNS) {
-        LogPrint(BCLog::NET, "pkgtxns received from peer=%d", pfrom.GetId());
+        std::vector<CTransactionRef> package_txns;
+        vRecv >> package_txns;
+        const auto package_res = WITH_LOCK(cs_main, return ProcessNewPackage(m_chainman.ActiveChainstate(), m_mempool, package_txns, /*test_accept=*/false));
+        if (package_res.m_state.IsValid()) {
+           for (const auto& tx : package_txns) {
+               auto it{package_res.m_tx_results.find(tx->GetWitnessHash())};
+               Assume(it != package_res.m_tx_results.end());
+               if (it->second.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+                   LogPrint(BCLog::MEMPOOL, "ProcessNewPackage: peer=%d: accepted %s\n", pfrom.GetId(), tx->GetHash().ToString());
+                   RelayTransaction(tx->GetHash(), tx->GetWitnessHash());
+                   for (const auto& removedTx : it->second.m_replaced_transactions.value()) {
+                        AddToCompactExtraTransactions(removedTx);
+                   }
+                   ProcessOrphanTx(peer->m_orphan_work_set);
+               }
+           }
+        } else {
+           LogPrint(BCLog::NET, "ProcessNewPackage failed: %s", package_res.m_state.GetRejectReason());
+        }
         return;
     }
 
