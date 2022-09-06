@@ -46,6 +46,7 @@ const char *CFCHECKPT="cfcheckpt";
 const char *WTXIDRELAY="wtxidrelay";
 const char *SENDTXRCNCL="sendtxrcncl";
 const char *SENDPACKAGES="sendpackages";
+const char *ANCPKGINFO="ancpkginfo";
 } // namespace NetMsgType
 
 /** All known message types. Keep this in the same order as the list of
@@ -88,6 +89,7 @@ const static std::string allNetMessageTypes[] = {
     NetMsgType::WTXIDRELAY,
     NetMsgType::SENDTXRCNCL,
     NetMsgType::SENDPACKAGES,
+    NetMsgType::ANCPKGINFO,
 };
 const static std::vector<std::string> allNetMessageTypesVec(std::begin(allNetMessageTypes), std::end(allNetMessageTypes));
 
@@ -166,6 +168,7 @@ std::string CInv::GetCommand() const
     case MSG_BLOCK:          return cmd.append(NetMsgType::BLOCK);
     case MSG_FILTERED_BLOCK: return cmd.append(NetMsgType::MERKLEBLOCK);
     case MSG_CMPCT_BLOCK:    return cmd.append(NetMsgType::CMPCTBLOCK);
+    case MSG_ANCPKGINFO:     return cmd.append(NetMsgType::ANCPKGINFO);
     default:
         throw std::out_of_range(strprintf("CInv::GetCommand(): type=%d unknown type", type));
     }
@@ -221,6 +224,6 @@ std::vector<std::string> serviceFlagsToStr(uint64_t flags)
 
 GenTxid ToGenTxid(const CInv& inv)
 {
-    assert(inv.IsGenTxMsg());
+    assert(inv.IsGenTxMsg() || inv.IsMsgAncPkgInfo());
     return inv.IsMsgWtx() ? GenTxid::Wtxid(inv.hash) : GenTxid::Txid(inv.hash);
 }
