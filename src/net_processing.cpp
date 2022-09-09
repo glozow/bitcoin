@@ -679,6 +679,8 @@ private:
     void AddTxAnnouncement(const CNode& node, const GenTxid& gtxid, std::chrono::microseconds current_time)
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
+    void GetTxAnnouncementInfo(const CNode& node, std::chrono::microseconds curent_time) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
     /** Send a version message to a peer */
     void PushNodeVersion(CNode& pnode, const Peer& peer);
 
@@ -1407,6 +1409,8 @@ void PeerManagerImpl::PushNodeVersion(CNode& pnode, const Peer& peer)
         LogPrint(BCLog::NET, "send version message: version %d, blocks=%d, txrelay=%d, peer=%d\n", PROTOCOL_VERSION, nNodeStartingHeight, tx_relay, nodeid);
     }
 }
+
+std::pair<bool, std::chrono::microseconds> GetTxAnnouncementInfo(const CNode& node, std::chrono::microseconds curent_time) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
 void PeerManagerImpl::AddTxAnnouncement(const CNode& node, const GenTxid& gtxid, std::chrono::microseconds current_time)
 {
@@ -4609,6 +4613,10 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         } else {
            LogPrint(BCLog::NET, "ProcessNewPackage failed: %s", package_res.m_state.GetRejectReason());
         }
+        for (const auto& tx : package_txns) {
+            m_txrequest.ReceivedResponse(pfrom.GetId(), tx->GetWitnessHash());
+            m_txrequest.ReceivedResponse(pfrom.GetId(), tx->GetHash());
+        }
         return;
     }
 
@@ -5804,13 +5812,17 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
         }
 
         //
-        // Message: getdata (transactions)
+        // Message: getdata (transactions) and getpkgtxns
         //
         std::vector<std::pair<NodeId, GenTxid>> expired;
-        auto requestable = m_txrequest.GetRequestable(pto->GetId(), current_time, &expired);
+        std::vector<std::pair<uint64_t, std::vector<uint256>>> requestable_packages;
+        auto requestable = m_txrequest.GetRequestable(pto->GetId(), current_time, &expired, &requestable_packages);
         for (const auto& entry : expired) {
             LogPrint(BCLog::NET, "timeout of inflight %s %s from peer=%d\n", entry.second.IsWtxid() ? "wtx" : "tx",
                 entry.second.GetHash().ToString(), entry.first);
+        }
+        for (const auto& [packageid, wtxids] : requestable_packages) {
+            m_connman.PushMessage(pto, msgMaker.Make(NetMsgType::GETPKGTXNS, wtxids));
         }
         for (const GenTxid& gtxid : requestable) {
             if (!AlreadyHaveTx(gtxid)) {
