@@ -679,7 +679,12 @@ private:
     void AddTxAnnouncement(const CNode& node, const GenTxid& gtxid, std::chrono::microseconds current_time)
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
-    void GetTxAnnouncementInfo(const CNode& node, std::chrono::microseconds curent_time) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
+    /** Logic for calculating when a tx announcement will be ready for request. */
+    std::pair<bool, std::chrono::microseconds> GetTxRequestDelay(const CNode& node,
+                                                                 bool is_wtxid,
+                                                                 std::chrono::microseconds curent_time)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     /** Send a version message to a peer */
     void PushNodeVersion(CNode& pnode, const Peer& peer);
@@ -1410,18 +1415,13 @@ void PeerManagerImpl::PushNodeVersion(CNode& pnode, const Peer& peer)
     }
 }
 
-std::pair<bool, std::chrono::microseconds> GetTxAnnouncementInfo(const CNode& node, std::chrono::microseconds curent_time) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-
-void PeerManagerImpl::AddTxAnnouncement(const CNode& node, const GenTxid& gtxid, std::chrono::microseconds current_time)
+std::pair<bool, std::chrono::microseconds> PeerManagerImpl::GetTxRequestDelay(const CNode& node,
+                                                                              bool is_wtxid,
+                                                                              std::chrono::microseconds curent_time)
 {
-    AssertLockHeld(::cs_main); // For m_txrequest
+    AssertLockHeld(::cs_main);
     NodeId nodeid = node.GetId();
-    if (!node.HasPermission(NetPermissionFlags::Relay) && m_txrequest.Count(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) {
-        // Too many queued announcements from this peer
-        return;
-    }
     const CNodeState* state = State(nodeid);
-
     // Decide the TxRequestTracker parameters for this announcement:
     // - "preferred": if fPreferredDownload is set (= outbound, or NetPermissionFlags::NoBan permission)
     // - "reqtime": current time plus delays for:
@@ -1432,10 +1432,22 @@ void PeerManagerImpl::AddTxAnnouncement(const CNode& node, const GenTxid& gtxid,
     auto delay{0us};
     const bool preferred = state->fPreferredDownload;
     if (!preferred) delay += NONPREF_PEER_TX_DELAY;
-    if (!gtxid.IsWtxid() && m_wtxid_relay_peers > 0) delay += TXID_RELAY_DELAY;
+    if (!is_wtxid && m_wtxid_relay_peers > 0) delay += TXID_RELAY_DELAY;
     const bool overloaded = !node.HasPermission(NetPermissionFlags::Relay) &&
         m_txrequest.CountInFlight(nodeid) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
     if (overloaded) delay += OVERLOADED_PEER_TX_DELAY;
+    return std::make_pair(preferred, delay);
+}
+
+void PeerManagerImpl::AddTxAnnouncement(const CNode& node, const GenTxid& gtxid, std::chrono::microseconds current_time)
+{
+    AssertLockHeld(::cs_main); // For m_txrequest
+    NodeId nodeid = node.GetId();
+    if (!node.HasPermission(NetPermissionFlags::Relay) && m_txrequest.Count(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) {
+        // Too many queued announcements from this peer
+        return;
+    }
+    const auto [preferred, delay] = GetTxRequestDelay(node, gtxid.IsWtxid(), current_time);
     m_txrequest.ReceivedInv(nodeid, gtxid, preferred, current_time + delay);
 }
 
