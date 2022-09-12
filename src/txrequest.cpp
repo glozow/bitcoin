@@ -657,7 +657,13 @@ public:
         std::transform(selected.begin(), selected.end(), std::back_inserter(ret), [](const Announcement* ann) {
             return ToGenTxid(*ann);
         });
-        if (packages) std::copy(selected_packages.begin(), selected_packages.end(), packages->begin());
+        if (packages) {
+            packages->clear();
+            for (const auto& [sequence, wtxids] : selected_packages) {
+                // FIXME: move
+                packages->emplace_back(std::make_pair(sequence, wtxids));
+            }
+        }
         return ret;
     }
 

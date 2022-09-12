@@ -4185,6 +4185,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 }
             }
         }
+        // FIXME: Check if txpackagetracker is interested in this transaction?
 
         // If a tx has been detected by m_recent_rejects, we will have reached
         // this point and the tx will have been ignored. Because we haven't
@@ -4658,11 +4659,10 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             LogPrint(BCLog::NET, "ancpkginfo sent in violation of protocol, disconnecting peer=%d\n", pfrom.GetId());
             pfrom.fDisconnect = true;
         }
-        package_wtxids.erase(std::remove_if(package_wtxids.begin(), package_wtxids.end(),
-            [this](const auto& wtxid){ return AlreadyHaveTx(GenTxid::Wtxid(wtxid));}));
+        // FIXME: remove AlreadyHaveTx
         {
             LOCK(::cs_main);
-            if (!m_chainman.ActiveChainstate().IsInitialBlockDownload()) return;
+            if (m_chainman.ActiveChainstate().IsInitialBlockDownload()) return;
             const auto current_time{GetTime<std::chrono::microseconds>()};
             AddPkgAnnouncement(pfrom, package_wtxids, current_time);
         }
@@ -4711,6 +4711,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
            }
         } else {
            LogPrint(BCLog::NET, "ProcessNewPackage failed: %s", package_res.m_state.GetRejectReason());
+           // FIXME: check with txpackagetracker and MaybePunishNodeForPackage?
         }
         for (const auto& tx : package_txns) {
             m_txrequest.ReceivedResponse(pfrom.GetId(), tx->GetWitnessHash());
@@ -5921,7 +5922,11 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                 entry.second.GetHash().ToString(), entry.first);
         }
         for (const auto& [packageid, wtxids] : requestable_packages) {
+            // FIXME: check with the m_txpackagetracker
             m_connman.PushMessage(pto, msgMaker.Make(NetMsgType::GETPKGTXNS, wtxids));
+            for (const auto& wtxid : wtxids) {
+                m_txrequest.RequestedTx(pto->GetId(), wtxid, current_time + GETDATA_TX_INTERVAL);
+            }
         }
         for (const GenTxid& gtxid : requestable) {
             if (!AlreadyHaveTx(gtxid)) {
