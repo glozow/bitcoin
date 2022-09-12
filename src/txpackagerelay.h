@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <map>
+#include <variant>
 #include <vector>
 
 static constexpr bool DEFAULT_ENABLE_PACKAGE_RELAY{false};
@@ -38,18 +39,49 @@ class TxPackageTracker {
         }
     };
 
-    struct PeerInfo {
-        // What package versions we agreed to relay.
-        std::vector<uint32_t> m_versions_supported;
+    struct PackageInfo {
+        enum class Status {
+            // Initial state. Don't have all of the transaction data yet; need to request.
+            READY_TO_REQUEST,
+            // Have all of the transaction data. Ready to validate.
+            READY_TO_VALIDATE,
+            // Already validated.
+            FINAL,
+        };
+
+        Status m_status;
+        // If/when there are multiple package versions in the future, add here.
+        std::vector<uint256> m_package_wtxids;
+
+        PackageInfo(const std::vector<uint256>& wtxids) : m_package_wtxids(wtxids) {
+            m_status = Status::READY_TO_REQUEST;
+        }
+
+        uint32_t GetVersion() { return RECEIVER_INIT_ANCESTOR_PACKAGES; }
     };
 
     /** Stores relevant information about the peer prior to verack. Upon completion of version
      * handshake, we use this information to decide whether we relay packages with this peer. */
     std::map<NodeId, RegistrationState> registration_states;
 
+    /** Unique package id to the PackageInfo. */
+    std::map<uint64_t, PackageInfo> map_package_info;
+
+    using MapPackageInfo = decltype(map_package_info);
+    using MapIter = MapPackageInfo::iterator;
+
+    struct PeerInfo {
+        // What package versions we agreed to relay.
+        std::vector<uint32_t> m_versions_supported;
+
+        // Package infos announced by this peer
+        std::vector<MapIter> m_package_info_vec;
+    };
+
     /** Information for each peer we relay packages with. Membership in this map is equivalent to
      * whether or not we relay packages with a peer. */
     std::map<NodeId, PeerInfo> info_per_peer;
+
 
 public:
     std::vector<uint32_t> GetVersions() { return PACKAGE_RELAY_SUPPORTED_VERSIONS; }
@@ -68,6 +100,10 @@ public:
 
     // Tear down all state
     void DisconnectedPeer(NodeId nodeid);
+
+    // Received an ancestor package info and have not requested the transaction data yet. Already
+    // registered with TxRequestTracker.
+    void ReceivedPackageInfo(NodeId nodeid, const std::vector<uint256>& wtxids, uint64_t id);
 };
 
 #endif // BITCOIN_TX_PKG_RELAY_H

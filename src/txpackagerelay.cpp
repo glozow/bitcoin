@@ -59,6 +59,20 @@ void TxPackageTracker::DisconnectedPeer(NodeId nodeid)
         registration_states.erase(it); 
     }
     if (auto it{info_per_peer.find(nodeid)}; it != info_per_peer.end()) {
+        // Delete all PackageInfo entries.
+        for (auto info_it : it->second.m_package_info_vec) {
+            map_package_info.erase(info_it);
+        }
         info_per_peer.erase(it);
     }
+}
+
+void TxPackageTracker::ReceivedPackageInfo(NodeId nodeid, const std::vector<uint256>& wtxids, uint64_t id)
+{
+    Assume(map_package_info.count(id) == 0);
+    const auto [info_it, success] = map_package_info.insert(std::make_pair(id, PackageInfo{wtxids}));
+    assert(success);
+    auto peer_it{info_per_peer.find(nodeid)};
+    Assume(peer_it != info_per_peer.end());
+    peer_it->second.m_package_info_vec.push_back(info_it);
 }
