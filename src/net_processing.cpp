@@ -788,7 +788,8 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(cs_main, !m_recent_confirmed_transactions_mutex);
 
     /**
-     * Filter for transactions that were recently rejected by the mempool.
+     * Filter for transactions that were recently rejected by the mempool for
+     * reasons other than too low fee.
      * These are not rerequested until the chain tip changes, at which point
      * the entire filter is reset.
      *
@@ -822,6 +823,23 @@ private:
      * Memory used: 1.3 MB
      */
     CRollingBloomFilter m_recent_rejects GUARDED_BY(::cs_main){120'000, 0.000'001};
+    /**
+     * Filter for transactions or ancestor packages of transactions that were recently rejected by
+     * the mempool but are eligible for reconsideration if submitted with other transactions, i.e.
+     * those that were rejected for being too low fee. These transactions or packages, in isolation,
+     * are not rerequested or revalidated until the chain tip changes. They may be reconsidered if
+     * in a package with another transaction, as it may potentially provide an adequate fee-bump.
+     *
+     * We will only add wtxids to this filter. Groups of multiple transactions are represented by
+     * the hash of their wtxids, concatenated together in lexicographical order.
+     *
+     * Parameters are picked to be identical to that of m_recent_rejects, with the same rationale.
+     * Memory used: 1.3 MB
+     * FIXME: this filter can probably be smaller, but how much smaller?
+     */
+    CRollingBloomFilter m_recent_rejects_reconsiderable GUARDED_BY(::cs_main){120'000, 0.000'001};
+    /** The block hash of the chain tip at which transactions in m_recent_rejects and
+     * m_recent_rejects_reconsiderable were rejected. */
     uint256 hashRecentRejectsChainTip GUARDED_BY(cs_main);
 
     /*
@@ -1729,6 +1747,7 @@ bool PeerManagerImpl::MaybePunishNodeForTx(NodeId nodeid, const TxValidationStat
     case TxValidationResult::TX_CONFLICT:
     case TxValidationResult::TX_MEMPOOL_POLICY:
     case TxValidationResult::TX_NO_MEMPOOL:
+    case TxValidationResult::TX_LOW_FEE:
         break;
     }
     if (message != "") {
@@ -2008,6 +2027,7 @@ bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid)
         // txs a second chance.
         hashRecentRejectsChainTip = m_chainman.ActiveChain().Tip()->GetBlockHash();
         m_recent_rejects.reset();
+        m_recent_rejects_reconsiderable.reset();
     }
 
     const uint256& hash = gtxid.GetHash();
@@ -4173,7 +4193,11 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 // See also comments in https://github.com/bitcoin/bitcoin/pull/18044#discussion_r443419034
                 // for concerns around weakening security of unupgraded nodes
                 // if we start doing this too early.
-                m_recent_rejects.insert(tx.GetWitnessHash());
+                if (state.GetResult() == TxValidationResult::TX_LOW_FEE) {
+                    m_recent_rejects_reconsiderable.insert(tx.GetWitnessHash());
+                } else {
+                    m_recent_rejects.insert(tx.GetWitnessHash());
+                }
                 m_txrequest.ForgetTxHash(tx.GetWitnessHash());
                 // If the transaction failed for TX_INPUTS_NOT_STANDARD,
                 // then we know that the witness was irrelevant to the policy
