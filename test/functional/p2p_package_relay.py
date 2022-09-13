@@ -217,6 +217,8 @@ class PackageRelayTest(BitcoinTestFramework):
         node.disconnect_p2ps()
 
     def test_package_data_requests(self):
+        # TODO: once unsolicited ancpkginfo are disallowed, need to have the node give special
+        # permissions to these peers
         node = self.nodes[0]
         self.log.info("Test that node uses ancpkginfo to send getpkgtxns request")
         node.setmocktime(int(time.time()))
