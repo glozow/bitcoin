@@ -2,14 +2,20 @@
 # Copyright (c) 2022 The Bitcoin Core developers
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
-"""Test package relay messages"""
+"""
+Test package relay messages and net processing logic on a singular node.
+This has its own test because it requires lots of setmocktimeing and that's hard to coordinate
+across multiple nodes.
+"""
 
+from decimal import Decimal
 import time
 
 from test_framework.messages import (
     CInv,
     MSG_ANCPKGINFO,
     msg_ancpkginfo,
+    msg_feefilter,
     msg_getdata,
     msg_getpkgtxns,
     msg_inv,
@@ -107,7 +113,36 @@ class PackageRelayer(P2PTxInvStore):
     def on_pkgtxns(self, message):
         self._pkgtxns_received.append(message)
 
-class PackageRelayTest(BitcoinTestFramework):
+    def wait_for_getpkgtxns(self, expected_wtxids, timeout=60):
+        def test_function():
+            return self.last_message.get("getpkgtxns") and \
+                all([int(wtxid, 16) in self.last_message["getpkgtxns"].hashes for wtxid in expected_wtxids])
+        self.wait_until(test_function, timeout=timeout)
+
+    def relay_package(self, node, package_txns, package_wtxids):
+        node.setmocktime(int(time.time()))
+        # Relay (orphan) child
+        orphan_tx = package_txns[-1]
+        orphan_wtxid = package_wtxids[-1]
+        orphan_inv = CInv(t=MSG_WTX, h=int(orphan_wtxid, 16))
+        self.send_and_ping(msg_inv([orphan_inv]))
+        node.setmocktime(int(time.time()) + 25)
+        assert_equal(self.getdata_received.pop().inv, [orphan_inv])
+        self.send_and_ping(msg_tx(orphan_tx))
+        # Relay package info
+        node.setmocktime(int(time.time()) + 30)
+        last_getdata_received = self.getdata_received.pop()
+        assert_equal(last_getdata_received.inv, [CInv(MSG_ANCPKGINFO, int(orphan_wtxid, 16))])
+        self.send_and_ping(msg_ancpkginfo([int(wtxid, 16) for wtxid in package_wtxids]))
+        node.setmocktime(int(time.time()) + 35)
+        # Relay package tx data
+        last_getpkgtxns_received = self.getpkgtxns_received.pop()
+        assert all([int(wtxid, 16) in last_getpkgtxns_received.hashes for wtxid in package_wtxids])
+        self.send_and_ping(msg_pkgtxns(package_txns))
+        assert all([tx.rehash() in node.getrawmempool() for tx in package_txns])
+
+
+class PackageProcessingTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
         self.extra_args = [["-packagerelay=1"]]
@@ -166,7 +201,9 @@ class PackageRelayTest(BitcoinTestFramework):
         peer_sendpackages_after_verack.wait_for_disconnect()
 
     def test_pkgtxns(self):
+        self.log.info("Test nodes respond to getpkgtxns with pkgtxns")
         node = self.nodes[0]
+        node.setmocktime(int(time.time()))
         package_hex, package_txns, package_wtxids = self.create_package()
         peer_originator = node.add_p2p_connection(PackageRelayer())
         pkgtxns_message = msg_pkgtxns(package_txns)
@@ -179,9 +216,11 @@ class PackageRelayTest(BitcoinTestFramework):
         peer_requester = node.add_p2p_connection(PackageRelayer())
         getpkgtxns_request = msg_getpkgtxns([int(wtxid, 16) for wtxid in package_wtxids])
         peer_requester.send_and_ping(getpkgtxns_request)
+        # FIXME: make sure the response is correct. assert_equal doesn't work.
         assert_equal(node.getpeerinfo()[1]["bytesrecv_per_msg"]["getpkgtxns"], 25 + len(package_txns) * 32)
         assert_equal(node.getpeerinfo()[1]["bytessent_per_msg"]["pkgtxns"], 25 + sum(len(tx.serialize()) for tx in package_txns))
         node.disconnect_p2ps()
+        self.generate(node, 1, sync_fun=self.no_op)
 
     def test_ancpkginfo_requests(self):
         node = self.nodes[0]
@@ -200,9 +239,9 @@ class PackageRelayTest(BitcoinTestFramework):
         peer_info_requester.send_and_ping(child_ancpkginfo_request)
         assert not peer_info_requester.ancpkginfo_received
 
-        node.setmocktime(int(time.time() + UNCONDITIONAL_RELAY_DELAY + 100))
+        node.setmocktime(int(time.time() + UNCONDITIONAL_RELAY_DELAY + 60))
         peer_info_requester.send_and_ping(tx_request)
-        assert_greater_than_or_equal(len(peer_info_requester.tx_received), 1)
+        peer_info_requester.wait_for_tx(package_txns[-1].rehash())
 
         self.log.info("Test that node responds to ancpkginfo request with ancestor package wtxids")
         peer_info_requester.send_and_ping(child_ancpkginfo_request)
@@ -215,6 +254,7 @@ class PackageRelayTest(BitcoinTestFramework):
             peer_info_requester.send_and_ping(parent_ancpkginfo_request)
             assert_equal([int(package_wtxids[i], 16)], peer_info_requester.ancpkginfo_received.pop())
         node.disconnect_p2ps()
+        self.generate(node, 1, sync_fun=self.no_op)
 
     def test_package_data_requests(self):
         # TODO: once unsolicited ancpkginfo are disallowed, need to have the node give special
@@ -231,9 +271,10 @@ class PackageRelayTest(BitcoinTestFramework):
         node.setmocktime(int(time.time() + NONPREF_PEER_TX_DELAY + 10))
         peer_package_relayer.sync_with_ping()
         assert_equal(node.getpeerinfo()[0]["bytesrecv_per_msg"]["ancpkginfo"], 25 + len(package_txns) * 32)
-        assert_equal(node.getpeerinfo()[0]["bytessent_per_msg"]["getpkgtxns"], 25 + len(package_txns) * 32)
-        last_getpkgtxns_received = peer_package_relayer.getpkgtxns_received.pop()
-        assert all([int(wtxid, 16) in last_getpkgtxns_received.hashes for wtxid in package_wtxids])
+        # assert_equal(node.getpeerinfo()[0]["bytessent_per_msg"]["getpkgtxns"], 25 + len(package_txns) * 32)
+        # last_getpkgtxns_received = peer_package_relayer.getpkgtxns_received.pop()
+        # assert all([int(wtxid, 16) in last_getpkgtxns_received.hashes for wtxid in package_wtxids])
+        peer_package_relayer.wait_for_getpkgtxns(package_wtxids)
         node.disconnect_p2ps()
 
         self.log.info("Test that node prefers to download package txns from outbound over inbound peers")
@@ -255,8 +296,9 @@ class PackageRelayTest(BitcoinTestFramework):
         peer_inbound.sync_with_ping()
         peer_outbound.sync_with_ping()
         assert not len(peer_outbound.getpkgtxns_received)
-        last_getpkgtxns_received_inbound = peer_inbound.getpkgtxns_received.pop()
-        assert all([int(wtxid, 16) in last_getpkgtxns_received_inbound.hashes for wtxid in package_wtxids1])
+        # last_getpkgtxns_received_inbound = peer_inbound.getpkgtxns_received.pop()
+        # assert all([int(wtxid, 16) in last_getpkgtxns_received_inbound.hashes for wtxid in package_wtxids1])
+        peer_inbound.wait_for_getpkgtxns(package_wtxids1, timeout=90)
 
         self.log.info("Test that, when package txns are announced also individually, the node only requests the tx from one at a time")
         node.setmocktime(int(time.time()))
@@ -275,7 +317,65 @@ class PackageRelayTest(BitcoinTestFramework):
         last_getpkgtxns_received_inbound = peer_inbound.getpkgtxns_received.pop()
         assert_equal(len(last_getpkgtxns_received_inbound.hashes), len(package_txns2) - 1)
         assert all([int(wtxid, 16) in last_getpkgtxns_received_inbound.hashes for wtxid in package_wtxids2[1:]])
+        node.disconnect_p2ps()
+        self.generate(node, 1, sync_fun=self.no_op)
 
+    def test_receiver_initiated(self):
+        self.log.info("Test that nodes deal with orphans by requesting ancestor package info")
+        node = self.nodes[0]
+        peer_package_relayer = node.add_outbound_p2p_connection(PackageRelayer(), p2p_idx=2, connection_type="outbound-full-relay")
+        package_hex, package_txns, package_wtxids = self.create_package()
+        orphan_tx = package_txns[-1]
+        orphan_wtxid = package_wtxids[-1]
+        orphan_inv = CInv(t=MSG_WTX, h=int(orphan_wtxid, 16))
+        peer_package_relayer.send_and_ping(msg_inv([orphan_inv]))
+        assert_equal(peer_package_relayer.getdata_received.pop().inv, [orphan_inv])
+        peer_package_relayer.send_and_ping(msg_tx(orphan_tx))
+        last_getdata_received = peer_package_relayer.getdata_received.pop()
+        assert_equal(last_getdata_received.inv, [CInv(MSG_ANCPKGINFO, int(orphan_wtxid, 16))])
+        peer_package_relayer.send_and_ping(msg_ancpkginfo([int(wtxid, 16) for wtxid in package_wtxids]))
+        last_getpkgtxns_received = peer_package_relayer.getpkgtxns_received.pop()
+        assert all([int(wtxid, 16) in last_getpkgtxns_received.hashes for wtxid in package_wtxids])
+        peer_package_relayer.send_and_ping(msg_pkgtxns(package_txns))
+        self.wait_until(lambda: all([tx.rehash() in node.getrawmempool() for tx in package_txns]))
+        node.disconnect_p2ps()
+        self.generate(node, 1, sync_fun=self.no_op)
+
+    def test_package_tx_announcements(self):
+        self.log.info("Test end-to-end package relay logic")
+        node = self.nodes[0]
+        peer_package_relayer_outbound = node.add_outbound_p2p_connection(PackageRelayer(), p2p_idx=3, connection_type="outbound-full-relay")
+        peer_package_originator = node.add_outbound_p2p_connection(PackageRelayer(), p2p_idx=4, connection_type="outbound-full-relay")
+        peer_package_relayer_inbound = node.add_p2p_connection(PackageRelayer())
+        peer_normal = node.add_p2p_connection(P2PTxInvStore())
+        assert_equal(len(node.getpeerinfo()), 4)
+        # send 1 sat/vbyte fee filter
+        for peer in node.p2ps:
+            peer.send_and_ping(msg_feefilter(1000))
+
+        node.setmocktime(int(time.time()))
+        assert node.getpeerinfo()[0]["relaytxpackages"]
+        assert node.getpeerinfo()[1]["relaytxpackages"]
+        assert node.getpeerinfo()[2]["relaytxpackages"]
+        assert not node.getpeerinfo()[3]["relaytxpackages"]
+
+        self.log.info("Test packages through rpc")
+        # package that is submitted through p2p
+        package_hex, package_txns, package_wtxids = self.create_package()
+        peer_package_originator.relay_package(node, package_txns, package_wtxids)
+        assert all([tx.rehash() in node.getrawmempool() for tx in package_txns])
+
+        self.log.info("Test that the high-feerate parent and child are announced, but not the 0-fee parent")
+        node.setmocktime(int(time.time()) + UNCONDITIONAL_RELAY_DELAY + 160)
+        parent_high_wtxid, parent_low_wtxid, orphan_wtxid = package_wtxids
+        peers_expecting_invs = [peer_package_relayer_outbound, peer_package_relayer_inbound, peer_normal]
+        for peer in peers_expecting_invs:
+            peer.sync_with_ping()
+            assert int(orphan_wtxid, 16) in peer.get_invs()
+            assert int(parent_high_wtxid, 16) in peer.get_invs()
+            assert int(parent_low_wtxid, 16) not in peer.get_invs()
+        node.disconnect_p2ps()
+        self.generate(node, 1, sync_fun=self.no_op)
 
     def run_test(self):
         self.wallet = MiniWallet(self.nodes[0])
@@ -285,7 +385,9 @@ class PackageRelayTest(BitcoinTestFramework):
         self.test_pkgtxns()
         self.test_ancpkginfo_requests()
         self.test_package_data_requests()
+        self.test_receiver_initiated()
+        self.test_package_tx_announcements()
 
 
 if __name__ == '__main__':
-    PackageRelayTest().main()
+    PackageProcessingTest().main()
