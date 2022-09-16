@@ -6,14 +6,58 @@
 #include <policy/policy.h>
 #include <primitives/transaction.h>
 #include <uint256.h>
-#include <util/hasher.h>
 
 #include <algorithm>
 #include <cassert>
 #include <iterator>
 #include <memory>
 #include <numeric>
-#include <unordered_set>
+
+bool IsSorted(const Package& txns, std::unordered_set<uint256, SaltedTxidHasher>& later_txids)
+{
+    // later_txids always contains the txids of this transaction and the ones that come later in
+    // txns. If any transaction's input spends a tx in that set, we've found a parent placed later
+    // than its child.
+    for (const auto& tx : txns) {
+        for (const auto& input : tx->vin) {
+            if (later_txids.find(input.prevout.hash) != later_txids.end()) {
+                // The parent is a subsequent transaction in the package.
+                return false;
+            }
+        }
+        later_txids.erase(tx->GetHash());
+    }
+    return true;
+}
+
+bool IsSorted(const Package& txns)
+{
+    std::unordered_set<uint256, SaltedTxidHasher> later_txids;
+    std::transform(txns.cbegin(), txns.cend(), std::inserter(later_txids, later_txids.end()),
+                   [](const auto& tx) { return tx->GetHash(); });
+
+    return IsSorted(txns, later_txids);
+}
+
+bool IsConsistent(const Package& txns)
+{
+    // Don't allow any conflicting transactions, i.e. spending the same inputs, in a package.
+    std::unordered_set<COutPoint, SaltedOutpointHasher> inputs_seen;
+    for (const auto& tx : txns) {
+        for (const auto& input : tx->vin) {
+            if (inputs_seen.find(input.prevout) != inputs_seen.end()) {
+                // This input is also present in another tx in the package.
+                return false;
+            }
+        }
+        // Batch-add all the inputs for a tx at a time. If we added them 1 at a time, we could
+        // catch duplicate inputs within a single tx.  This is a more severe, consensus error,
+        // and we want to report that from CheckTransaction instead.
+        std::transform(tx->vin.cbegin(), tx->vin.cend(), std::inserter(inputs_seen, inputs_seen.end()),
+                       [](const auto& input) { return input.prevout; });
+    }
+    return true;
+}
 
 bool CheckPackage(const Package& txns, PackageValidationState& state)
 {
@@ -30,10 +74,6 @@ bool CheckPackage(const Package& txns, PackageValidationState& state)
         return state.Invalid(PackageValidationResult::PCKG_POLICY, "package-too-large");
     }
 
-    // Require the package to be sorted in order of dependency, i.e. parents appear before children.
-    // An unsorted package will fail anyway on missing-inputs, but it's better to quit earlier and
-    // fail on something less ambiguous (missing-inputs could also be an orphan or trying to
-    // spend nonexistent coins).
     std::unordered_set<uint256, SaltedTxidHasher> later_txids;
     std::transform(txns.cbegin(), txns.cend(), std::inserter(later_txids, later_txids.end()),
                    [](const auto& tx) { return tx->GetHash(); });
@@ -44,30 +84,17 @@ bool CheckPackage(const Package& txns, PackageValidationState& state)
         return state.Invalid(PackageValidationResult::PCKG_POLICY, "package-contains-duplicates");
     }
 
-    for (const auto& tx : txns) {
-        for (const auto& input : tx->vin) {
-            if (later_txids.find(input.prevout.hash) != later_txids.end()) {
-                // The parent is a subsequent transaction in the package.
-                return state.Invalid(PackageValidationResult::PCKG_POLICY, "package-not-sorted");
-            }
-        }
-        later_txids.erase(tx->GetHash());
+    // Require the package to be sorted in order of dependency, i.e. parents appear before children.
+    // An unsorted package will fail anyway on missing-inputs, but it's better to quit earlier and
+    // fail on something less ambiguous (missing-inputs could also be an orphan or trying to
+    // spend nonexistent coins).
+    if (!IsSorted(txns, later_txids)) {
+        return state.Invalid(PackageValidationResult::PCKG_POLICY, "package-not-sorted");
     }
 
     // Don't allow any conflicting transactions, i.e. spending the same inputs, in a package.
-    std::unordered_set<COutPoint, SaltedOutpointHasher> inputs_seen;
-    for (const auto& tx : txns) {
-        for (const auto& input : tx->vin) {
-            if (inputs_seen.find(input.prevout) != inputs_seen.end()) {
-                // This input is also present in another tx in the package.
-                return state.Invalid(PackageValidationResult::PCKG_POLICY, "conflict-in-package");
-            }
-        }
-        // Batch-add all the inputs for a tx at a time. If we added them 1 at a time, we could
-        // catch duplicate inputs within a single tx.  This is a more severe, consensus error,
-        // and we want to report that from CheckTransaction instead.
-        std::transform(tx->vin.cbegin(), tx->vin.cend(), std::inserter(inputs_seen, inputs_seen.end()),
-                       [](const auto& input) { return input.prevout; });
+    if (!IsConsistent(txns)) {
+        return state.Invalid(PackageValidationResult::PCKG_POLICY, "conflict-in-package");
     }
     return true;
 }

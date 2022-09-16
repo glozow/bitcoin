@@ -9,8 +9,10 @@
 #include <consensus/validation.h>
 #include <policy/policy.h>
 #include <primitives/transaction.h>
+#include <util/hasher.h>
 
 #include <cstdint>
+#include <unordered_set>
 #include <vector>
 
 /** Default maximum number of transactions in a package. */
@@ -47,6 +49,26 @@ enum class PackageValidationResult {
 using Package = std::vector<CTransactionRef>;
 
 class PackageValidationState : public ValidationState<PackageValidationResult> {};
+
+/** If any direct dependencies exist between transactions (i.e. a child spending the output of a
+ * parent), checks that all parents appear somewhere in the list before their respective children.
+ * This function cannot detect indirect dependencies (e.g. a transaction's grandparent if its parent
+ * is not present).
+ * @returns true if sorted. False if any tx spends the output of a tx that appears later in txns.
+ */
+bool IsSorted(const Package& txns);
+
+/** IsSorted where a set of txids has been pre-populated. The set is assumed to be correct and
+ * is mutated within this function. */
+bool IsSorted(const Package& txns, std::unordered_set<uint256, SaltedTxidHasher>& all_txids);
+
+/** Checks that none of the transactions conflict, i.e., spend the same prevout. Consequently also
+ * checks that there are no duplicate transactions. Since these checks require looking at the inputs
+ * of a transaction, returns false immediately if any transactions have empty vin (which is not
+ * allowed in unconfirmed transactions).
+ * @returns true if there are no conflicts. False if any two transactions spend the same prevout.
+ * */
+bool IsConsistent(const Package& txns);
 
 /** Context-free package policy checks:
  * 1. The number of transactions cannot exceed MAX_PACKAGE_COUNT.
