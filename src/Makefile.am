@@ -235,6 +235,7 @@ BITCOIN_CORE_H = \
   node/validation_cache_args.h \
   noui.h \
   outputtype.h \
+  policy/ancestor_packages.h \
   policy/feerate.h \
   policy/fees.h \
   policy/fees_args.h \
@@ -434,6 +435,7 @@ libbitcoin_node_a_SOURCES = \
   node/utxo_snapshot.cpp \
   node/validation_cache_args.cpp \
   noui.cpp \
+  policy/ancestor_packages.cpp \
   policy/fees.cpp \
   policy/fees_args.cpp \
   policy/packages.cpp \
@@ -947,7 +949,9 @@ libbitcoinkernel_la_SOURCES = \
   logging.cpp \
   node/blockstorage.cpp \
   node/chainstate.cpp \
+  node/mini_miner.cpp \
   node/utxo_snapshot.cpp \
+  policy/ancestor_packages.cpp \
   policy/feerate.cpp \
   policy/fees.cpp \
   policy/packages.cpp \
