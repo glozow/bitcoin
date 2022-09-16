@@ -232,7 +232,7 @@ bool CTxMemPool::CalculateAncestorsAndCheckLimits(size_t entry_size,
     return true;
 }
 
-bool CTxMemPool::CheckPackageLimits(const Package& package,
+bool CTxMemPool::CheckPackageLimits(const std::vector<CTransactionRef>& package,
                                     uint64_t limitAncestorCount,
                                     uint64_t limitAncestorSize,
                                     uint64_t limitDescendantCount,

@@ -21,7 +21,6 @@
 #include <consensus/amount.h>
 #include <indirectmap.h>
 #include <policy/feerate.h>
-#include <policy/packages.h>
 #include <primitives/transaction.h>
 #include <random.h>
 #include <sync.h>
@@ -695,7 +694,7 @@ public:
      * @param[in]       limitDescendantSize     Max virtual size including descendants.
      * @param[out]      errString               Populated with error reason if a limit is hit.
      */
-    bool CheckPackageLimits(const Package& package,
+    bool CheckPackageLimits(const std::vector<CTransactionRef>& package,
                             uint64_t limitAncestorCount,
                             uint64_t limitAncestorSize,
                             uint64_t limitDescendantCount,
