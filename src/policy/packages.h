@@ -9,8 +9,11 @@
 #include <consensus/validation.h>
 #include <policy/policy.h>
 #include <primitives/transaction.h>
+#include <uint256.h>
+#include <util/hasher.h>
 
 #include <cstdint>
+#include <unordered_set>
 #include <vector>
 
 /** Default maximum number of transactions in a package. */
@@ -62,4 +65,44 @@ bool CheckPackage(const Package& txns, PackageValidationState& state);
  */
 bool IsChildWithParents(const Package& package);
 
+/** Context-free check that a package only contains a tx with its ancestors.
+ * Not all of the tx's ancestors need to be present, but the package must not contain any
+ * transactions that are not an ancestor of the last transaction. A package containing 1 transaction
+ * is considered an ancestor package.
+ */
+bool IsAncestorPackage(const Package& package);
+
+class AncestorPackage
+{
+    /** Transactions sorted topologically. */
+    Package txns;
+    /** Caches the transactions by txid for quick lookup. */
+    std::map<uint256, CTransactionRef> txid_to_tx;
+    /** Caches the in-package ancestors for each transaction. */
+    std::map<uint256, std::set<uint256>> ancestor_subsets;
+    /** Transactions so exclude when returning ancestor subsets.*/
+    std::unordered_set<uint256, SaltedTxidHasher> excluded_txns;
+    /** Transactions that are banned. Return empty vector if any ancestor subset contains these transactions.*/
+    std::unordered_set<uint256, SaltedTxidHasher> banned_txns;
+
+    /** Helper function for recursively constructing ancestor caches in ctor. */
+    void visit(const CTransactionRef&);
+public:
+    /** Constructs ancestor package, sorting the transactions topologically and constructing the
+     * txid_to_tx and ancestor_subsets maps. It is ok if the input txns is not sorted.
+     * Expects that basic sanitization checks have passed:
+     * - there are no conflicts
+     * - the number of transactions is reasonable (e.g. within MAX_PACKAGE_COUNT)
+     */
+    AncestorPackage(const Package& txns);
+    /** Returns the transactions, in ascending order of number of in-package ancestors. */
+    Package Txns() const { return txns; }
+    /** Get the ancestor subpackage for a transaction. */
+    std::vector<CTransactionRef> GetAncestorSet(const CTransactionRef& tx);
+    /** From now on, exclude these transactions from GetAncestorSet(). */
+    void Exclude(const CTransactionRef& transaction);
+    /** Mark a transaction as "banned." From now on, if this transaction is present in the ancestor
+     * set, return an empty vector instead. */
+    void Ban(const CTransactionRef& transaction);
+};
 #endif // BITCOIN_POLICY_PACKAGES_H
