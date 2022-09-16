@@ -62,4 +62,32 @@ bool CheckPackage(const Package& txns, PackageValidationState& state);
  */
 bool IsChildWithParents(const Package& package);
 
+/** Context-free check that a package only contains a tx with its ancestors.
+ * Not all of the tx's ancestors need to be present, but the package must not contain any
+ * transactions that are not an ancestor of the last transaction. A package containing 1 transaction
+ * is considered an ancestor package.
+ */
+bool IsAncestorPackage(const Package& package);
+
+class AncestorPackage
+{
+    /** Transactions sorted topologically. */
+    Package txns;
+    /** Caches the transactions by txid for quick lookup. */
+    std::map<uint256, CTransactionRef> txid_to_tx;
+    /** Caches the in-package ancestors for each transaction. */
+    std::map<uint256, std::set<uint256>> ancestor_subsets;
+
+    /** Helper function for recursively constructing ancestor caches in ctor. */
+    void visit(const CTransactionRef&);
+public:
+    /** Constructs ancestor package, sorting the transactions topologically and constructing the
+     * txid_to_tx and ancestor_subsets maps. It is ok if the input txns is not sorted.
+     * Expects that basic sanitization checks have passed:
+     * - there are no conflicts
+     * - the number of transactions is reasonable
+     */
+    AncestorPackage(const Package& txns);
+    Package Txns() const { return txns; }
+};
 #endif // BITCOIN_POLICY_PACKAGES_H
