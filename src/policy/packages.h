@@ -45,6 +45,9 @@ using Package = std::vector<CTransactionRef>;
 
 class PackageValidationState : public ValidationState<PackageValidationResult> {};
 
+bool IsSorted(const Package& txns);
+bool HasNoConflicts(const Package& txns);
+
 /** Context-free package policy checks:
  * 1. The number of transactions cannot exceed MAX_PACKAGE_COUNT.
  * 2. The total virtual size cannot exceed MAX_PACKAGE_SIZE.
