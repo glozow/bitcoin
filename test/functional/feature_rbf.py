@@ -25,6 +25,7 @@ class ReplaceByFeeTest(BitcoinTestFramework):
         self.num_nodes = 2
         self.extra_args = [
             [
+                "-mempoolfullrbf=0",
                 "-maxorphantx=1000",
                 "-limitancestorcount=50",
                 "-limitancestorsize=101",
