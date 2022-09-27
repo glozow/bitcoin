@@ -142,6 +142,10 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
         BOOST_CHECK_EQUAL(state.GetResult(), PackageValidationResult::PCKG_POLICY);
         BOOST_CHECK_EQUAL(state.GetRejectReason(), "package-not-sorted");
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_child}));
+        BOOST_CHECK(IsAncestorPackage({tx_parent, tx_child}));
+        BOOST_CHECK(!IsAncestorPackage({tx_child, tx_parent}));
+        AncestorPackage packageified({tx_child, tx_parent});
+        BOOST_CHECK(IsAncestorPackage(packageified.Txns()));
     }
 
     // 24 Parents and 1 Child
@@ -158,22 +162,35 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
 
         // The child must be in the package.
         BOOST_CHECK(!IsChildWithParents(package));
+        BOOST_CHECK(!IsAncestorPackage(package));
 
         // The parents can be in any order.
-        FastRandomContext rng;
-        Shuffle(package.begin(), package.end(), rng);
-        package.push_back(MakeTransactionRef(child));
+        Shuffle(package.begin(), package.end(), g_insecure_rand_ctx);
+        auto child_tx{MakeTransactionRef(child)};
+        package.push_back(child_tx);
 
         PackageValidationState state;
         BOOST_CHECK(CheckPackage(package, state));
         BOOST_CHECK(IsChildWithParents(package));
+        BOOST_CHECK(IsAncestorPackage(package));
+
+        Package package_copy(package);
+        Shuffle(package_copy.begin(), package_copy.end(), g_insecure_rand_ctx);
+        AncestorPackage packageified(package);
+        BOOST_CHECK(IsAncestorPackage(packageified.Txns()));
+        for (auto i{0}; i < 23; ++i) {
+            BOOST_CHECK_EQUAL(packageified.GetAncestorSet(packageified.Txns()[i]).size(), 1);
+        }
+        BOOST_CHECK_EQUAL(packageified.GetAncestorSet(packageified.Txns().back()).size(), package.size());
 
         package.erase(package.begin());
         BOOST_CHECK(IsChildWithParents(package));
+        BOOST_CHECK(IsAncestorPackage(package));
 
         // The package cannot have unrelated transactions.
         package.insert(package.begin(), m_coinbase_txns[0]);
         BOOST_CHECK(!IsChildWithParents(package));
+        BOOST_CHECK(!IsAncestorPackage(package));
     }
 
     // 2 Parents and 1 Child where one parent depends on the other.
@@ -197,14 +214,52 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
 
         PackageValidationState state;
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_parent_also_child}));
+        BOOST_CHECK(IsAncestorPackage({tx_parent, tx_parent_also_child}));
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_child}));
+        BOOST_CHECK(IsAncestorPackage({tx_parent, tx_child}));
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_parent_also_child, tx_child}));
         // IsChildWithParents does not detect unsorted parents.
         BOOST_CHECK(IsChildWithParents({tx_parent_also_child, tx_parent, tx_child}));
+        // IsAncestorPackage does.
+        BOOST_CHECK(!IsAncestorPackage({tx_parent_also_child, tx_parent, tx_child}));
         BOOST_CHECK(CheckPackage({tx_parent, tx_parent_also_child, tx_child}, state));
         BOOST_CHECK(!CheckPackage({tx_parent_also_child, tx_parent, tx_child}, state));
         BOOST_CHECK_EQUAL(state.GetResult(), PackageValidationResult::PCKG_POLICY);
         BOOST_CHECK_EQUAL(state.GetRejectReason(), "package-not-sorted");
+
+        AncestorPackage packageified_1({tx_parent_also_child, tx_child, tx_parent});
+        BOOST_CHECK(IsAncestorPackage(packageified_1.Txns()));
+        AncestorPackage packageified_2({tx_child, tx_parent_also_child, tx_parent});
+        BOOST_CHECK(IsAncestorPackage(packageified_2.Txns()));
+        AncestorPackage packageified_3({tx_parent_also_child, tx_parent, tx_child});
+        BOOST_CHECK(IsAncestorPackage(packageified_3.Txns()));
+
+        BOOST_CHECK_EQUAL(packageified_1.GetAncestorSet(tx_child).size(), 3);
+        BOOST_CHECK_EQUAL(packageified_1.GetAncestorSet(tx_parent_also_child).size(), 2);
+        BOOST_CHECK_EQUAL(packageified_1.GetAncestorSet(tx_parent).size(), 1);
+    }
+
+    // Chain of 25 transactions.
+    {
+        Package package;
+        CTransactionRef last_tx = m_coinbase_txns[0];
+        CKey signing_key = coinbaseKey;
+        for (int i{0}; i < 24; ++i) {
+            auto tx = MakeTransactionRef(CreateValidMempoolTransaction(last_tx, 0, 0, signing_key, spk, CAmount((49-i) * COIN), false));
+            package.emplace_back(tx);
+            last_tx = tx;
+            if (i == 0) signing_key = placeholder_key;
+        }
+        BOOST_CHECK(!IsChildWithParents(package));
+        BOOST_CHECK(IsAncestorPackage(package));
+
+        Package package_copy = package;
+        Shuffle(package_copy.begin(), package_copy.end(), g_insecure_rand_ctx);
+        AncestorPackage packageified(package_copy);
+        BOOST_CHECK(IsAncestorPackage(packageified.Txns()));
+        for (auto index{0}; index < 24; ++index) {
+            BOOST_CHECK_EQUAL(packageified.GetAncestorSet(package[index]).size(), index + 1);
+        }
     }
 }
 
