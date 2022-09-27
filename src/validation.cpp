@@ -1304,8 +1304,6 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
         return PackageMempoolAcceptResult(package_state, {});
     }
 
-    // IsChildWithParents() guarantees the package is > 1 transactions.
-    assert(package.size() > 1);
     // The package must be 1 child with all of its unconfirmed parents. The package is expected to
     // be sorted, so the last transaction is the child.
     const auto& child = package.back();
@@ -1340,8 +1338,6 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     // coins_to_uncache. The backend will be connected again when needed in PreChecks.
     m_view.SetBackend(m_dummy);
 
-    LOCK(m_pool.cs);
-    std::map<const uint256, const MempoolAcceptResult> results;
     // Node operators are free to set their mempool policies however they please, nodes may receive
     // transactions in different orders, and malicious counterparties may try to take advantage of
     // policy differences to pin or delay propagation of transactions. As such, it's possible for
@@ -1350,9 +1346,9 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     // transactions that are already in the mempool, and only call AcceptMultipleTransactions() with
     // the new transactions. This ensures we don't double-count transaction counts and sizes when
     // checking ancestor/descendant limits, or double-count transaction fees for fee-related policy.
-    ATMPArgs single_args = ATMPArgs::SingleInPackageAccept(args);
-    bool quit_early{false};
-    std::vector<CTransactionRef> txns_new;
+    LOCK(m_pool.cs);
+    std::map<const uint256, const MempoolAcceptResult> results;
+    std::vector<CTransactionRef> txns_deduplicated;
     for (const auto& tx : package) {
         const auto& wtxid = tx->GetWitnessHash();
         const auto& txid = tx->GetHash();
@@ -1377,29 +1373,38 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             // Provide the wtxid of the mempool tx so that the caller can look it up in the mempool.
             results.emplace(wtxid, MempoolAcceptResult::MempoolTxDifferentWitness(iter.value()->GetTx().GetWitnessHash()));
         } else {
-            // Transaction does not already exist in the mempool.
-            // Try submitting the transaction on its own.
-            const auto single_res = AcceptSingleTransaction(tx, single_args);
-            if (single_res.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-                // The transaction succeeded on its own and is now in the mempool. Don't include it
-                // in package validation, because its fees should only be "used" once.
-                assert(m_pool.exists(GenTxid::Wtxid(wtxid)));
-                results.emplace(wtxid, single_res);
-            } else if (single_res.m_state.GetResult() != TxValidationResult::TX_MEMPOOL_POLICY &&
-                       single_res.m_state.GetResult() != TxValidationResult::TX_MISSING_INPUTS) {
-                // Package validation policy only differs from individual policy in its evaluation
-                // of feerate. For example, if a transaction fails here due to violation of a
-                // consensus rule, the result will not change when it is submitted as part of a
-                // package. To minimize the amount of repeated work, unless the transaction fails
-                // due to feerate or missing inputs (its parent is a previous transaction in the
-                // package that failed due to feerate), don't run package validation. Note that this
-                // decision might not make sense if different types of packages are allowed in the
-                // future.  Continue individually validating the rest of the transactions, because
-                // some of them may still be valid.
-                quit_early = true;
-            } else {
-                txns_new.push_back(tx);
-            }
+            txns_deduplicated.push_back(tx);
+        }
+    }
+    if (txns_deduplicated.empty()) return PackageMempoolAcceptResult(package_state, std::move(results));
+
+    std::vector<CTransactionRef> txns_new;
+    ATMPArgs single_args = ATMPArgs::SingleInPackageAccept(args);
+    bool quit_early{false};
+    for (const auto& tx : txns_deduplicated) {
+        const auto& wtxid = tx->GetWitnessHash();
+        // Transaction does not already exist in the mempool.
+        // Try submitting the transaction on its own.
+        const auto single_res = AcceptSingleTransaction(tx, single_args);
+        if (single_res.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+            // The transaction succeeded on its own and is now in the mempool. Don't include it
+            // in package validation, because its fees should only be "used" once.
+            assert(m_pool.exists(GenTxid::Wtxid(wtxid)));
+            results.emplace(wtxid, single_res);
+        } else if (single_res.m_state.GetResult() != TxValidationResult::TX_MEMPOOL_POLICY &&
+                   single_res.m_state.GetResult() != TxValidationResult::TX_MISSING_INPUTS) {
+            // Package validation policy only differs from individual policy in its evaluation
+            // of feerate. For example, if a transaction fails here due to violation of a
+            // consensus rule, the result will not change when it is submitted as part of a
+            // package. To minimize the amount of repeated work, unless the transaction fails
+            // due to feerate or missing inputs (its parent is a previous transaction in the
+            // package that failed due to feerate), don't run package validation. Note that this
+            // decision might not make sense if different types of packages are allowed in the
+            // future.  Continue individually validating the rest of the transactions, because
+            // some of them may still be valid.
+            quit_early = true;
+        } else {
+            txns_new.push_back(tx);
         }
     }
 
