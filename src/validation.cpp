@@ -1245,7 +1245,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     if (args.m_package_feerates &&
         !CheckFeeRate(m_total_vsize, m_total_modified_fees, placeholder_state)) {
         package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package-fee-too-low");
-        return PackageMempoolAcceptResult(package_state, package_feerate, {});
+        return PackageMempoolAcceptResult(package_state, {});
     }
 
     // Apply package mempool ancestor/descendant limits. Skip if there is only one transaction,
@@ -1253,7 +1253,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     // transactions, but this exemption is not extended to packages in CheckPackageLimits().
     std::string err_string;
     if (txns.size() > 1 && !PackageMempoolChecks(txns, package_state)) {
-        return PackageMempoolAcceptResult(package_state, package_feerate, std::move(results));
+        return PackageMempoolAcceptResult(package_state, std::move(results));
     }
 
     for (Workspace& ws : workspaces) {
@@ -1262,7 +1262,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
             // Exit early to avoid doing pointless work. Update the failed tx result; the rest are unfinished.
             package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
             results.emplace(ws.m_ptx->GetWitnessHash(), MempoolAcceptResult::Failure(ws.m_state));
-            return PackageMempoolAcceptResult(package_state, package_feerate, std::move(results));
+            return PackageMempoolAcceptResult(package_state, std::move(results));
         }
         if (args.m_test_accept) {
             const auto effective_feerate = args.m_package_feerates ? ws.m_package_feerate : CFeeRate(ws.m_modified_fees, ws.m_vsize);
@@ -1274,14 +1274,14 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
         }
     }
 
-    if (args.m_test_accept) return PackageMempoolAcceptResult(package_state, package_feerate, std::move(results));
+    if (args.m_test_accept) return PackageMempoolAcceptResult(package_state, std::move(results));
 
     if (!SubmitPackage(args, workspaces, package_state, results)) {
         // PackageValidationState filled in by SubmitPackage().
-        return PackageMempoolAcceptResult(package_state, package_feerate, std::move(results));
+        return PackageMempoolAcceptResult(package_state, std::move(results));
     }
 
-    return PackageMempoolAcceptResult(package_state, package_feerate, std::move(results));
+    return PackageMempoolAcceptResult(package_state, std::move(results));
 }
 
 PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, ATMPArgs& args)
@@ -1413,7 +1413,6 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     for (const auto& [wtxid, mempoolaccept_res] : results) {
         submission_result.m_tx_results.emplace(wtxid, mempoolaccept_res);
     }
-    if (submission_result.m_state.IsValid()) assert(submission_result.m_package_feerate.has_value());
     return submission_result;
 }
 
