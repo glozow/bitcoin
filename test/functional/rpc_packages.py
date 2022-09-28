@@ -399,6 +399,9 @@ class RPCPackagesTest(BitcoinTestFramework):
         assert_equal(rich_parent_result["fees"]["base"], DEFAULT_FEE)
         assert_equal(poor_parent_result["fees"]["base"], 0)
         assert_equal(child_result["fees"]["base"], DEFAULT_FEE)
+        assert "effective-feerate" not in rich_parent_result["fees"]
+        assert_fee_amount(DEFAULT_FEE, tx_poor.get_vsize() + tx_child.get_vsize(), poor_parent_result["fees"]["effective-feerate"])
+        assert_fee_amount(DEFAULT_FEE, tx_poor.get_vsize() + tx_child.get_vsize(), child_result["fees"]["effective-feerate"])
         # Package feerate is calculated for the remaining transactions after deduplication and
         # individual submission. Since this package had a 0-fee parent, package feerate must have
         # been used and returned.
