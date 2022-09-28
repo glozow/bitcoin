@@ -123,6 +123,7 @@ static RPCHelpMan testmempoolaccept()
                     {RPCResult::Type::OBJ, "fees", /*optional=*/true, "Transaction fees (only present if 'allowed' is true)",
                     {
                         {RPCResult::Type::STR_AMOUNT, "base", "transaction fee in " + CURRENCY_UNIT},
+                        {RPCResult::Type::STR_AMOUNT, "effective-feerate", /*optional=*/true, "if something other than base feerate was used, the effective feerate in " + CURRENCY_UNIT + " per KvB. For example, the package feerate and/or feerate with modified fees from prioritisetransaction."},
                     }},
                     {RPCResult::Type::STR, "reject-reason", /*optional=*/true, "Rejection string (only present when 'allowed' is false)"},
                 }},
@@ -214,6 +215,10 @@ static RPCHelpMan testmempoolaccept()
                         result_inner.pushKV("vsize", virtual_size);
                         UniValue fees(UniValue::VOBJ);
                         fees.pushKV("base", ValueFromAmount(fee));
+                        CHECK_NONFATAL(tx_result.m_result_type == MempoolAcceptResult::ResultType::VALID);
+                        if (fee != tx_result.m_effective_feerate.value().GetFee(virtual_size)) {
+                            fees.pushKV("effective-feerate", ValueFromAmount(tx_result.m_effective_feerate.value().GetFeePerK()));
+                        }
                         result_inner.pushKV("fees", fees);
                     }
                 } else {
@@ -768,6 +773,7 @@ static RPCHelpMan submitpackage()
                         {RPCResult::Type::NUM, "vsize", "Virtual transaction size as defined in BIP 141."},
                         {RPCResult::Type::OBJ, "fees", "Transaction fees", {
                             {RPCResult::Type::STR_AMOUNT, "base", "transaction fee in " + CURRENCY_UNIT},
+                            {RPCResult::Type::STR_AMOUNT, "effective-feerate", /*optional=*/true, "if something other than base feerate was used, the effective feerate in " + CURRENCY_UNIT + " per KvB. For example, the package feerate and/or feerate with modified fees from prioritisetransaction."},
                         }},
                     }}
                 }},
@@ -864,6 +870,10 @@ static RPCHelpMan submitpackage()
                     result_inner.pushKV("vsize", int64_t{it->second.m_vsize.value()});
                     UniValue fees(UniValue::VOBJ);
                     fees.pushKV("base", ValueFromAmount(it->second.m_base_fees.value()));
+                    if (it->second.m_result_type == MempoolAcceptResult::ResultType::VALID &&
+                        it->second.m_effective_feerate.value().GetFee(it->second.m_vsize.value()) != it->second.m_base_fees.value()) {
+                        fees.pushKV("effective-feerate", ValueFromAmount(it->second.m_effective_feerate.value().GetFeePerK()));
+                    }
                     result_inner.pushKV("fees", fees);
                     if (it->second.m_replaced_transactions.has_value()) {
                         for (const auto& ptx : it->second.m_replaced_transactions.value()) {

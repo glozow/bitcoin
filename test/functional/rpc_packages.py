@@ -358,13 +358,9 @@ class RPCPackagesTest(BitcoinTestFramework):
             wtxid = tx.getwtxid()
             assert wtxid in submitpackage_result["tx-results"]
             tx_result = submitpackage_result["tx-results"][wtxid]
-            assert_equal(tx_result, {
-                "txid": tx.rehash(),
-                "vsize": tx.get_vsize(),
-                "fees": {
-                    "base": DEFAULT_FEE,
-                }
-            })
+            assert_equal(tx_result["txid"], tx.rehash())
+            assert_equal(tx_result["vsize"], tx.get_vsize())
+            assert_equal(tx_result["fees"]["base"], DEFAULT_FEE)
 
         # submitpackage result should be consistent with testmempoolaccept and getmempoolentry
         self.assert_equal_package_results(node, testmempoolaccept_result, submitpackage_result)
