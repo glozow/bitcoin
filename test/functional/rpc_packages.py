@@ -302,14 +302,12 @@ class RPCPackagesTest(BitcoinTestFramework):
         for package_txn in package_txns:
             tx = package_txn["tx"]
             assert tx.getwtxid() in submitpackage_result["tx-results"]
-            tx_result = submitpackage_result["tx-results"][tx.getwtxid()]
-            assert_equal(tx_result, {
-                "txid": package_txn["txid"],
-                "vsize": tx.get_vsize(),
-                "fees": {
-                    "base": DEFAULT_FEE,
-                }
-            })
+            wtxid = tx.getwtxid()
+            assert wtxid in submitpackage_result["tx-results"]
+            tx_result = submitpackage_result["tx-results"][wtxid]
+            assert_equal(tx_result["txid"], tx.rehash())
+            assert_equal(tx_result["vsize"], tx.get_vsize())
+            assert_equal(tx_result["fees"]["base"], DEFAULT_FEE)
 
         # submitpackage result should be consistent with testmempoolaccept and getmempoolentry
         self.assert_equal_package_results(node, testmempoolaccept_result, submitpackage_result)
@@ -328,6 +326,10 @@ class RPCPackagesTest(BitcoinTestFramework):
         node = self.nodes[0]
         peer = node.add_p2p_connection(P2PTxInvStore())
 
+        # Package with 2 parents and 1 child. One parent pays for itself, and another has 0 fees but
+        # is bumped by child. The "rich" parent does not require CPFP and should not have an
+        # effective feerate. The "poor" parent and child's effective feerates are the same,
+        # composed of the child's fee divided by their combined vsize.
         tx_poor = self.wallet.create_self_transfer(fee=0, fee_rate=0)
         tx_rich = self.wallet.create_self_transfer(fee=DEFAULT_FEE)
         package_txns = [tx_rich, tx_poor]
@@ -343,6 +345,10 @@ class RPCPackagesTest(BitcoinTestFramework):
         assert_equal(rich_parent_result["fees"]["base"], DEFAULT_FEE)
         assert_equal(poor_parent_result["fees"]["base"], 0)
         assert_equal(child_result["fees"]["base"], DEFAULT_FEE)
+        assert "effective-feerate" not in rich_parent_result["fees"]
+        assert_fee_amount(DEFAULT_FEE, tx_poor["tx"].get_vsize() + tx_child["tx"].get_vsize(), poor_parent_result["fees"]["effective-feerate"])
+        assert_fee_amount(DEFAULT_FEE, tx_poor["tx"].get_vsize() + tx_child["tx"].get_vsize(), child_result["fees"]["effective-feerate"])
+
         # Package feerate is calculated for the remaining transactions after deduplication and
         # individual submission. Since this package had a 0-fee parent, package feerate must have
         # been used and returned.
