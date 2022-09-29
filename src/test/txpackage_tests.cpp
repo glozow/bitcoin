@@ -923,5 +923,138 @@ BOOST_FIXTURE_TEST_CASE(package_cpfp_tests, TestChain100Setup)
         BOOST_CHECK(m_node.mempool->exists(GenTxid::Txid(tx_parent_rich->GetHash())));
         BOOST_CHECK(!m_node.mempool->exists(GenTxid::Txid(tx_child_poor->GetHash())));
     }
+
+    // Again, we should accept the incentive-compatible transactions from the package. That could
+    // mean rejecting the child but keeping some of the parents.
+    // 2 parents and 1 child. Parent2 also spends Parent1. Child spends both.
+    // Parent1 pays 0 fees, and Parent2 has a high feerate (enough to bump Parent1). Child pays 0 fees.
+    // The correct behavior is to accept Parent1 and Parent2, but not the child.
+    {
+        Package package_parent_pfp;
+        CTxOut parent_to_parent{25*COIN, parent_spk};
+        CTxOut parent_to_child{25*COIN, child_spk};
+        auto mtx_poor_parent = CreateValidMempoolTransaction(/*input_transactions=*/{m_coinbase_txns[3]},
+                                                             /*inputs=*/{COutPoint{m_coinbase_txns[3]->GetHash(), 0}},
+                                                             /*input_height=*/3,
+                                                             /*input_signing_keys=*/{coinbaseKey},
+                                                             /*outputs=*/{parent_to_parent, parent_to_child},
+                                                             /*submit=*/false);
+        auto tx_parent1 = MakeTransactionRef(mtx_poor_parent);
+        package_parent_pfp.push_back(tx_parent1);
+
+        const CAmount high_parent_fee{1 * COIN};
+        auto mtx_rich_parent = CreateValidMempoolTransaction(/*input_transaction=*/tx_parent1,
+                                                             /*input_vout=*/0,
+                                                             /*input_height=*/103,
+                                                             /*input_signing_key=*/child_key,
+                                                             /*output_destination=*/parent_spk,
+                                                             /*output_amount=*/25*COIN - high_parent_fee,
+                                                             /*submit=*/false);
+        auto tx_parent2 = MakeTransactionRef(mtx_rich_parent);
+        package_parent_pfp.push_back(tx_parent2);
+
+        COutPoint parent1_1{tx_parent1->GetHash(), 1};
+        COutPoint parent2_0{tx_parent2->GetHash(), 0};
+        CTxOut child_out{coinbase_value - high_parent_fee, child_spk};
+        auto mtx_child = CreateValidMempoolTransaction(/*input_transactions=*/{tx_parent1, tx_parent2},
+                                                       /*inputs=*/{parent1_1, parent2_0},
+                                                       /*input_height=*/103,
+                                                       /*input_signing_keys=*/{child_key, grandchild_key},
+                                                       /*outputs=*/{child_out},
+                                                       /*submit=*/false);
+        auto tx_child = MakeTransactionRef(mtx_child);
+        package_parent_pfp.push_back(tx_child);
+
+        BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
+        const auto submit_parent_pfp = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
+                                                         package_parent_pfp, /*test_accept=*/false);
+        expected_pool_size += 2;
+        BOOST_CHECK_MESSAGE(submit_parent_pfp.m_state.IsInvalid(), "Package validation unexpectedly succeeded");
+        BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
+        BOOST_CHECK(m_node.mempool->exists(GenTxid::Txid(tx_parent1->GetHash())));
+        BOOST_CHECK(m_node.mempool->exists(GenTxid::Txid(tx_parent2->GetHash())));
+        BOOST_CHECK(!m_node.mempool->exists(GenTxid::Txid(tx_child->GetHash())));
+
+        const CFeeRate expected_feerate(high_parent_fee, GetVirtualTransactionSize(*tx_parent1) + GetVirtualTransactionSize(*tx_parent2));
+        auto it_parent1 = submit_parent_pfp.m_tx_results.find(tx_parent1->GetWitnessHash());
+        auto it_parent2 = submit_parent_pfp.m_tx_results.find(tx_parent2->GetWitnessHash());
+        auto it_child = submit_parent_pfp.m_tx_results.find(tx_child->GetWitnessHash());
+        BOOST_CHECK(it_parent1 != submit_parent_pfp.m_tx_results.end());
+        BOOST_CHECK(it_parent2 != submit_parent_pfp.m_tx_results.end());
+        BOOST_CHECK(it_child != submit_parent_pfp.m_tx_results.end());
+        BOOST_CHECK_EQUAL(it_parent1->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
+        BOOST_CHECK_EQUAL(it_parent2->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
+        BOOST_CHECK(it_parent1->second.m_effective_feerate.value() == expected_feerate);
+        BOOST_CHECK(it_parent2->second.m_effective_feerate.value() == expected_feerate);
+    }
+
+    // Check again that validation isn't quitting *too* early.
+    // This package has a child with 3 parents:
+    // Parent1 has a consensus issue.
+    // Parent2 is too low fee. Parent 3 spends from Parent2 and has a high fee, fee-bumping Parent2.
+    // Parent1 and the child should be rejected. Parent2 and Parent3 should be accepted.
+    // Otherwise, anybody could censor a package like Parent2+3 by broadcasting it in a package
+    // similar to this one.
+    {
+        CTxOut parent_to_parent{25*COIN, parent_spk};
+        CTxOut parent_to_child{25*COIN, child_spk};
+        // premature coinbase spend (consensus error)
+        auto tx_parent1_bad{MakeTransactionRef(CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[99],
+                                                                             /*input_vout=*/0,
+                                                                             /*input_height=*/103,
+                                                                             /*input_signing_key=*/coinbaseKey,
+                                                                             /*output_destination=*/child_spk,
+                                                                             /*output_amount=*/ 49 * COIN,
+                                                                             /*submit=*/false))};
+        auto tx_parent2_low_fee{MakeTransactionRef(CreateValidMempoolTransaction(/*input_transactions=*/{m_coinbase_txns[4]},
+                                                                                 /*inputs=*/{COutPoint{m_coinbase_txns[4]->GetHash(), 0}},
+                                                                                 /*input_height=*/103,
+                                                                                 /*input_signing_keys=*/{coinbaseKey},
+                                                                                 /*outputs=*/{parent_to_parent, parent_to_child},
+                                                                                 /*submit=*/false))};
+        auto tx_parent3_high_fee{MakeTransactionRef(CreateValidMempoolTransaction(/*input_transaction=*/tx_parent2_low_fee,
+                                                                                 /*input_vout=*/0,
+                                                                                 /*input_height=*/103,
+                                                                                 /*input_signing_key=*/child_key,
+                                                                                 /*output_destination=*/child_spk,
+                                                                                 /*output_amount=*/ 24 * COIN,
+                                                                                 /*submit=*/false))};
+        auto tx_child_quit_early{MakeTransactionRef(CreateValidMempoolTransaction(/*input_transactions=*/{tx_parent1_bad,
+                                                                                                          tx_parent2_low_fee,
+                                                                                                          tx_parent3_high_fee},
+                                                                                  /*inputs=*/{COutPoint{tx_parent1_bad->GetHash(), 0},
+                                                                                              COutPoint{tx_parent2_low_fee->GetHash(), 1},
+                                                                                              COutPoint{tx_parent3_high_fee->GetHash(), 0}},
+                                                                                  /*input_height=*/103,
+                                                                                  /*input_signing_keys=*/{grandchild_key},
+                                                                                  /*outputs=*/{CTxOut{(49 + 25 + 24 - 1) * COIN, child_spk}},
+                                                                                  /*submit=*/false))};
+        Package package_quit_too_early{tx_parent1_bad, tx_parent2_low_fee, tx_parent3_high_fee, tx_child_quit_early};
+        auto result_quit_too_early = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
+                                                       package_quit_too_early, /*test_accept=*/ false);
+        expected_pool_size += 2;
+        BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
+        BOOST_CHECK(result_quit_too_early.m_state.IsInvalid());
+        BOOST_CHECK_EQUAL(result_quit_too_early.m_state.GetResult(), PackageValidationResult::PCKG_TX);
+        BOOST_CHECK_EQUAL(result_quit_too_early.m_tx_results.size(), 4);
+        BOOST_CHECK(m_node.mempool->exists(GenTxid::Txid(tx_parent2_low_fee->GetHash())));
+        BOOST_CHECK(m_node.mempool->exists(GenTxid::Txid(tx_parent3_high_fee->GetHash())));
+        BOOST_CHECK(!m_node.mempool->exists(GenTxid::Txid(tx_parent1_bad->GetHash())));
+        BOOST_CHECK(!m_node.mempool->exists(GenTxid::Txid(tx_child_quit_early->GetHash())));
+        auto it_parent1 = result_quit_too_early.m_tx_results.find(tx_parent1_bad->GetWitnessHash());
+        auto it_parent2 = result_quit_too_early.m_tx_results.find(tx_parent2_low_fee->GetWitnessHash());
+        auto it_parent3 = result_quit_too_early.m_tx_results.find(tx_parent3_high_fee->GetWitnessHash());
+        auto it_child = result_quit_too_early.m_tx_results.find(tx_child_quit_early->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_parent1->second.m_result_type, MempoolAcceptResult::ResultType::INVALID);
+        BOOST_CHECK_EQUAL(it_parent2->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
+        BOOST_CHECK_EQUAL(it_parent3->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
+        BOOST_CHECK_EQUAL(it_child->second.m_result_type, MempoolAcceptResult::ResultType::INVALID);
+        BOOST_CHECK_EQUAL(it_parent1->second.m_state.GetResult(), TxValidationResult::TX_PREMATURE_SPEND);
+        BOOST_CHECK_EQUAL(it_child->second.m_state.GetResult(), TxValidationResult::TX_MISSING_INPUTS);
+        const CFeeRate expected_feerate_23(1*COIN,
+            GetVirtualTransactionSize(*tx_parent2_low_fee) + GetVirtualTransactionSize(*tx_parent3_high_fee));
+        BOOST_CHECK(it_parent2->second.m_effective_feerate.value() == expected_feerate_23);
+        BOOST_CHECK(it_parent3->second.m_effective_feerate.value() == expected_feerate_23);
+    }
 }
 BOOST_AUTO_TEST_SUITE_END()
