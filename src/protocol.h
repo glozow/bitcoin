@@ -264,6 +264,14 @@ extern const char* WTXIDRELAY;
 extern const char* SENDPACKAGES;
 /** List of wtxids corresponding to a transaction's ancestor package. */
 extern const char* ANCPKGINFO;
+/**
+ * Requests all or none of a list of transactions, specified by wtxid.
+ */
+extern const char* GETPKGTXNS;
+/**
+ * List of transactions.
+ */
+extern const char* PKGTXNS;
 }; // namespace NetMsgType
 
 /* Get a vector of all valid message types (see above) */
