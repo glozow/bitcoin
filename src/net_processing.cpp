@@ -4785,6 +4785,35 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         return;
     }
 
+    if (msg_type == NetMsgType::GETPKGTXNS) {
+        std::vector<uint256> txns_requested;
+        vRecv >> txns_requested;
+
+        {
+            LOCK(peer->m_getdata_requests_mutex);
+            std::vector<CTransactionRef> pkgtxns;
+            auto tx_relay = peer->GetTxRelay();
+            const auto mempool_req = tx_relay != nullptr ? tx_relay->m_last_mempool_req.load() : std::chrono::seconds::min();
+            const auto now{GetTime<std::chrono::seconds>()};
+            for (const auto& wtxid : txns_requested) {
+                auto ptx = FindTxForGetData(pfrom, GenTxid::Wtxid(wtxid), mempool_req, now);
+                if (ptx) {
+                    pkgtxns.push_back(ptx);
+                }
+            }
+            if (pkgtxns.size() == txns_requested.size()) {
+                m_connman.PushMessage(&pfrom, msgMaker.Make(NetMsgType::PKGTXNS, pkgtxns));
+            } else {
+                // TODO: return notfound
+            }
+        }
+    }
+
+    if (msg_type == NetMsgType::PKGTXNS) {
+        LogPrint(BCLog::NET, "pkgtxns received from peer=%d", pfrom.GetId());
+        return;
+    }
+
     if (msg_type == NetMsgType::PING) {
         if (pfrom.GetCommonVersion() > BIP0031_VERSION) {
             uint64_t nonce = 0;
