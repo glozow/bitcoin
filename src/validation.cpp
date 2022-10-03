@@ -1376,50 +1376,69 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             txns_deduplicated.push_back(tx);
         }
     }
+    assert(results.size() + txns_deduplicated.size() == package.size());
     if (txns_deduplicated.empty()) return PackageMempoolAcceptResult(package_state, std::move(results));
 
-    std::vector<CTransactionRef> txns_new;
-    ATMPArgs single_args = ATMPArgs::SingleInPackageAccept(args);
-    bool quit_early{false};
-    for (const auto& tx : txns_deduplicated) {
-        const auto& wtxid = tx->GetWitnessHash();
-        // Transaction does not already exist in the mempool.
-        // Try submitting the transaction on its own.
-        const auto single_res = AcceptSingleTransaction(tx, single_args);
-        if (single_res.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-            // The transaction succeeded on its own and is now in the mempool. Don't include it
-            // in package validation, because its fees should only be "used" once.
-            assert(m_pool.exists(GenTxid::Wtxid(wtxid)));
-            results.emplace(wtxid, single_res);
-        } else if (single_res.m_state.GetResult() != TxValidationResult::TX_MEMPOOL_POLICY &&
-                   single_res.m_state.GetResult() != TxValidationResult::TX_MISSING_INPUTS) {
-            // Package validation policy only differs from individual policy in its evaluation
-            // of feerate. For example, if a transaction fails here due to violation of a
-            // consensus rule, the result will not change when it is submitted as part of a
-            // package. To minimize the amount of repeated work, unless the transaction fails
-            // due to feerate or missing inputs (its parent is a previous transaction in the
-            // package that failed due to feerate), don't run package validation. Note that this
-            // decision might not make sense if different types of packages are allowed in the
-            // future.  Continue individually validating the rest of the transactions, because
-            // some of them may still be valid.
-            quit_early = true;
+    AncestorPackage packageified(txns_deduplicated);
+    assert(IsAncestorPackage(packageified.Txns()));
+    assert(packageified.Txns().size() == txns_deduplicated.size());
+    // Mutable as in, as we go along, an invalid result may be overwritten with a valid one.
+    std::map<uint256, MempoolAcceptResult> individual_results_mutable;
+    // Try submitting each transaction with its own ancestor subpackage.
+    for (const auto& tx : packageified.Txns()) {
+        auto wtxid = tx->GetWitnessHash();
+        const auto subpackage = packageified.GetAncestorSet(tx);
+        const auto sub_result = AcceptMultipleTransactions(subpackage, args);
+        // Set result for representative tx
+        if (sub_result.m_state.IsInvalid()) {
+            if (sub_result.m_state.GetResult() == PackageValidationResult::PCKG_TX) {
+                auto it = sub_result.m_tx_results.find(wtxid);
+                Assume(it != sub_result.m_tx_results.end());
+                individual_results_mutable.emplace(wtxid, it->second);
+            } else {
+                // Use the PackageValidationResult as MempoolAcceptResult
+                TxValidationState state;
+                state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, sub_result.m_state.GetRejectReason());
+                Assume(sub_result.m_tx_results.find(wtxid) == sub_result.m_tx_results.end());
+                individual_results_mutable.emplace(wtxid, MempoolAcceptResult::Failure(state));
+            }
         } else {
-            txns_new.push_back(tx);
+            assert(m_pool.exists(GenTxid::Wtxid(wtxid)));
+            auto it = sub_result.m_tx_results.find(wtxid);
+            assert(it != sub_result.m_tx_results.end());
+            individual_results_mutable.emplace(wtxid, it->second);
         }
+        // Successful transactions: set result (possibly overriding previously invalid results) and
+        // exclude them from now on.
+        for (const auto& subpackage_tx : subpackage) {
+            auto subpackage_wtxid = subpackage_tx->GetWitnessHash();
+            auto it = sub_result.m_tx_results.find(subpackage_tx->GetWitnessHash());
+            if (it == sub_result.m_tx_results.end()) {
+                continue;
+            }
+            const auto mempoolaccept_res = it->second;
+            if (mempoolaccept_res.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+                Assume(m_pool.exists(GenTxid::Wtxid(subpackage_wtxid)));
+                auto previous_it = individual_results_mutable.find(subpackage_wtxid);
+                if (previous_it != individual_results_mutable.end()) {
+                    individual_results_mutable.erase(previous_it);
+                }
+                individual_results_mutable.emplace(subpackage_wtxid, mempoolaccept_res);
+                packageified.Exclude({subpackage_tx});
+            }
+        }
+        // Set package state to be the sate of the last transaction.
+        // If this was successful, all the transactions must have been successful (since this is an
+        // ancestor package). If this was unsuccessful, returning the last transaction's
+        // PackageValidationState is correct.
+        if (wtxid == packageified.Txns().back()->GetWitnessHash()) package_state = sub_result.m_state;
     }
-
-    // Nothing to do if the entire package has already been submitted.
-    if (quit_early || txns_new.empty()) {
-        // No package feerate when no package validation was done.
-        return PackageMempoolAcceptResult(package_state, std::move(results));
+    Assume(individual_results_mutable.size() + results.size() == package.size());
+    for (const auto& [wtxid, mempoolaccept_res] : individual_results_mutable) {
+        results.emplace(wtxid, mempoolaccept_res);
     }
-    // Validate the (deduplicated) transactions as a package.
-    auto submission_result = AcceptMultipleTransactions(txns_new, args);
-    // Include already-in-mempool transaction results in the final result.
-    for (const auto& [wtxid, mempoolaccept_res] : results) {
-        submission_result.m_tx_results.emplace(wtxid, mempoolaccept_res);
-    }
-    return submission_result;
+    Assume(results.size() == package.size());
+    return PackageMempoolAcceptResult(package_state, std::move(results));
 }
 
 } // anon namespace
