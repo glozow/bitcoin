@@ -83,12 +83,23 @@ class PackageRelayTest(BitcoinTestFramework):
         # Basic 1-parent-1-child package
         low_fee_parent = self.wallet.create_self_transfer(fee_rate=FEERATE_1SAT_VB, confirmed_only=True)
         high_fee_child = self.wallet.create_self_transfer(utxo_to_spend=low_fee_parent["new_utxo"], fee_rate=999*FEERATE_1SAT_VB)
-        package_hex = [low_fee_parent["hex"], high_fee_child["hex"]]
-        self.packages_to_submit.append(package_hex)
+        package_hex_basic = [low_fee_parent["hex"], high_fee_child["hex"]]
+        self.packages_to_submit.append(package_hex_basic)
         # Child should already be in orphanage
         self.transactions_to_presend[1] = [high_fee_child["tx"]]
         # Parent would have been previously rejected
         self.transactions_to_presend[3] = [low_fee_parent["tx"]]
+        self.total_txns += 2
+
+        # Basic v3 package, same as above but parent is 0-fee
+        v3_zero_fee_parent = self.wallet.create_self_transfer(fee_rate=0, fee=0, version=3, confirmed_only=True)
+        v3_child = self.wallet.create_self_transfer(utxo_to_spend=v3_zero_fee_parent["new_utxo"], fee_rate=999*FEERATE_1SAT_VB, version=3)
+        package_hex_v3 = [v3_zero_fee_parent["hex"], v3_child["hex"]]
+        self.packages_to_submit.append(package_hex_v3)
+        # Child should already be in orphanage
+        self.transactions_to_presend[1] = [v3_child["tx"]]
+        # Parent would have been previously rejected
+        self.transactions_to_presend[3] = [v3_zero_fee_parent["tx"]]
         self.total_txns += 2
 
     def test_individual_logic(self):
@@ -190,7 +201,7 @@ class PackageRelayTest(BitcoinTestFramework):
                 peer.send_and_ping(msg_tx(tx))
             peer.peer_disconnect()
 
-        self.log.info("Submit full packages to their respective nodes")
+        self.log.info("Submit full packages to node0")
         for package_hex in self.packages_to_submit:
             self.nodes[0].submitpackage(package_hex)
 
