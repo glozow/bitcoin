@@ -78,6 +78,7 @@ TEST_FRAMEWORK_MODULES = [
     "key",
     "messages",
     "muhash",
+    "messages",
     "ripemd160",
     "script",
     "segwit_addr",

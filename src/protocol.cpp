@@ -49,6 +49,8 @@ const char* WTXIDRELAY = "wtxidrelay";
 const char* SENDTXRCNCL = "sendtxrcncl";
 const char* SENDPACKAGES="sendpackages";
 const char* ANCPKGINFO="ancpkginfo";
+const char* GETPKGTXNS="getpkgtxns";
+const char* PKGTXNS="pkgtxns";
 } // namespace NetMsgType
 
 /** All known message types. Keep this in the same order as the list of
@@ -92,6 +94,8 @@ const static std::vector<std::string> g_all_net_message_types{
     NetMsgType::SENDTXRCNCL,
     NetMsgType::SENDPACKAGES,
     NetMsgType::ANCPKGINFO,
+    NetMsgType::GETPKGTXNS,
+    NetMsgType::PKGTXNS,
 };
 
 CMessageHeader::CMessageHeader(const MessageStartChars& pchMessageStartIn, const char* pszCommand, unsigned int nMessageSizeIn)

@@ -4532,6 +4532,49 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         return;
     }
 
+    if (msg_type == NetMsgType::GETPKGTXNS) {
+        unsigned int num_txns = ReadCompactSize(vRecv);
+        if (num_txns == 0) return;
+        if (num_txns > node::MAX_PKGTXNS_COUNT) {
+            LogPrint(BCLog::NET, "\ngetpkgtxns exceeds allowed size, disconnecting peer=%d\n", pfrom.GetId());
+            pfrom.fDisconnect = true;
+            return;
+        }
+        std::vector<uint256> txns_requested;
+        txns_requested.resize(num_txns);
+        for (unsigned int n = 0; n < num_txns; ++n) {
+            vRecv >> txns_requested[n];
+        }
+
+        {
+            LOCK(peer->m_getdata_requests_mutex);
+            std::vector<CTransactionRef> pkgtxns;
+            pkgtxns.reserve(txns_requested.size());
+
+            for (const auto& wtxid : txns_requested) {
+                auto ptx = FindTxForGetData(*peer->GetTxRelay(), GenTxid::Wtxid(wtxid));
+                if (ptx) {
+                    pkgtxns.emplace_back(ptx);
+                } else {
+                    // A getpkgtxns request is all or nothing; if any of the transactions are
+                    // unavailable, return a notfound for the full request.
+                    std::vector<CInv> notfound{{CInv{MSG_PKGTXNS, GetCombinedHash(txns_requested)}}};
+                    m_connman.PushMessage(&pfrom, msgMaker.Make(NetMsgType::NOTFOUND, notfound));
+                    return;
+                }
+            }
+            if (!Assume(pkgtxns.size() <= node::MAX_PKGTXNS_COUNT)) {
+                // Belt and suspenders: make sure we never send a pkgtxns with more than
+                // MAX_PKGTXNS_COUNT transactions.
+                return;
+            }
+            if (pkgtxns.size() == txns_requested.size()) {
+                m_connman.PushMessage(&pfrom, msgMaker.Make(NetMsgType::PKGTXNS, pkgtxns));
+            }
+        }
+        return;
+    }
+
     if (msg_type == NetMsgType::PING) {
         if (pfrom.GetCommonVersion() > BIP0031_VERSION) {
             uint64_t nonce = 0;

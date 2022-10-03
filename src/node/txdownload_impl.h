@@ -33,6 +33,9 @@ static constexpr auto GETDATA_TX_INTERVAL{60s};
 /** Default -packagerelay value. */
 static constexpr auto DEFAULT_DO_PACKAGE_RELAY{false};
 
+/** Maximum number of items in a getpkgtxns / pkgtxns (BIP331). */
+static constexpr size_t MAX_PKGTXNS_COUNT{100};
+
 /** The bits in sendpackages "versions" field */
 enum PackageRelayVersions : uint64_t {
     PKG_RELAY_NONE = 0,
