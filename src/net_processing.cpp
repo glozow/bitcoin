@@ -4126,7 +4126,12 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     AddKnownTx(*peer, parent_txid);
                     if (!AlreadyHaveTx(gtxid)) AddTxAnnouncement(pfrom, gtxid, current_time);
                 }
-
+                if (peer->m_package_relay) {
+                    // Let the txpackagetracker know that we have an orphan. It should batch
+                    // ancpkginfo requests later.
+                    assert(m_txpackagetracker);
+                    m_txpackagetracker->AddOrphanTx(pfrom.GetId(), ptx);
+                }
                 if (m_orphanage.AddTx(ptx, pfrom.GetId())) {
                     AddToCompactExtraTransactions(ptx);
                 }
@@ -5942,6 +5947,20 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                 // We have already seen this transaction, no need to download. This is just a belt-and-suspenders, as
                 // this should already be called whenever a transaction becomes AlreadyHaveTx().
                 m_txrequest.ForgetTxHash(gtxid.GetHash());
+            }
+        }
+
+        //
+        // Message: getdata (package info)
+        //
+        if (m_txpackagetracker && peer->m_package_relay) {
+            auto requestable = m_txpackagetracker->GetRequestableAncPkgInfo(pto->GetId());
+            for (const auto& wtxid : requestable) {
+                vGetData.emplace_back(CInv(MSG_ANCPKGINFO, wtxid));
+                if (vGetData.size() >= MAX_GETDATA_SZ) {
+                    m_connman.PushMessage(pto, msgMaker.Make(NetMsgType::GETDATA, vGetData));
+                    vGetData.clear();
+                }
             }
         }
 

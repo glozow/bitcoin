@@ -64,6 +64,11 @@ class TxPackageTracker {
 
         // Package infos announced by this peer
         std::vector<MapIter> m_package_info_vec;
+
+        // Simple set that contains wtxids fo transactions we want to request ancpkginfo for.
+        // FIXME: replace with something a lot smarter to deduplicate and prioritise across peers,
+        // expire requests, etc.
+        std::set<uint256> m_ancpkginfo_to_request;
     };
 
     /** Information for each peer we relay packages with. Membership in this map is equivalent to
@@ -92,6 +97,13 @@ public:
     // Received an ancestor package info and have not requested the transaction data yet. Already
     // registered with TxRequestTracker.
     void ReceivedPackageInfo(NodeId nodeid, const std::vector<uint256>& wtxids, uint64_t id);
+
+    // Received an orphan. Should request ancpkginfo. Assumes this peer is registered; don't call
+    // this for a non-package relay peer.
+    void AddOrphanTx(NodeId nodeid, const CTransactionRef& orphan_tx);
+
+    // Get list of ancpkginfo requests.
+    std::vector<uint256> GetRequestableAncPkgInfo(NodeId nodeid);
 };
 
 #endif // BITCOIN_TX_PKG_RELAY_H

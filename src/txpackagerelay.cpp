@@ -76,3 +76,22 @@ void TxPackageTracker::ReceivedPackageInfo(NodeId nodeid, const std::vector<uint
     Assume(peer_it != info_per_peer.end());
     peer_it->second.m_package_info_vec.push_back(info_it);
 }
+
+void TxPackageTracker::AddOrphanTx(NodeId nodeid, const CTransactionRef& orphan_tx)
+{
+    auto it_peer_info = info_per_peer.find(nodeid);
+    Assume(it_peer_info != info_per_peer.end());
+    it_peer_info->second.m_ancpkginfo_to_request.insert(orphan_tx->GetWitnessHash());
+}
+
+std::vector<uint256> TxPackageTracker::GetRequestableAncPkgInfo(NodeId nodeid)
+{
+    auto it_peer_info = info_per_peer.find(nodeid);
+    Assume(it_peer_info != info_per_peer.end());
+    std::vector<uint256> requestable(it_peer_info->second.m_ancpkginfo_to_request.begin(),
+                                     it_peer_info->second.m_ancpkginfo_to_request.end());
+    // Delete them since we're requesting them. This is a terrible idea because we might lose track
+    // of transactions, so FIXME
+    it_peer_info->second.m_ancpkginfo_to_request.clear();
+    return requestable;
+}
