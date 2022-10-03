@@ -13,7 +13,9 @@ import time
 
 from test_framework.messages import (
     CInv,
+    hash256,
     MSG_ANCPKGINFO,
+    MSG_PKGTXNS,
     MSG_TX,
     MSG_WITNESS_TX,
     MSG_WTX,
@@ -22,10 +24,14 @@ from test_framework.messages import (
     msg_getdata,
     msg_inv,
     msg_notfound,
+    msg_getpkgtxns,
+    msg_pkgtxns,
     msg_sendpackages,
     msg_tx,
     msg_verack,
     msg_wtxidrelay,
+    MSG_WTX,
+    ser_uint256_vector,
 )
 from test_framework.p2p import (
     NONPREF_PEER_TX_DELAY,
@@ -39,6 +45,11 @@ from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
     assert_greater_than_or_equal,
+)
+from test_framework.wallet import (
+    COIN,
+    DEFAULT_FEE,
+    MiniWallet,
 )
 from test_framework.wallet import (
     COIN,
@@ -122,6 +133,24 @@ class PackageRelayer(P2PTxInvStore):
             if not last_getdata:
                 return False
             return all([item.type == MSG_WITNESS_TX and item.hash in txids for item in last_getdata.inv])
+        self.wait_until(test_function, timeout=10)
+
+    def wait_for_pkgtxns(self, wtxids):
+        def test_function():
+            last_pkgtxns = self.last_message.get('pkgtxns')
+            if not last_pkgtxns:
+                return False
+            return [tx.getwtxid() for tx in last_pkgtxns.txns] == wtxids
+        self.wait_until(test_function, timeout=10)
+
+    def wait_for_notfound(self, expected):
+        def test_function():
+            last_notfound = self.last_message.get('notfound')
+            if not last_notfound:
+                return False
+            # FIXME
+            return any([item.type == expected.type for item in last_notfound.vec])
+            # return any([item.type == expected.type and item.hash == expected.hash for item in last_notfound.vec])
         self.wait_until(test_function, timeout=10)
 
 class PackageRelayTest(BitcoinTestFramework):
@@ -386,6 +415,47 @@ class PackageRelayTest(BitcoinTestFramework):
         peer2.wait_for_getancpkginfo(int(package_wtxids[-1], 16))
         peer2.send_and_ping(ancpkginfo_message)
 
+    @cleanup
+    def test_pkgtxns(self):
+        node = self.nodes[0]
+        self.log.info("Test that node does not respond to an unannounced getpkgtxns until after relay delay")
+        package_hex, package_txns, package_wtxids = self.create_package(cpfp=False)
+        # Grind wtxids until they are not in lexicographical order
+        while True:
+            sorted_copy = [x for x in package_wtxids]
+            sorted_copy.sort()
+            if sorted_copy == package_wtxids:
+                package_hex, package_txns, package_wtxids = self.create_package(cpfp=False)
+            else:
+                break
+
+        node.submitpackage(package_hex)
+        getpkgtxns_request = msg_getpkgtxns([int(wtxid, 16) for wtxid in package_wtxids])
+
+        # Peer is added only after the transactions were submitted, so they are not announced.
+        peer_requester_unannounced = node.add_p2p_connection(PackageRelayer())
+        peer_requester_unannounced.send_and_ping(getpkgtxns_request)
+        sorted_wtxids = [x for x in package_wtxids]
+        sorted_wtxids.sort()
+        packagehash = int(hash256(ser_uint256_vector([int(wtxid, 16) for wtxid in sorted_wtxids]))[::-1].hex(), 16)
+        peer_requester_unannounced.wait_for_notfound(expected=CInv(t=MSG_PKGTXNS, h=packagehash))
+        assert "pkgtxns" not in peer_requester_unannounced.last_message
+
+        self.fastforward(UNCONDITIONAL_RELAY_DELAY)
+
+        self.log.info("Test that node responds to getpkgtxns with notfound if any transactions are unavailable")
+        new_tx = self.wallet.create_self_transfer()
+        node.sendrawtransaction(new_tx["hex"])
+        req_partially_unavailable = [package_wtxids[0], new_tx["tx"].getwtxid()]
+        peer_requester_unannounced.send_and_ping(msg_getpkgtxns([int(wtxid, 16) for wtxid in req_partially_unavailable]))
+        req_partially_unavailable.sort()
+        unavailablehash = int(hash256(ser_uint256_vector([int(wtxid, 16) for wtxid in req_partially_unavailable]))[::-1].hex(), 16)
+        peer_requester_unannounced.wait_for_notfound(expected=CInv(t=MSG_PKGTXNS, h=unavailablehash))
+
+        self.log.info("Test that node responds to getpkgtxns with pkgtxns")
+        peer_requester_unannounced.send_and_ping(getpkgtxns_request)
+        peer_requester_unannounced.wait_for_pkgtxns(package_wtxids)
+
     def run_test(self):
         self.wallet = MiniWallet(self.nodes[0])
         self.generate(self.wallet, 160)
@@ -397,6 +467,7 @@ class PackageRelayTest(BitcoinTestFramework):
         self.test_orphan_handling_prefer_ancpkginfo()
         self.test_orphan_announcer_memory()
         self.test_ancpkginfo_received()
+        self.test_pkgtxns()
 
 
 if __name__ == '__main__':
