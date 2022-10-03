@@ -679,6 +679,11 @@ private:
     void AddTxAnnouncement(const CNode& node, const GenTxid& gtxid, std::chrono::microseconds current_time)
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
+    /** Register with TxRequestTracker that wtxids of transactions in a pacakge have been received
+     * from a peer. The announcement parameters are decided in PeerManager and then passed to
+     * TxRequestTracker. */
+    void AddPkgAnnouncement(const CNode& node, const std::vector<uint256>& wtxids, std::chrono::microseconds current_time)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     /** Logic for calculating when a tx announcement will be ready for request. */
     std::pair<bool, std::chrono::microseconds> GetTxRequestDelay(const CNode& node,
@@ -1453,6 +1458,26 @@ void PeerManagerImpl::AddTxAnnouncement(const CNode& node, const GenTxid& gtxid,
     }
     const auto [preferred, delay] = GetTxRequestDelay(node, gtxid.IsWtxid(), current_time);
     m_txrequest.ReceivedInv(nodeid, gtxid, preferred, current_time + delay);
+}
+
+void PeerManagerImpl::AddPkgAnnouncement(const CNode& node, const std::vector<uint256>& wtxids,
+                                         std::chrono::microseconds current_time)
+{
+    AssertLockHeld(::cs_main); // For m_txrequest
+    NodeId nodeid = node.GetId();
+    if (!node.HasPermission(NetPermissionFlags::Relay) && m_txrequest.Count(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) {
+        // Too many queued announcements from this peer
+        return;
+    }
+    // Use the txrequest tracker for individual tx invs and package info hashes. This
+    // helps avoid sending out duplicate requests for the same transaction when they are
+    // announced both as a package and as an individual transaction. It also helps
+    // maintain the existing delays and preferences based on connection type and peer
+    // permissions.
+    const auto [preferred, delay] = GetTxRequestDelay(node, true, current_time);
+    const auto packageid = m_txrequest.ReceivedPackageInvs(nodeid, wtxids, preferred, current_time + delay);
+    assert(m_txpackagetracker);
+    m_txpackagetracker->ReceivedPackageInfo(nodeid, wtxids, packageid);
 }
 
 void PeerManagerImpl::UpdateLastBlockAnnounceTime(NodeId node, int64_t time_in_seconds)
@@ -4160,6 +4185,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 }
             }
         }
+        // FIXME: Check if txpackagetracker is interested in this transaction?
 
         // If a tx has been detected by m_recent_rejects, we will have reached
         // this point and the tx will have been ignored. Because we haven't
@@ -4625,6 +4651,24 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         return;
     }
 
+    if (msg_type == NetMsgType::ANCPKGINFO) {
+        std::vector<uint256> package_wtxids;
+        vRecv >> package_wtxids;
+        if (package_wtxids.empty()) return;
+        if (RejectIncomingTxs(pfrom) || !peer->m_package_relay) {
+            LogPrint(BCLog::NET, "ancpkginfo sent in violation of protocol, disconnecting peer=%d\n", pfrom.GetId());
+            pfrom.fDisconnect = true;
+        }
+        // FIXME: remove AlreadyHaveTx
+        {
+            LOCK(::cs_main);
+            if (m_chainman.ActiveChainstate().IsInitialBlockDownload()) return;
+            const auto current_time{GetTime<std::chrono::microseconds>()};
+            AddPkgAnnouncement(pfrom, package_wtxids, current_time);
+        }
+        for (const auto& wtxid : package_wtxids) AddKnownTx(*peer, wtxid);
+    }
+
     if (msg_type == NetMsgType::GETPKGTXNS) {
         std::vector<uint256> txns_requested;
         vRecv >> txns_requested;
@@ -4667,6 +4711,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
            }
         } else {
            LogPrint(BCLog::NET, "ProcessNewPackage failed: %s", package_res.m_state.GetRejectReason());
+           // FIXME: check with txpackagetracker and MaybePunishNodeForPackage?
         }
         for (const auto& tx : package_txns) {
             m_txrequest.ReceivedResponse(pfrom.GetId(), tx->GetWitnessHash());
@@ -5877,7 +5922,11 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                 entry.second.GetHash().ToString(), entry.first);
         }
         for (const auto& [packageid, wtxids] : requestable_packages) {
+            // FIXME: check with the m_txpackagetracker
             m_connman.PushMessage(pto, msgMaker.Make(NetMsgType::GETPKGTXNS, wtxids));
+            for (const auto& wtxid : wtxids) {
+                m_txrequest.RequestedTx(pto->GetId(), wtxid, current_time + GETDATA_TX_INTERVAL);
+            }
         }
         for (const GenTxid& gtxid : requestable) {
             if (!AlreadyHaveTx(gtxid)) {

@@ -12,13 +12,16 @@ from test_framework.messages import (
     msg_ancpkginfo,
     msg_getdata,
     msg_getpkgtxns,
+    msg_inv,
     msg_pkgtxns,
     msg_sendpackages,
+    msg_tx,
     msg_verack,
     msg_wtxidrelay,
     MSG_WTX,
 )
 from test_framework.p2p import (
+    NONPREF_PEER_TX_DELAY,
     p2p_lock,
     P2PTxInvStore,
     P2PDataStore,
@@ -43,7 +46,10 @@ class PackageRelayer(P2PTxInvStore):
         self._send_sendpackages = send_sendpackages
         self._send_wtxidrelay = send_wtxidrelay
         self._ancpkginfo_received = []
+        self._getdata_received = []
         self._tx_received = []
+        self._getpkgtxns_received = []
+        self._pkgtxns_received = []
 
     @property
     def sendpackages_received(self):
@@ -56,9 +62,24 @@ class PackageRelayer(P2PTxInvStore):
             return self._ancpkginfo_received
 
     @property
+    def getdata_received(self):
+        with p2p_lock:
+            return self._getdata_received
+
+    @property
     def tx_received(self):
         with p2p_lock:
             return self._tx_received
+
+    @property
+    def getpkgtxns_received(self):
+        with p2p_lock:
+            return self._getpkgtxns_received
+
+    @property
+    def pkgtxns_received(self):
+        with p2p_lock:
+            return self._pkgtxns_received
 
     def on_version(self, message):
         if self._send_wtxidrelay:
@@ -74,8 +95,17 @@ class PackageRelayer(P2PTxInvStore):
     def on_ancpkginfo(self, message):
         self._ancpkginfo_received.append(message.wtxids)
 
+    def on_getdata(self, message):
+        self._getdata_received.append(message)
+
     def on_tx(self, message):
         self._tx_received.append(message)
+
+    def on_getpkgtxns(self, message):
+        self._getpkgtxns_received.append(message)
+
+    def on_pkgtxns(self, message):
+        self._pkgtxns_received.append(message)
 
 class PackageRelayTest(BitcoinTestFramework):
     def set_test_params(self):
@@ -185,6 +215,65 @@ class PackageRelayTest(BitcoinTestFramework):
             assert_equal([int(package_wtxids[i], 16)], peer_info_requester.ancpkginfo_received.pop())
         node.disconnect_p2ps()
 
+    def test_package_data_requests(self):
+        node = self.nodes[0]
+        self.log.info("Test that node uses ancpkginfo to send getpkgtxns request")
+        node.setmocktime(int(time.time()))
+        peer_package_relayer = node.add_p2p_connection(PackageRelayer())
+        _, package_txns, package_wtxids = self.create_package()
+        unsolicited_packageinfo = msg_ancpkginfo([int(wtxid, 16) for wtxid in package_wtxids]) 
+        peer_package_relayer.send_and_ping(unsolicited_packageinfo)
+        self.log.info("Test that no request is sent until tx request delay elapses")
+        assert not len(peer_package_relayer.getpkgtxns_received)
+        node.setmocktime(int(time.time() + NONPREF_PEER_TX_DELAY + 10))
+        peer_package_relayer.sync_with_ping()
+        assert_equal(node.getpeerinfo()[0]["bytesrecv_per_msg"]["ancpkginfo"], 25 + len(package_txns) * 32)
+        assert_equal(node.getpeerinfo()[0]["bytessent_per_msg"]["getpkgtxns"], 25 + len(package_txns) * 32)
+        last_getpkgtxns_received = peer_package_relayer.getpkgtxns_received.pop()
+        assert all([int(wtxid, 16) in last_getpkgtxns_received.hashes for wtxid in package_wtxids])
+        node.disconnect_p2ps()
+
+        self.log.info("Test that node prefers to download package txns from outbound over inbound peers")
+        node.setmocktime(int(time.time()))
+        peer_inbound = node.add_p2p_connection(PackageRelayer())
+        peer_outbound = node.add_outbound_p2p_connection(PackageRelayer(), p2p_idx=1, connection_type="outbound-full-relay")
+        _, _, package_wtxids1 = self.create_package()
+        unsolicited_ancpkginfo = msg_ancpkginfo([int(wtxid, 16) for wtxid in package_wtxids1])
+        peer_inbound.send_and_ping(unsolicited_ancpkginfo)
+        peer_outbound.send_and_ping(unsolicited_ancpkginfo)
+        peer_outbound.sync_with_ping()
+        assert not len(peer_inbound.getpkgtxns_received)
+        last_getpkgtxns_received_outbound = peer_outbound.getpkgtxns_received.pop()
+        assert all([int(wtxid, 16) in last_getpkgtxns_received_outbound.hashes for wtxid in package_wtxids1])
+        self.log.info("Test that, after the request expires, the node will try to getpkgtxns from other peers that announced it")
+        # Note that the outbound peer has not responded. After that request expires, the node should
+        # request from the inbound peer, and not re-request from the outbound peer.
+        node.setmocktime(int(time.time()) + 90)
+        peer_inbound.sync_with_ping()
+        peer_outbound.sync_with_ping()
+        assert not len(peer_outbound.getpkgtxns_received)
+        last_getpkgtxns_received_inbound = peer_inbound.getpkgtxns_received.pop()
+        assert all([int(wtxid, 16) in last_getpkgtxns_received_inbound.hashes for wtxid in package_wtxids1])
+
+        self.log.info("Test that, when package txns are announced also individually, the node only requests the tx from one at a time")
+        node.setmocktime(int(time.time()))
+        _, package_txns2, package_wtxids2 = self.create_package()
+        unsolicited_ancpkginfo = msg_ancpkginfo([int(wtxid, 16) for wtxid in package_wtxids2])
+        parent_tx_inv = msg_inv([CInv(t=MSG_WTX, h=int(package_wtxids2[0], 16))])
+        peer_inbound.send_and_ping(unsolicited_ancpkginfo)
+        peer_outbound.send_and_ping(parent_tx_inv)
+        assert_equal(peer_outbound.getdata_received.pop().inv, parent_tx_inv.inv)
+        parent_tx_message = msg_tx(package_txns2[0])
+        self.log.info("Test that, after receiving a tx, the node won't request the tx again in getpkgtxns")
+        peer_outbound.send_and_ping(parent_tx_message)
+        node.setmocktime(int(time.time()) + 60)
+        peer_inbound.sync_with_ping()
+        peer_outbound.sync_with_ping()
+        last_getpkgtxns_received_inbound = peer_inbound.getpkgtxns_received.pop()
+        assert_equal(len(last_getpkgtxns_received_inbound.hashes), len(package_txns2) - 1)
+        assert all([int(wtxid, 16) in last_getpkgtxns_received_inbound.hashes for wtxid in package_wtxids2[1:]])
+
+
     def run_test(self):
         self.wallet = MiniWallet(self.nodes[0])
         self.generate(self.wallet, 160)
@@ -192,6 +281,7 @@ class PackageRelayTest(BitcoinTestFramework):
         self.test_sendpackages()
         self.test_pkgtxns()
         self.test_ancpkginfo_requests()
+        self.test_package_data_requests()
 
 
 if __name__ == '__main__':
