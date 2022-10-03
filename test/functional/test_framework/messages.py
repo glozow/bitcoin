@@ -1899,3 +1899,39 @@ class msg_ancpkginfo:
     def __repr__(self):
         return "msg_ancpkginfo(wtxids=%s)" % (self.wtxids)
 
+class msg_pkgtxns:
+    __slots__ = ("txns")
+    msgtype = b"pkgtxns"
+
+    def __init__(self, txns=None):
+        self.txns = txns if txns is not None else []
+
+    def deserialize(self, f):
+        self.txns = deser_vector(f, CTransaction)
+
+    def serialize(self):
+        r = b""
+        r += ser_vector(self.txns, "serialize_with_witness")
+        return r
+
+    def __repr__(self):
+        return "msg_pkgtxns(txns=%s)" % (self.txns)
+
+
+class msg_getpkgtxns:
+    __slots__ = ("hashes")
+    msgtype = b"getpkgtxns"
+
+    def __init__(self, hashes=None):
+        self.hashes = hashes if hashes is not None else []
+
+    def deserialize(self, f):
+        self.hashes = deser_uint256_vector(f)
+
+    def serialize(self):
+        r = b""
+        r += ser_uint256_vector(self.hashes)
+        return r
+
+    def __repr__(self):
+        return "msg_getpkgtxns(hashes=%s)" % (self.hashes)
