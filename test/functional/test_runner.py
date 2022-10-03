@@ -76,6 +76,7 @@ TEST_FRAMEWORK_MODULES = [
     "blocktools",
     "muhash",
     "key",
+    "messages",
     "ripemd160",
     "script",
     "segwit_addr",
