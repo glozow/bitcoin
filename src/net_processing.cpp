@@ -4090,7 +4090,6 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 AddToCompactExtraTransactions(removedTx);
             }
 
-            // Recursively process any orphan transactions that depended on this one
             ProcessOrphanTx(peer->m_orphan_work_set);
         }
         else if (state.GetResult() == TxValidationResult::TX_MISSING_INPUTS)
