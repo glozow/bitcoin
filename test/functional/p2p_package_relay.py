@@ -119,7 +119,7 @@ class PackageRelayer(P2PTxInvStore):
                 all([int(wtxid, 16) in self.last_message["getpkgtxns"].hashes for wtxid in expected_wtxids])
         self.wait_until(test_function, timeout=timeout)
 
-    def relay_package(self, node, package_txns, package_wtxids):
+    def trigger_ancpkginfo_request(self, node, package_txns, package_wtxids):
         node.setmocktime(int(time.time()))
         # Relay (orphan) child
         orphan_tx = package_txns[-1]
@@ -127,12 +127,18 @@ class PackageRelayer(P2PTxInvStore):
         orphan_inv = CInv(t=MSG_WTX, h=int(orphan_wtxid, 16))
         self.send_and_ping(msg_inv([orphan_inv]))
         node.setmocktime(int(time.time()) + 25)
+        self.sync_with_ping()
         assert_equal(self.getdata_received.pop().inv, [orphan_inv])
         self.send_and_ping(msg_tx(orphan_tx))
         # Relay package info
         node.setmocktime(int(time.time()) + 30)
         last_getdata_received = self.getdata_received.pop()
+        self.sync_with_ping()
         assert_equal(last_getdata_received.inv, [CInv(MSG_ANCPKGINFO, int(orphan_wtxid, 16))])
+        node.setmocktime(int(time.time()))
+
+    def relay_package(self, node, package_txns, package_wtxids):
+        self.trigger_ancpkginfo_request(node, package_txns, package_wtxids)
         self.send_and_ping(msg_ancpkginfo([int(wtxid, 16) for wtxid in package_wtxids]))
         node.setmocktime(int(time.time()) + 35)
         # Relay package tx data
@@ -256,55 +262,34 @@ class PackageProcessingTest(BitcoinTestFramework):
         self.generate(node, 1, sync_fun=self.no_op)
 
     def test_package_data_requests(self):
-        # TODO: once unsolicited ancpkginfo are disallowed, need to have the node give special
-        # permissions to these peers
         node = self.nodes[0]
-        self.log.info("Test that node uses ancpkginfo to send getpkgtxns request")
-        node.setmocktime(int(time.time()))
-        peer_package_relayer = node.add_p2p_connection(PackageRelayer())
+        self.log.info("Test that unsolicited ancpkginfo causes disconnect")
         _, package_txns, package_wtxids = self.create_package()
+        peer_unsolicited_ancpkginfo = node.add_p2p_connection(PackageRelayer())
         unsolicited_packageinfo = msg_ancpkginfo([int(wtxid, 16) for wtxid in package_wtxids]) 
-        peer_package_relayer.send_and_ping(unsolicited_packageinfo)
+        peer_unsolicited_ancpkginfo.send_message(unsolicited_packageinfo)
+        peer_unsolicited_ancpkginfo.wait_for_disconnect()
+
+        self.log.info("Test that node uses ancpkginfo to send getpkgtxns request")
+        peer_package_relayer = node.add_p2p_connection(PackageRelayer())
+        peer_package_relayer.trigger_ancpkginfo_request(node, package_txns, package_wtxids)
+        solicited_packageinfo = msg_ancpkginfo([int(wtxid, 16) for wtxid in package_wtxids])
+        peer_package_relayer.send_and_ping(solicited_packageinfo)
         self.log.info("Test that no request is sent until tx request delay elapses")
         assert not len(peer_package_relayer.getpkgtxns_received)
-        node.setmocktime(int(time.time() + NONPREF_PEER_TX_DELAY + 10))
-        peer_package_relayer.sync_with_ping()
-        assert_equal(node.getpeerinfo()[0]["bytesrecv_per_msg"]["ancpkginfo"], 25 + len(package_txns) * 32)
-        # assert_equal(node.getpeerinfo()[0]["bytessent_per_msg"]["getpkgtxns"], 25 + len(package_txns) * 32)
-        # last_getpkgtxns_received = peer_package_relayer.getpkgtxns_received.pop()
-        # assert all([int(wtxid, 16) in last_getpkgtxns_received.hashes for wtxid in package_wtxids])
+        node.setmocktime(int(time.time() + NONPREF_PEER_TX_DELAY))
         peer_package_relayer.wait_for_getpkgtxns(package_wtxids)
         node.disconnect_p2ps()
 
-        self.log.info("Test that node prefers to download package txns from outbound over inbound peers")
+        self.log.info("Test that the node only requests the tx from one peer at a time and prefers to download from outbound over inbound")
         node.setmocktime(int(time.time()))
         peer_inbound = node.add_p2p_connection(PackageRelayer())
         peer_outbound = node.add_outbound_p2p_connection(PackageRelayer(), p2p_idx=1, connection_type="outbound-full-relay")
-        _, _, package_wtxids1 = self.create_package()
-        unsolicited_ancpkginfo = msg_ancpkginfo([int(wtxid, 16) for wtxid in package_wtxids1])
-        peer_inbound.send_and_ping(unsolicited_ancpkginfo)
-        peer_outbound.send_and_ping(unsolicited_ancpkginfo)
-        peer_outbound.sync_with_ping()
-        assert not len(peer_inbound.getpkgtxns_received)
-        last_getpkgtxns_received_outbound = peer_outbound.getpkgtxns_received.pop()
-        assert all([int(wtxid, 16) in last_getpkgtxns_received_outbound.hashes for wtxid in package_wtxids1])
-        self.log.info("Test that, after the request expires, the node will try to getpkgtxns from other peers that announced it")
-        # Note that the outbound peer has not responded. After that request expires, the node should
-        # request from the inbound peer, and not re-request from the outbound peer.
-        node.setmocktime(int(time.time()) + 90)
-        peer_inbound.sync_with_ping()
-        peer_outbound.sync_with_ping()
-        assert not len(peer_outbound.getpkgtxns_received)
-        # last_getpkgtxns_received_inbound = peer_inbound.getpkgtxns_received.pop()
-        # assert all([int(wtxid, 16) in last_getpkgtxns_received_inbound.hashes for wtxid in package_wtxids1])
-        peer_inbound.wait_for_getpkgtxns(package_wtxids1, timeout=90)
-
-        self.log.info("Test that, when package txns are announced also individually, the node only requests the tx from one at a time")
-        node.setmocktime(int(time.time()))
         _, package_txns2, package_wtxids2 = self.create_package()
-        unsolicited_ancpkginfo = msg_ancpkginfo([int(wtxid, 16) for wtxid in package_wtxids2])
+        peer_inbound.trigger_ancpkginfo_request(node, package_txns2, package_wtxids2)
+        ancpkginfo2 = msg_ancpkginfo([int(wtxid, 16) for wtxid in package_wtxids2])
         parent_tx_inv = msg_inv([CInv(t=MSG_WTX, h=int(package_wtxids2[0], 16))])
-        peer_inbound.send_and_ping(unsolicited_ancpkginfo)
+        peer_inbound.send_and_ping(ancpkginfo2)
         peer_outbound.send_and_ping(parent_tx_inv)
         assert_equal(peer_outbound.getdata_received.pop().inv, parent_tx_inv.inv)
         parent_tx_message = msg_tx(package_txns2[0])

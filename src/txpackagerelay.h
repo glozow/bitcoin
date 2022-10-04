@@ -69,6 +69,9 @@ class TxPackageTracker {
         // FIXME: replace with something a lot smarter to deduplicate and prioritise across peers,
         // expire requests, etc.
         std::set<uint256> m_ancpkginfo_to_request;
+
+        // Simple set that contains wtxids of transactions we sent getdata(ancpkginfo) for.
+        std::set<uint256> m_ancpkginfo_requested;
     };
 
     /** Information for each peer we relay packages with. Membership in this map is equivalent to
@@ -104,6 +107,11 @@ public:
 
     // Get list of ancpkginfo requests.
     std::vector<uint256> GetRequestableAncPkgInfo(NodeId nodeid);
+
+    void RequestedAncPkgInfo(NodeId nodeid, const std::vector<uint256>& wtxids);
+
+    // Returns false if this wasn't requested.
+    bool GotPkgInfoResponse(NodeId nodeid, const uint256& wtxid, bool notfound);
 };
 
 #endif // BITCOIN_TX_PKG_RELAY_H

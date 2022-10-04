@@ -4114,22 +4114,23 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             }
             if (!fRejectedParents) {
                 const auto current_time{GetTime<std::chrono::microseconds>()};
-
-                for (const uint256& parent_txid : unique_parents) {
-                    // Here, we only have the txid (and not wtxid) of the
-                    // inputs, so we only request in txid mode, even for
-                    // wtxidrelay peers.
-                    // Eventually we should replace this with an improved
-                    // protocol for getting all unconfirmed parents.
-                    const auto gtxid{GenTxid::Txid(parent_txid)};
-                    AddKnownTx(*peer, parent_txid);
-                    if (!AlreadyHaveTx(gtxid)) AddTxAnnouncement(pfrom, gtxid, current_time);
-                }
                 if (peer->m_package_relay) {
-                    // Let the txpackagetracker know that we have an orphan. It should batch
-                    // ancpkginfo requests later.
+                    // Let the txpackagetracker know that we have an orphan. Request the unconfirmed
+                    // ancestors later when sending getdata.
+                    // TODO: if this isn't a package relay peer, maybe try to find a package relay
+                    // peer that has this transaction?
                     assert(m_txpackagetracker);
                     m_txpackagetracker->AddOrphanTx(pfrom.GetId(), ptx);
+                } else {
+                    // Fall back to requesting the parents by txid.
+                    for (const uint256& parent_txid : unique_parents) {
+                        // Here, we only have the txid (and not wtxid) of the
+                        // inputs, so we only request in txid mode, even for
+                        // wtxidrelay peers.
+                        const auto gtxid{GenTxid::Txid(parent_txid)};
+                        AddKnownTx(*peer, parent_txid);
+                        if (!AlreadyHaveTx(gtxid)) AddTxAnnouncement(pfrom, gtxid, current_time);
+                    }
                 }
                 if (m_orphanage.AddTx(ptx, pfrom.GetId())) {
                     AddToCompactExtraTransactions(ptx);
@@ -4663,6 +4664,10 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             LogPrint(BCLog::NET, "ancpkginfo sent in violation of protocol, disconnecting peer=%d\n", pfrom.GetId());
             pfrom.fDisconnect = true;
         }
+        if (!m_txpackagetracker->GotPkgInfoResponse(pfrom.GetId(), package_wtxids.back(), false)) {
+            LogPrint(BCLog::NET, "unsolicited ancpkginfo received, disconnecting peer=%d\n", pfrom.GetId());
+            pfrom.fDisconnect = true;
+        }
         // FIXME: remove AlreadyHaveTx
         {
             LOCK(::cs_main);
@@ -4908,6 +4913,10 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     // If we receive a NOTFOUND message for a tx we requested, mark the announcement for it as
                     // completed in TxRequestTracker.
                     m_txrequest.ReceivedResponse(pfrom.GetId(), inv.hash);
+                } else if (inv.IsMsgAncPkgInfo()) {
+                    // TODO: should this be punished?
+                    if (!m_package_relay_peers || !peer->m_package_relay) continue;
+                    m_txpackagetracker->GotPkgInfoResponse(pfrom.GetId(), inv.hash, true);
                 }
             }
         }
@@ -5954,6 +5963,7 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
         //
         if (m_txpackagetracker && peer->m_package_relay) {
             auto requestable = m_txpackagetracker->GetRequestableAncPkgInfo(pto->GetId());
+            // FIXME: filter?
             for (const auto& wtxid : requestable) {
                 vGetData.emplace_back(CInv(MSG_ANCPKGINFO, wtxid));
                 if (vGetData.size() >= MAX_GETDATA_SZ) {
@@ -5961,6 +5971,7 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                     vGetData.clear();
                 }
             }
+            m_txpackagetracker->RequestedAncPkgInfo(pto->GetId(), requestable);
         }
 
 

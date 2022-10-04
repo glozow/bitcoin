@@ -90,8 +90,27 @@ std::vector<uint256> TxPackageTracker::GetRequestableAncPkgInfo(NodeId nodeid)
     Assume(it_peer_info != info_per_peer.end());
     std::vector<uint256> requestable(it_peer_info->second.m_ancpkginfo_to_request.begin(),
                                      it_peer_info->second.m_ancpkginfo_to_request.end());
-    // Delete them since we're requesting them. This is a terrible idea because we might lose track
-    // of transactions, so FIXME
     it_peer_info->second.m_ancpkginfo_to_request.clear();
     return requestable;
+}
+
+void TxPackageTracker::RequestedAncPkgInfo(NodeId nodeid, const std::vector<uint256>& wtxids)
+{
+    auto it_peer_info = info_per_peer.find(nodeid);
+    Assume(it_peer_info != info_per_peer.end());
+    for (const auto& wtxid : wtxids) {
+        Assume(it_peer_info->second.m_ancpkginfo_requested.count(wtxid) == 0);
+        it_peer_info->second.m_ancpkginfo_requested.insert(wtxid);
+    }
+}
+
+bool TxPackageTracker::GotPkgInfoResponse(NodeId nodeid, const uint256& wtxid, bool notfound)
+{
+    auto it_peer_info = info_per_peer.find(nodeid);
+    Assume(it_peer_info != info_per_peer.end());
+    auto it = it_peer_info->second.m_ancpkginfo_requested.find(wtxid);
+    if (it == it_peer_info->second.m_ancpkginfo_requested.end()) return false;
+    it_peer_info->second.m_ancpkginfo_requested.erase(it);
+    // FIXME: handle notfound. For example, find another peer, or fall back to requesting by txid?
+    return true;
 }
