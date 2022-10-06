@@ -2957,7 +2957,7 @@ void PeerManagerImpl::ProcessOrphanTx(std::set<uint256>& orphan_work_set)
         const uint256 orphanHash = *orphan_work_set.begin();
         orphan_work_set.erase(orphan_work_set.begin());
 
-        const auto [porphanTx, from_peer] = m_orphanage.GetTx(orphanHash);
+        const auto [porphanTx, from_peer] = m_orphanage.GetTx(GenTxid::Txid(orphanHash));
         if (porphanTx == nullptr) continue;
 
         const MempoolAcceptResult result = m_chainman.ProcessTransaction(porphanTx);

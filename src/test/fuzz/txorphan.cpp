@@ -93,7 +93,7 @@ FUZZ_TARGET_INIT(txorphan, initialize_orphanage)
                     bool have_tx = orphanage.HaveTx(GenTxid::Txid(tx->GetHash())) || orphanage.HaveTx(GenTxid::Wtxid(tx->GetHash()));
                     {
                         LOCK(g_cs_orphans);
-                        bool get_tx = orphanage.GetTx(tx->GetHash()).first != nullptr;
+                        bool get_tx = orphanage.GetTx(GenTxid::Txid(tx->GetHash())).first != nullptr;
                         Assert(have_tx == get_tx);
                     }
                 },

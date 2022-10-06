@@ -161,11 +161,16 @@ bool TxOrphanage::HaveTx(const GenTxid& gtxid) const
     }
 }
 
-std::pair<CTransactionRef, NodeId> TxOrphanage::GetTx(const uint256& txid) const
+std::pair<CTransactionRef, NodeId> TxOrphanage::GetTx(const GenTxid& gtxid) const
 {
     AssertLockHeld(g_cs_orphans);
 
-    const auto it = m_orphans.find(txid);
+    if (gtxid.IsWtxid()) {
+        const auto it = m_wtxid_to_orphan_it.find(gtxid.GetHash());
+        if (it == m_wtxid_to_orphan_it.end()) return {nullptr, -1};
+        return {it->second->second.tx, it->second->second.fromPeer};
+    }
+    const auto it = m_orphans.find(gtxid.GetHash());
     if (it == m_orphans.end()) return {nullptr, -1};
     return {it->second.tx, it->second.fromPeer};
 }

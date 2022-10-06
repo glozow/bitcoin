@@ -29,7 +29,7 @@ public:
     /** Get an orphan transaction and its originating peer
      * (Transaction ref will be nullptr if not found)
      */
-    std::pair<CTransactionRef, NodeId> GetTx(const uint256& txid) const EXCLUSIVE_LOCKS_REQUIRED(g_cs_orphans);
+    std::pair<CTransactionRef, NodeId> GetTx(const GenTxid& gtxid) const EXCLUSIVE_LOCKS_REQUIRED(g_cs_orphans);
 
     /** Erase an orphan by txid */
     int EraseTx(const uint256& txid) EXCLUSIVE_LOCKS_REQUIRED(g_cs_orphans);
