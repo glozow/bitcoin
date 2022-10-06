@@ -37,7 +37,6 @@
 #include <timedata.h>
 #include <tinyformat.h>
 #include <txmempool.h>
-#include <txorphanage.h>
 #include <txrequest.h>
 #include <util/check.h> // For NDEBUG compile time check
 #include <util/strencodings.h>
@@ -937,9 +936,6 @@ private:
     /** Number of peers from which we're downloading blocks. */
     int m_peers_downloading_from GUARDED_BY(cs_main) = 0;
 
-    /** Storage for orphan information */
-    TxOrphanage m_orphanage;
-
     void AddToCompactExtraTransactions(const CTransactionRef& tx) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
 
     /** Orphan/conflicted/etc transactions that are kept for compact block reconstruction.
@@ -1511,7 +1507,7 @@ void PeerManagerImpl::FinalizeNode(const CNode& node)
     for (const QueuedBlock& entry : state->vBlocksInFlight) {
         mapBlocksInFlight.erase(entry.pindex->GetBlockHash());
     }
-    m_orphanage.EraseForPeer(nodeid);
+    m_txpackagetracker->DisconnectedPeer(nodeid);
     m_txrequest.DisconnectedPeer(nodeid);
     if (m_txreconciliation) m_txreconciliation->ForgetPeer(nodeid);
     m_num_preferred_download_peers -= state->fPreferredDownload;
@@ -1530,7 +1526,7 @@ void PeerManagerImpl::FinalizeNode(const CNode& node)
         assert(m_outbound_peers_with_protect_from_disconnect == 0);
         assert(m_wtxid_relay_peers == 0);
         assert(m_txrequest.Size() == 0);
-        assert(m_orphanage.Size() == 0);
+        assert(m_txpackagetracker->OrphanageSize() == 0);
     }
     } // cs_main
     if (node.fSuccessfullyConnected && misbehavior == 0 &&
@@ -1829,7 +1825,7 @@ void PeerManagerImpl::StartScheduledTasks(CScheduler& scheduler)
  */
 void PeerManagerImpl::BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindex)
 {
-    m_orphanage.EraseForBlock(*pblock);
+    m_txpackagetracker->BlockConnected(*pblock);
     m_last_tip_update = GetTime<std::chrono::seconds>();
 
     {
@@ -2016,7 +2012,7 @@ bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid)
 
     const uint256& hash = gtxid.GetHash();
 
-    if (m_orphanage.HaveTx(gtxid)) return true;
+    if (m_txpackagetracker->OrphanageHaveTx(gtxid)) return true;
 
     {
         LOCK(m_recent_confirmed_transactions_mutex);
@@ -2921,7 +2917,7 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
 
     CTransactionRef porphanTx = nullptr;
 
-    while (CTransactionRef porphanTx = m_orphanage.GetTxToReconsider(peer.m_id)) {
+    while (CTransactionRef porphanTx = m_txpackagetracker->GetTxToReconsider(peer.m_id)) {
         const MempoolAcceptResult result = m_chainman.ProcessTransaction(porphanTx);
         const TxValidationState& state = result.m_state;
         const uint256& orphanHash = porphanTx->GetHash();
@@ -2929,8 +2925,8 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
             LogPrint(BCLog::MEMPOOL, "   accepted orphan tx %s\n", orphanHash.ToString());
             RelayTransaction(orphanHash, porphanTx->GetWitnessHash());
-            m_orphanage.AddChildrenToWorkSet(*porphanTx);
-            m_orphanage.EraseTx(orphanHash);
+            m_txpackagetracker->AddChildrenToWorkSet(*porphanTx);
+            m_txpackagetracker->EraseOrphanTx(orphanHash);
             for (const CTransactionRef& removedTx : result.m_replaced_transactions.value()) {
                 AddToCompactExtraTransactions(removedTx);
             }
@@ -2976,7 +2972,7 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
                     m_recent_rejects.insert(porphanTx->GetHash());
                 }
             }
-            m_orphanage.EraseTx(orphanHash);
+            m_txpackagetracker->EraseOrphanTx(orphanHash);
             return true;
         }
     }
@@ -4055,7 +4051,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             m_txrequest.ForgetTxHash(tx.GetHash());
             m_txrequest.ForgetTxHash(tx.GetWitnessHash());
             RelayTransaction(tx.GetHash(), tx.GetWitnessHash());
-            m_orphanage.AddChildrenToWorkSet(tx);
+            m_txpackagetracker->AddChildrenToWorkSet(tx);
 
             pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
 
@@ -4102,7 +4098,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     if (!AlreadyHaveTx(gtxid)) AddTxAnnouncement(pfrom, gtxid, current_time);
                 }
 
-                if (m_orphanage.AddTx(ptx, pfrom.GetId())) {
+                if (m_txpackagetracker->OrphanageAddTx(ptx, pfrom.GetId())) {
                     AddToCompactExtraTransactions(ptx);
                 }
 
@@ -4112,7 +4108,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
                 // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
                 unsigned int nMaxOrphanTx = (unsigned int)std::max((int64_t)0, gArgs.GetIntArg("-maxorphantx", DEFAULT_MAX_ORPHAN_TRANSACTIONS));
-                m_orphanage.LimitOrphans(nMaxOrphanTx);
+                m_txpackagetracker->LimitOrphans(nMaxOrphanTx);
             } else {
                 LogPrint(BCLog::MEMPOOL, "not keeping orphan with rejected parents %s\n",tx.GetHash().ToString());
                 // We will continue to reject this tx since it has rejected
@@ -4934,7 +4930,7 @@ bool PeerManagerImpl::ProcessMessages(CNode* pfrom, std::atomic<bool>& interrupt
         //  by another peer that was already processed; in that case,
         //  the extra work may not be noticed, possibly resulting in an
         //  unnecessary 100ms delay)
-        if (m_orphanage.HaveTxToReconsider(peer->m_id)) fMoreWork = true;
+        if (m_txpackagetracker->HaveTxToReconsider(peer->m_id)) fMoreWork = true;
     } catch (const std::exception& e) {
         LogPrint(BCLog::NET, "%s(%s, %u bytes): Exception '%s' (%s) caught\n", __func__, SanitizeString(msg.m_type), msg.m_message_size, e.what(), typeid(e).name());
     } catch (...) {
