@@ -52,7 +52,7 @@ public:
      * GetOrphanRequests().
      * returns whether this transaction has been newly added to the orphanage.
      */
-    void AddOrphanTx(NodeId nodeid, const CTransactionRef& tx, bool is_preferred, std::chrono::microseconds reqtime);
+    void AddOrphanTx(NodeId nodeid, const std::pair<uint256, CTransactionRef>& tx, bool is_preferred, std::chrono::microseconds reqtime);
 
     /** Number of packages we are working on with this peer. Includes any entries in the orphan
      * tracker, in-flight orphan parent requests (1 per orphan regardless of how many missing
