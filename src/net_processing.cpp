@@ -685,6 +685,10 @@ private:
     void AddTxAnnouncement(const CNode& node, const GenTxid& gtxid, std::chrono::microseconds current_time)
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
+    /** Register with orphan TxRequestTracker that a peer may help us resolve this orphan. */
+    void AddOrphanResolutionCandidate(NodeId nodeid, const uint256& orphan_wtxid, std::chrono::microseconds current_time)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
     /** Send a version message to a peer */
     void PushNodeVersion(CNode& pnode, const Peer& peer);
 
@@ -787,7 +791,7 @@ private:
     /** Stalling timeout for blocks in IBD */
     std::atomic<std::chrono::seconds> m_block_stalling_timeout{BLOCK_STALLING_TIMEOUT_DEFAULT};
 
-    bool AlreadyHaveTx(const GenTxid& gtxid)
+    bool AlreadyHaveTx(const GenTxid& gtxid, bool include_orphanage = true)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main, !m_recent_confirmed_transactions_mutex);
 
     /**
@@ -1415,6 +1419,18 @@ void PeerManagerImpl::PushNodeVersion(CNode& pnode, const Peer& peer)
     }
 }
 
+void PeerManagerImpl::AddOrphanResolutionCandidate(NodeId nodeid, const uint256& orphan_wtxid, std::chrono::microseconds current_time)
+{
+    AssertLockHeld(::cs_main);
+    const CNodeState* state = State(nodeid);
+    // Decide the TxRequestTracker parameters for this orphan resolution:
+    // - "preferred": if fPreferredDownload is set (= outbound, or NetPermissionFlags::NoBan permission)
+    // - "reqtime": current time
+    auto delay{0us};
+    const bool preferred = state->fPreferredDownload;
+    m_txpackagetracker->AddOrphanTx(nodeid, orphan_wtxid, preferred, current_time + delay);
+}
+
 void PeerManagerImpl::AddTxAnnouncement(const CNode& node, const GenTxid& gtxid, std::chrono::microseconds current_time)
 {
     AssertLockHeld(::cs_main); // For m_txrequest
@@ -1833,6 +1849,11 @@ void PeerManagerImpl::StartScheduledTasks(CScheduler& scheduler)
 void PeerManagerImpl::BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindex)
 {
     m_orphanage.EraseForBlock(*pblock);
+    if (m_txpackagetracker) {
+        std::set<uint256> block_wtxids;
+        for (const CTransactionRef& ptx : pblock->vtx) block_wtxids.insert(ptx->GetWitnessHash());
+        m_txpackagetracker->FinalizeTransactions(block_wtxids, {});
+    }
     m_last_tip_update = GetTime<std::chrono::seconds>();
 
     {
@@ -2006,7 +2027,7 @@ void PeerManagerImpl::BlockChecked(const CBlock& block, const BlockValidationSta
 //
 
 
-bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid)
+bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid, bool include_orphanage)
 {
     if (m_chainman.ActiveChain().Tip()->GetBlockHash() != hashRecentRejectsChainTip) {
         // If the chain tip has changed previously rejected transactions
@@ -2019,7 +2040,7 @@ bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid)
 
     const uint256& hash = gtxid.GetHash();
 
-    if (m_orphanage.HaveTx(gtxid)) return true;
+    if (include_orphanage && m_orphanage.HaveTx(gtxid)) return true;
 
     {
         LOCK(m_recent_confirmed_transactions_mutex);
@@ -4055,6 +4076,9 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             m_txrequest.ForgetTxHash(tx.GetHash());
             m_txrequest.ForgetTxHash(tx.GetWitnessHash());
             RelayTransaction(tx.GetHash(), tx.GetWitnessHash());
+            if (m_txpackagetracker) {
+                m_txpackagetracker->FinalizeTransactions({tx.GetWitnessHash()}, {});
+            }
             m_orphanage.AddChildrenToWorkSet(tx);
 
             pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
@@ -4071,18 +4095,9 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         else if (state.GetResult() == TxValidationResult::TX_MISSING_INPUTS)
         {
             bool fRejectedParents = false; // It may be the case that the orphans parents have all been rejected
-
-            // Deduplicate parent txids, so that we don't have to loop over
-            // the same parent txid more than once down below.
-            std::vector<uint256> unique_parents;
-            unique_parents.reserve(tx.vin.size());
-            for (const CTxIn& txin : tx.vin) {
-                // We start with all parents, and then remove duplicates below.
-                unique_parents.push_back(txin.prevout.hash);
-            }
-            std::sort(unique_parents.begin(), unique_parents.end());
-            unique_parents.erase(std::unique(unique_parents.begin(), unique_parents.end()), unique_parents.end());
-            for (const uint256& parent_txid : unique_parents) {
+            for (const auto& input : tx.vin) {
+                const auto& parent_txid = input.prevout.hash;
+                AddKnownTx(*peer, parent_txid);
                 if (m_recent_rejects.contains(parent_txid)) {
                     fRejectedParents = true;
                     break;
@@ -4090,17 +4105,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             }
             if (!fRejectedParents) {
                 const auto current_time{GetTime<std::chrono::microseconds>()};
-
-                for (const uint256& parent_txid : unique_parents) {
-                    // Here, we only have the txid (and not wtxid) of the
-                    // inputs, so we only request in txid mode, even for
-                    // wtxidrelay peers.
-                    // Eventually we should replace this with an improved
-                    // protocol for getting all unconfirmed parents.
-                    const auto gtxid{GenTxid::Txid(parent_txid)};
-                    AddKnownTx(*peer, parent_txid);
-                    if (!AlreadyHaveTx(gtxid)) AddTxAnnouncement(pfrom, gtxid, current_time);
-                }
+                AddOrphanResolutionCandidate(pfrom.GetId(), ptx->GetWitnessHash(), current_time);
 
                 if (m_orphanage.AddTx(ptx, pfrom.GetId())) {
                     AddToCompactExtraTransactions(ptx);
@@ -5849,6 +5854,18 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
             }
         }
 
+        auto requestable_orphans = m_txpackagetracker->GetOrphanRequests(pto->GetId(), current_time);
+        for (const auto& gtxid : requestable_orphans) {
+            if (AlreadyHaveTx(gtxid, /*include_orphanage=*/false)) {
+                m_txpackagetracker->FinalizeTransactions({gtxid.GetHash()}, {});
+            } else {
+                vGetData.emplace_back(MSG_TX | GetFetchFlags(*peer), gtxid.GetHash());
+                if (vGetData.size() >= MAX_GETDATA_SZ) {
+                    m_connman.PushMessage(pto, msgMaker.Make(NetMsgType::GETDATA, vGetData));
+                    vGetData.clear();
+                }
+            }
+        }
 
         if (!vGetData.empty())
             m_connman.PushMessage(pto, msgMaker.Make(NetMsgType::GETDATA, vGetData));
