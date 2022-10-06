@@ -1413,13 +1413,29 @@ void PeerManagerImpl::PushNodeVersion(CNode& pnode, const Peer& peer)
 
 void PeerManagerImpl::AddOrphanResolutionCandidate(NodeId nodeid, const uint256& orphan_wtxid, std::chrono::microseconds current_time)
 {
-    AssertLockHeld(::cs_main);
+    AssertLockHeld(::cs_main); // For m_txrequest
+    const bool connected = m_connman.ForNode(nodeid, [](CNode* node) { return node->fSuccessfullyConnected && !node->fDisconnect; });
+    if (!connected) return;
+    const bool relay_permissions = m_connman.ForNode(nodeid, [](CNode* node) { return node->HasPermission(NetPermissionFlags::Relay); });
+    if (!relay_permissions) {
+        const auto packages_total{m_txpackagetracker->Count(nodeid)};
+        if (packages_total + m_txrequest.Count(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) {
+            // Too many queued announcements. Request from a different peer.
+            return;
+        }
+    }
     const CNodeState* state = State(nodeid);
     // Decide the TxRequestTracker parameters for this orphan resolution:
     // - "preferred": if fPreferredDownload is set (= outbound, or NetPermissionFlags::NoBan permission)
-    // - "reqtime": current time
+    // - "reqtime": current time plus delays for:
+    //   - NONPREF_PEER_TX_DELAY for announcements from non-preferred connections
+    //   - OVERLOADED_PEER_TX_DELAY for announcements from peers which have at least
+    //     MAX_PEER_TX_REQUEST_IN_FLIGHT requests in flight (and don't have NetPermissionFlags::Relay).
     auto delay{0us};
     const bool preferred = state->fPreferredDownload;
+    if (!preferred) delay += NONPREF_PEER_TX_DELAY;
+    const bool overloaded = !relay_permissions && m_txrequest.CountInFlight(nodeid) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
+    if (overloaded) delay += OVERLOADED_PEER_TX_DELAY;
     m_txpackagetracker->AddOrphanTx(nodeid, orphan_wtxid, preferred, current_time + delay);
 }
 
@@ -3732,6 +3748,9 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 if (!fAlreadyHave && !m_chainman.ActiveChainstate().IsInitialBlockDownload()) {
                     AddTxAnnouncement(pfrom, gtxid, current_time);
                 }
+                if (inv.IsMsgWtx() && m_txpackagetracker->OrphanageHaveTx(gtxid) && !m_chainman.ActiveChainstate().IsInitialBlockDownload()) {
+                    AddOrphanResolutionCandidate(pfrom.GetId(), inv.hash, current_time);
+                }
             } else {
                 LogPrint(BCLog::NET, "Unknown inv type \"%s\" received from peer=%d\n", inv.ToString(), pfrom.GetId());
             }
@@ -4088,8 +4107,17 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 }
             }
             if (!fRejectedParents) {
+                // We prefer to request the orphan's ancestors via package relay rather than txids
+                // of missing inputs. Also, if the first request fails, we should try again.
+                // Get all peers that announced this transaction and prioritize accordingly...
                 const auto current_time{GetTime<std::chrono::microseconds>()};
                 AddOrphanResolutionCandidate(pfrom.GetId(), ptx->GetWitnessHash(), current_time);
+                for (const auto nodeid : m_txrequest.GetCandidatePeers(tx.GetWitnessHash())) {
+                    AddOrphanResolutionCandidate(nodeid, ptx->GetWitnessHash(), current_time);
+                }
+                for (const auto nodeid : m_txrequest.GetCandidatePeers(tx.GetHash())) {
+                    AddOrphanResolutionCandidate(nodeid, ptx->GetWitnessHash(), current_time);
+                }
 
                 if (m_txpackagetracker->OrphanageAddTx(ptx, pfrom.GetId())) {
                     AddToCompactExtraTransactions(ptx);
@@ -5813,7 +5841,7 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
         }
 
         //
-        // Message: getdata (transactions)
+        // Message: getdata (transactions and ancpkginfo)
         //
         std::vector<std::pair<NodeId, GenTxid>> expired;
         auto requestable = m_txrequest.GetRequestable(pto->GetId(), current_time, &expired);
