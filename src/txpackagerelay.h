@@ -11,6 +11,8 @@
 #include <map>
 #include <vector>
 
+class TxOrphanage;
+
 static constexpr bool DEFAULT_ENABLE_PACKAGE_RELAY{false};
 
 class TxPackageTracker {
@@ -18,7 +20,7 @@ class TxPackageTracker {
     const std::unique_ptr<Impl> m_impl;
 
 public:
-    explicit TxPackageTracker();
+    explicit TxPackageTracker(TxOrphanage& orphanage);
     ~TxPackageTracker();
 };
 
