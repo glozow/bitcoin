@@ -30,6 +30,8 @@ class TxPackageTracker::Impl {
         std::vector<uint32_t> m_versions_supported;
     };
 
+    TxOrphanage& orphanage_ref;
+
     /** Stores relevant information about the peer prior to verack. Upon completion of version
      * handshake, we use this information to decide whether we relay packages with this peer. */
     std::map<NodeId, RegistrationState> registration_states;
@@ -39,6 +41,9 @@ class TxPackageTracker::Impl {
     std::map<NodeId, PeerInfo> info_per_peer;
 
 public:
+
+    Impl(TxOrphanage& orphanage) : orphanage_ref{orphanage} {}
+
     void ReceivedVersion(NodeId nodeid)
     {
         Assume(registration_states.find(nodeid) == registration_states.end());
@@ -101,7 +106,7 @@ public:
     }
 };
 
-TxPackageTracker::TxPackageTracker() : m_impl{std::make_unique<TxPackageTracker::Impl>()} {}
+TxPackageTracker::TxPackageTracker(TxOrphanage& orphanage) : m_impl{std::make_unique<TxPackageTracker::Impl>(orphanage)} {}
 TxPackageTracker::~TxPackageTracker() = default;
 
 void TxPackageTracker::ReceivedVersion(NodeId nodeid) { m_impl->ReceivedVersion(nodeid); }

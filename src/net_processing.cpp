@@ -1801,7 +1801,7 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
       m_ignore_incoming_txs(ignore_incoming_txs),
       m_enable_package_relay{enable_package_relay}
 {
-    m_txpackagetracker = std::make_unique<TxPackageTracker>();
+    m_txpackagetracker = std::make_unique<TxPackageTracker>(m_orphanage);
 }
 
 void PeerManagerImpl::StartScheduledTasks(CScheduler& scheduler)

@@ -11,6 +11,8 @@
 #include <map>
 #include <vector>
 
+class TxOrphanage;
+
 static constexpr bool DEFAULT_ENABLE_PACKAGE_RELAY{false};
 static constexpr uint32_t RECEIVER_INIT_ANCESTOR_PACKAGES{0};
 static std::vector<uint32_t> PACKAGE_RELAY_SUPPORTED_VERSIONS = {
@@ -22,7 +24,7 @@ class TxPackageTracker {
     const std::unique_ptr<Impl> m_impl;
 
 public:
-    explicit TxPackageTracker();
+    explicit TxPackageTracker(TxOrphanage& orphanage);
     ~TxPackageTracker();
     std::vector<uint32_t> GetVersions() { return PACKAGE_RELAY_SUPPORTED_VERSIONS; }
 
