@@ -708,6 +708,9 @@ private:
     /** Send `feefilter` message. */
     void MaybeSendFeefilter(CNode& node, Peer& peer, std::chrono::microseconds current_time) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
 
+    /** Get NodeIds of every peer that knows this transaction. */
+    std::vector<NodeId> GetAnnouncers(const uint256& txid, const uint256& wtxid) EXCLUSIVE_LOCKS_REQUIRED(m_peer_mutex);
+
     const CChainParams& m_chainparams;
     CConnman& m_connman;
     AddrMan& m_addrman;
@@ -1411,13 +1414,27 @@ void PeerManagerImpl::PushNodeVersion(CNode& pnode, const Peer& peer)
 
 void PeerManagerImpl::AddOrphanResolutionCandidate(NodeId nodeid, const uint256& orphan_wtxid, std::chrono::microseconds current_time)
 {
-    AssertLockHeld(::cs_main);
+    AssertLockHeld(::cs_main); // For m_txrequest
+    const bool relay_permissions = m_connman.ForNode(nodeid, [](CNode* node) { return node->HasPermission(NetPermissionFlags::Relay); });
+    if (!relay_permissions) {
+        const auto packages_total{m_txpackagetracker->Count(nodeid)};
+        if (packages_total + m_txrequest.Count(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) {
+            // Too many queued announcements. Request from a different peer.
+            return;
+        }
+    }
     const CNodeState* state = State(nodeid);
     // Decide the TxRequestTracker parameters for this orphan resolution:
     // - "preferred": if fPreferredDownload is set (= outbound, or NetPermissionFlags::NoBan permission)
-    // - "reqtime": current time
+    // - "reqtime": current time plus delays for:
+    //   - NONPREF_PEER_TX_DELAY for announcements from non-preferred connections
+    //   - OVERLOADED_PEER_TX_DELAY for announcements from peers which have at least
+    //     MAX_PEER_TX_REQUEST_IN_FLIGHT requests in flight (and don't have NetPermissionFlags::Relay).
     auto delay{0us};
     const bool preferred = state->fPreferredDownload;
+    if (!preferred) delay += NONPREF_PEER_TX_DELAY;
+    const bool overloaded = !relay_permissions && m_txrequest.CountInFlight(nodeid) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
+    if (overloaded) delay += OVERLOADED_PEER_TX_DELAY;
     m_txpackagetracker->AddOrphanTx(nodeid, orphan_wtxid, preferred, current_time + delay);
 }
 
@@ -2072,6 +2089,20 @@ void PeerManagerImpl::RelayTransaction(const uint256& txid, const uint256& wtxid
             tx_relay->m_tx_inventory_to_send.insert(hash);
         }
     };
+}
+
+std::vector<NodeId> PeerManagerImpl::GetAnnouncers(const uint256& txid, const uint256& wtxid)
+{
+    std::vector<NodeId> announcers;
+    for (auto [nodeid, peer] : m_peer_map) {
+        auto tx_relay = peer->GetTxRelay();
+        if (!tx_relay) continue;
+        if (tx_relay->m_tx_inventory_known_filter.contains(txid) ||
+            tx_relay->m_tx_inventory_known_filter.contains(wtxid)) {
+            announcers.push_back(nodeid);
+        }
+    }
+    return announcers;
 }
 
 void PeerManagerImpl::RelayAddress(NodeId originator,
@@ -3740,6 +3771,9 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 if (!fAlreadyHave && !m_chainman.ActiveChainstate().IsInitialBlockDownload()) {
                     AddTxAnnouncement(pfrom, gtxid, current_time);
                 }
+                if (inv.IsMsgWtx() && m_orphanage.HaveTx(gtxid) && !m_chainman.ActiveChainstate().IsInitialBlockDownload()) {
+                    AddOrphanResolutionCandidate(pfrom.GetId(), inv.hash, current_time);
+                }
             } else {
                 LogPrint(BCLog::NET, "Unknown inv type \"%s\" received from peer=%d\n", inv.ToString(), pfrom.GetId());
             }
@@ -4098,8 +4132,13 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 }
             }
             if (!fRejectedParents) {
+                // We prefer to request the orphan's ancestors via package relay rather than txids
+                // of missing inputs. Also, if the first request fails, we should try again.
+                // Get all peers that announced this transaction and prioritize accordingly...
                 const auto current_time{GetTime<std::chrono::microseconds>()};
-                AddOrphanResolutionCandidate(pfrom.GetId(), ptx->GetWitnessHash(), current_time);
+                for (const auto nodeid : GetAnnouncers(tx.GetHash(), tx.GetWitnessHash())) {
+                    AddOrphanResolutionCandidate(nodeid, ptx->GetWitnessHash(), current_time);
+                }
 
                 if (m_orphanage.AddTx(ptx, pfrom.GetId())) {
                     AddToCompactExtraTransactions(ptx);
@@ -5823,7 +5862,7 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
         }
 
         //
-        // Message: getdata (transactions)
+        // Message: getdata (transactions and ancpkginfo)
         //
         std::vector<std::pair<NodeId, GenTxid>> expired;
         auto requestable = m_txrequest.GetRequestable(pto->GetId(), current_time, &expired);
