@@ -46,15 +46,13 @@ public:
     /** Returns the number of transactions in the orphanage. */
     size_t OrphanageSize() const;
 
-    bool AddOrphanTx(const CTransactionRef& tx, NodeId nodeid);
-
     /** Received an announcement from this peer for a tx we already know is an orphan; should be
      * called for every peer that announces the tx, even if they are not a package relay peer.
      * The orphan request tracker will decide when to request what from which peer - use
      * GetOrphanRequests().
      * returns whether this transaction has been newly added to the orphanage.
      */
-    bool AddOrphanTx(NodeId nodeid, const CTransactionRef& wtxid, bool is_preferred, std::chrono::microseconds reqtime);
+    void AddOrphanTx(NodeId nodeid, const CTransactionRef& tx, bool is_preferred, std::chrono::microseconds reqtime);
 
     /** Number of packages we are working on with this peer. Includes any entries in the orphan
      * tracker, in-flight orphan parent requests (1 per orphan regardless of how many missing
@@ -71,8 +69,6 @@ public:
      * getdata(ANCPKGINFO) or txids corresponding to parents. Automatically marks the orphans as
      * having outgoing requests. */
     std::vector<GenTxid> GetOrphanRequests(NodeId nodeid, std::chrono::microseconds current_time);
-
-    void FinalizeTransactions(const std::set<uint256>& valid, const std::set<uint256>& invalid);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXPACKAGETRACKER_H

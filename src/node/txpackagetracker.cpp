@@ -77,31 +77,17 @@ public:
         m_orphanage.EraseForPeer(nodeid);
     }
     bool OrphanageHaveTx(const GenTxid& gtxid) const { return m_orphanage.HaveTx(gtxid); }
-    bool AddOrphanTx(const CTransactionRef& tx, NodeId peer)
-        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
-    {
-        AssertLockNotHeld(m_mutex);
-        LOCK(m_mutex);
-        // If already in the orphanage, just return false here.
-        if (m_orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()))) return false;
-        const bool added = m_orphanage.AddTx(tx, peer);
-        // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
-        if (added) m_orphanage.LimitOrphans(m_max_orphan_count);
-        return added && m_orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()));
-    }
-    bool AddOrphanTx(NodeId nodeid, const CTransactionRef& tx, bool is_preferred, std::chrono::microseconds reqtime)
+    void AddOrphanTx(NodeId nodeid, const CTransactionRef& tx, bool is_preferred, std::chrono::microseconds reqtime)
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
     {
         AssertLockNotHeld(m_mutex);
         LOCK(m_mutex);
         // Even though this stores the orphan wtxid, is_wtxid=false because we will be requesting the parents via txid.
         orphan_request_tracker.ReceivedInv(nodeid, GenTxid::Txid(tx->GetWitnessHash()), is_preferred, reqtime);
-        // If already in the orphanage, just return false here.
-        if (m_orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()))) return false;
-        const bool added = m_orphanage.AddTx(tx, nodeid);
-        // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
-        if (added) m_orphanage.LimitOrphans(m_max_orphan_count);
-        return added && m_orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()));
+        if (m_orphanage.AddTx(tx, nodeid)) {
+            // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
+            m_orphanage.LimitOrphans(m_max_orphan_count);
+        }
     }
     void TransactionAccepted(const CTransactionRef& tx)
     {
@@ -191,10 +177,9 @@ void TxPackageTracker::BlockConnected(const CBlock& block) { m_impl->BlockConnec
 void TxPackageTracker::DisconnectedPeer(NodeId nodeid) { m_impl->DisconnectedPeer(nodeid); }
 /** Returns whether a tx is present in the orphanage. */
 bool TxPackageTracker::OrphanageHaveTx(const GenTxid& gtxid) const { return m_impl->OrphanageHaveTx(gtxid); }
-bool TxPackageTracker::AddOrphanTx(const CTransactionRef& tx, NodeId peer) { return m_impl->AddOrphanTx(tx, peer); }
-bool TxPackageTracker::AddOrphanTx(NodeId nodeid, const CTransactionRef& tx, bool is_preferred, std::chrono::microseconds reqtime)
+void TxPackageTracker::AddOrphanTx(NodeId nodeid, const CTransactionRef& tx, bool is_preferred, std::chrono::microseconds reqtime)
 {
-    return m_impl->AddOrphanTx(nodeid, tx, is_preferred, reqtime);
+    m_impl->AddOrphanTx(nodeid, tx, is_preferred, reqtime);
 }
 /** Transaction accepted to mempool. */
 void TxPackageTracker::TransactionAccepted(const CTransactionRef& tx) { m_impl->TransactionAccepted(tx); }
