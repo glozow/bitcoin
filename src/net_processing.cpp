@@ -692,7 +692,7 @@ private:
 
     /** Register with orphan TxRequestTracker that a peer may help us resolve this orphan. */
     void AddOrphanResolutionCandidate(NodeId nodeid, const uint256& orphan_wtxid, std::chrono::microseconds current_time)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main, !m_peer_mutex);
 
     /** Send a version message to a peer */
     void PushNodeVersion(CNode& pnode, const Peer& peer);
@@ -1473,8 +1473,10 @@ void PeerManagerImpl::AddOrphanResolutionCandidate(NodeId nodeid, const uint256&
     if (!connected) return;
     const bool relay_permissions = m_connman.ForNode(nodeid, [](CNode* node) { return node->HasPermission(NetPermissionFlags::Relay); });
     if (!relay_permissions) {
-        const auto packages_total{m_txpackagetracker->Count(nodeid)};
-        if (packages_total + m_txrequest.Count(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) {
+        const auto packages_in_flight{m_txpackagetracker ? m_txpackagetracker->CountInFlight(nodeid) : 0};
+        const auto packages_total{m_txpackagetracker ? m_txpackagetracker->Count(nodeid) : 0};
+        if (packages_in_flight >= node::MAX_IN_FLIGHT_PACKAGES ||
+            packages_total + m_txrequest.Count(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) {
             // Too many queued announcements. Request from a different peer.
             return;
         }
@@ -1484,11 +1486,15 @@ void PeerManagerImpl::AddOrphanResolutionCandidate(NodeId nodeid, const uint256&
     // - "preferred": if fPreferredDownload is set (= outbound, or NetPermissionFlags::NoBan permission)
     // - "reqtime": current time plus delays for:
     //   - NONPREF_PEER_TX_DELAY for announcements from non-preferred connections
+    //   - TXID_RELAY_DELAY for txid-based parent requests while package relay peers are available
     //   - OVERLOADED_PEER_TX_DELAY for announcements from peers which have at least
     //     MAX_PEER_TX_REQUEST_IN_FLIGHT requests in flight (and don't have NetPermissionFlags::Relay).
     auto delay{0us};
     const bool preferred = state->fPreferredDownload;
     if (!preferred) delay += NONPREF_PEER_TX_DELAY;
+    const auto peer_ref{GetPeerRef(nodeid)};
+    if (!peer_ref) return;
+    if (!peer_ref->m_package_relay && m_package_relay_peers > 0) delay += TXID_RELAY_DELAY;
     const bool overloaded = !relay_permissions && m_txrequest.CountInFlight(nodeid) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
     if (overloaded) delay += OVERLOADED_PEER_TX_DELAY;
     m_txpackagetracker->AddOrphanTx(nodeid, orphan_wtxid, preferred, current_time + delay);
@@ -4155,6 +4161,58 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         return;
     }
 
+    if (msg_type == NetMsgType::ANCPKGINFO) {
+        std::vector<uint256> package_wtxids;
+        vRecv >> package_wtxids;
+        if (package_wtxids.empty()) return;
+        if (!peer->m_package_relay) {
+            LogPrint(BCLog::NET, "ancpkginfo sent in violation of protocol, disconnecting peer=%d\n", pfrom.GetId());
+            pfrom.fDisconnect = true;
+            return;
+        }
+        if (!m_txpackagetracker->PkgInfoAllowed(pfrom.GetId(), package_wtxids.back(), node::RECEIVER_INIT_ANCESTOR_PACKAGES)) {
+            LogPrint(BCLog::NET, "unsolicited ancpkginfo sent, disconnecting peer=%d\n", pfrom.GetId());
+            pfrom.fDisconnect = true;
+            return;
+        }
+
+        const auto& rep_wtxid{package_wtxids.back()};
+        if (package_wtxids.size() > MAX_PACKAGE_COUNT) {
+            LogPrint(BCLog::NET, "discarding package info for tx %s, too many transactions\n", rep_wtxid.ToString());
+            // FIXME: disconnect?
+            m_txpackagetracker->ForgetPkgInfo(pfrom.GetId(), package_wtxids.back(), node::RECEIVER_INIT_ANCESTOR_PACKAGES);
+            return;
+        }
+        LOCK(::cs_main);
+        if (m_chainman.ActiveChainstate().IsInitialBlockDownload()) return;
+        // We have already validated this exact set of transactions recently, so don't do it again.
+        if (m_recent_rejects_reconsiderable.contains(GetCombinedHash(package_wtxids))) {
+            LogPrint(BCLog::NET, "discarding package info for tx %s, this package has already been rejected\n",
+                     rep_wtxid.ToString());
+            m_txpackagetracker->ForgetPkgInfo(pfrom.GetId(), package_wtxids.back(), node::RECEIVER_INIT_ANCESTOR_PACKAGES);
+            return;
+        }
+        for (const auto& wtxid : package_wtxids) {
+            // If a transaction is in m_recent_rejects and not m_recent_rejects_reconsiderable, that
+            // means it will not become valid by adding another transaction.
+            if (m_recent_rejects.contains(wtxid)) {
+                LogPrint(BCLog::NET,
+                         "discarding package for tx %s, tx %s has already been rejected and is not eligible for reconsideration\n",
+                         rep_wtxid.ToString(), wtxid.ToString());
+                m_txpackagetracker->ForgetPkgInfo(pfrom.GetId(), package_wtxids.back(), node::RECEIVER_INIT_ANCESTOR_PACKAGES);
+                return;
+            }
+        }
+        // For now, just add these transactions as announcements.
+        const auto current_time{GetTime<std::chrono::microseconds>()};
+        for (const auto& wtxid : package_wtxids) {
+            AddKnownTx(*peer, wtxid);
+            if (!AlreadyHaveTx(GenTxid::Wtxid(wtxid)) && !m_chainman.ActiveChainstate().IsInitialBlockDownload()) {
+                AddTxAnnouncement(pfrom, GenTxid::Wtxid(wtxid), current_time);
+            }
+        }
+    }
+
     if (msg_type == NetMsgType::TX) {
         if (RejectIncomingTxs(pfrom)) {
             LogPrint(BCLog::NET, "transaction sent in violation of protocol peer=%d\n", pfrom.GetId());
@@ -4983,6 +5041,13 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     // If we receive a NOTFOUND message for a tx we requested, mark the announcement for it as
                     // completed in TxRequestTracker.
                     m_txrequest.ReceivedResponse(pfrom.GetId(), inv.hash);
+                } else if (inv.IsMsgAncPkgInfo() && m_enable_package_relay) {
+                    if (!m_txpackagetracker->PkgInfoAllowed(pfrom.GetId(), inv.hash, node::RECEIVER_INIT_ANCESTOR_PACKAGES)) {
+                        LogPrint(BCLog::NET, "\nUnsolicited ancpkginfo sent, disconnecting peer=%d\n", pfrom.GetId());
+                        // Unsolicited ancpkginfo or peer is not registered for package relay.
+                        pfrom.fDisconnect = true;
+                    }
+                    m_txpackagetracker->ForgetPkgInfo(pfrom.GetId(), inv.hash, node::RECEIVER_INIT_ANCESTOR_PACKAGES);
                 }
             }
         }
@@ -6022,7 +6087,7 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
             if (AlreadyHaveTx(gtxid, /*include_orphanage=*/false)) {
                 m_txpackagetracker->FinalizeTransactions({gtxid.GetHash()}, {});
             } else {
-                vGetData.emplace_back(MSG_TX | GetFetchFlags(*peer), gtxid.GetHash());
+                vGetData.emplace_back(gtxid.IsWtxid() ? MSG_ANCPKGINFO : (MSG_TX | GetFetchFlags(*peer)), gtxid.GetHash());
                 if (vGetData.size() >= MAX_GETDATA_SZ) {
                     m_connman.PushMessage(pto, msgMaker.Make(NetMsgType::GETDATA, vGetData));
                     vGetData.clear();
