@@ -42,6 +42,27 @@ public:
 
     // Tear down all state
     void DisconnectedPeer(NodeId nodeid);
+
+    // Received an orphan. Should request ancpkginfo. Call this for any peer, even if not registered.
+    void AddOrphanTx(NodeId nodeid, const uint256& wtxid, bool is_preferred, std::chrono::microseconds expiry);
+
+    // Get list of requests that should be sent to resolve orphans. These may be wtxids to send
+    // getdata(ANCPKGINFO) or txids corresponding to parents. Automatically marks the orphans as
+    // having outgoing requests.
+    std::vector<GenTxid> GetOrphanRequests(NodeId nodeid) const;
+
+    /** Update transactions for which we have made "final" decisions: transactions that have
+     * confirmed in a block, conflicted due to a block, or added to the mempool already.
+     * Should be called on new block: valid=block transactions, invalid=conflicts.
+     * Should be called when tx is added to mempool.
+     * */
+    void FinalizeTransactions(const std::set<uint256>& valid, const std::set<uint256>& invalid);
+
+    /** Whether a package info message is allowed:
+     * - We agreed to relay packages of this version with this peer.
+     * - We solicited this package info.
+     * Returns false if the peer should be disconnected. */
+    bool PkgInfoAllowed(NodeId nodeid, const uint256& wtxid, uint32_t version);
 };
 
 #endif // BITCOIN_TX_PKG_RELAY_H
