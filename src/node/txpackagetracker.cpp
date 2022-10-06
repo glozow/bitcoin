@@ -9,9 +9,13 @@ namespace node {
      * Same as GETDATA_TX_INTERVAL. */
     static constexpr auto ORPHAN_ANCESTOR_GETDATA_INTERVAL{60s};
 class TxPackageTracker::Impl {
+    /** Manages unvalidated tx data (orphan transactions for which we are downloading ancestors). */
+    TxOrphanage& orphanage_ref;
+public:
+    Impl(TxOrphanage& orphanage) : orphanage_ref{orphanage} {}
 };
 
-TxPackageTracker::TxPackageTracker() : m_impl{std::make_unique<TxPackageTracker::Impl>()} {}
+TxPackageTracker::TxPackageTracker(TxOrphanage& orphanage) : m_impl{std::make_unique<TxPackageTracker::Impl>(orphanage)} {}
 TxPackageTracker::~TxPackageTracker() = default;
 
 } // namespace node
