@@ -42,6 +42,20 @@ public:
 
     // Tear down all state
     void DisconnectedPeer(NodeId nodeid);
+
+    // Received an orphan. Should request ancpkginfo. Call this for any peer, even if not registered.
+    void AddOrphanTx(NodeId nodeid, const uint256& wtxid, bool is_preferred, std::chrono::microseconds expiry);
+
+    // Get list of requests that should be sent to resolve orphans. These may be wtxids to send
+    // getdata(ANCPKGINFO) or txids corresponding to parents. Automatically marks the orphans as
+    // having outgoing requests.
+    std::vector<GenTxid> GetOrphanRequests(NodeId nodeid) const;
+
+    // This transaction has already been resolved, e.g.:
+    // - parent of an orphan that we already have.
+    void Finalize(const GenTxid& gtxid);
+
+    bool ReceivedAncPkgInfoResponse(NodeId nodeid, const uint256& wtxid);
 };
 
 #endif // BITCOIN_TX_PKG_RELAY_H

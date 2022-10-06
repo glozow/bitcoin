@@ -23,6 +23,9 @@ public:
     /** Add a new orphan transaction */
     bool AddTx(const CTransactionRef& tx, NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
+    /** Get orphan transaction by wtxid. Returns nullptr if we don't have it anymore. */
+    CTransactionRef GetTx(const uint256& wtxid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
     /** Check if we already have an orphan transaction (by txid or wtxid) */
     bool HaveTx(const GenTxid& gtxid) const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 

@@ -52,6 +52,13 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
     return true;
 }
 
+CTransactionRef TxOrphanage::GetTx(const uint256& wtxid)
+{
+   LOCK(m_mutex);
+   const auto it = m_wtxid_to_orphan_it.find(wtxid);
+   return it == m_wtxid_to_orphan_it.end() ? nullptr : it->second->second.tx;
+}
+
 int TxOrphanage::EraseTx(const uint256& txid)
 {
     LOCK(m_mutex);
