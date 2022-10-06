@@ -99,6 +99,8 @@ P2P_VERSION_RELAY = 1
 NONPREF_PEER_TX_DELAY = 2
 # How long a transaction has to be in the mempool before it can unconditionally be relayed, in seconds
 UNCONDITIONAL_RELAY_DELAY = 2 * 60
+# How long to delay requesting transactions via txids, if we have wtxid-relaying peers
+TXID_RELAY_DELAY = 2
 
 MESSAGEMAP = {
     b"addr": msg_addr,
