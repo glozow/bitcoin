@@ -82,6 +82,11 @@ public:
         return m_impl->PackageInfoAllowed(nodeid, wtxid, version);
     }
 
+    /** Record receipt of an ancpkginfo. */
+    void ReceivedAncpkginfo(NodeId nodeid, const std::vector<uint256>& package_wtxids, std::chrono::microseconds current_time) {
+        m_impl->ReceivedAncpkginfo(nodeid, package_wtxids, current_time) ;
+    }
+
     /** Add a new orphan transaction. Returns whether this orphan is going to be processed and the
      * list of deduplicated parent txids that we don't already have. */
     std::pair<bool, std::vector<uint256>> NewOrphanTx(const CTransactionRef& tx, NodeId nodeid,

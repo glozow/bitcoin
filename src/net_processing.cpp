@@ -4006,6 +4006,26 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         return;
     }
 
+    if (msg_type == NetMsgType::ANCPKGINFO) {
+        std::vector<uint256> package_wtxids;
+        vRecv >> package_wtxids;
+        if (package_wtxids.empty()) return;
+        if (!m_txdownloadman.PackageInfoAllowed(pfrom.GetId(), package_wtxids.back(), node::PKG_RELAY_ANCPKG)) {
+            LogPrint(BCLog::NET, "received disallowed ancpkginfo, disconnecting peer=%d\n", pfrom.GetId());
+            pfrom.fDisconnect = true;
+            return;
+        }
+        // Ignore messages about unconfirmed transactions during IBD
+        if (m_chainman.IsInitialBlockDownload()) return;
+
+        const auto current_time{GetTime<std::chrono::microseconds>()};
+        for (const auto& wtxid : package_wtxids) {
+            AddKnownTx(*peer, wtxid);
+        }
+        m_txdownloadman.ReceivedAncpkginfo(pfrom.GetId(), package_wtxids, current_time);
+        return;
+    }
+
     if (msg_type == NetMsgType::TX) {
         if (RejectIncomingTxs(pfrom)) {
             LogPrint(BCLog::NET, "transaction sent in violation of protocol peer=%d\n", pfrom.GetId());
@@ -4695,6 +4715,14 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 if (inv.IsGenTxMsg()) {
                     tx_invs.emplace_back(node::GenRequest::TxRequest(inv.hash));
                 } else if (inv.IsMsgAncPkgInfo()) {
+                    if (!m_txdownloadman.PackageInfoAllowed(pfrom.GetId(), inv.hash, node::PKG_RELAY_ANCPKG)) {
+                        LogPrint(BCLog::NET, "Received disallowed ancpkginfo, disconnecting peer=%d\n", pfrom.GetId());
+                        // Unsolicited ancpkginfo or peer is not registered for ancestor package relay.
+                        // Don't process any remaining notfounds as we will be disconnecting the
+                        // peer anyway.
+                        pfrom.fDisconnect = true;
+                        return;
+                    }
                     tx_invs.emplace_back(node::GenRequest::PkgRequest(inv.hash));
                 }
             }

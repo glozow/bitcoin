@@ -224,6 +224,8 @@ public:
     /** Number of wtxid relay peers we have. */
     uint32_t m_num_wtxid_peers GUARDED_BY(m_tx_download_mutex){0};
 
+    /** Number of ancestor package relay peers we have. */
+    uint32_t m_num_ancpkg_relay_peers GUARDED_BY(m_tx_download_mutex){0};
 private:
     /** Maybe adds an inv to txrequest. */
     void AddTxAnnouncement(NodeId peer, const GenTxid& gtxid, std::chrono::microseconds now)
@@ -300,6 +302,11 @@ public:
 
     /** Returns whether a peer is allowed to send this package info. */
     bool PackageInfoAllowed(NodeId nodeid, const uint256& wtxid, PackageRelayVersions version) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
+
+    /** Updates the orphan resolution tracker, schedules transactions from this package that may
+     * need to be requested. */
+    void ReceivedAncpkginfo(NodeId nodeid, const std::vector<uint256>& package_wtxids, std::chrono::microseconds current_time)
         EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
 
     /** Creates deduplicated list of missing parents (based on AlreadyHaveTx). Adds tx to orphanage

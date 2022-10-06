@@ -4,6 +4,8 @@
 
 #include <node/txdownload_impl.h>
 
+#include <policy/packages.h>
+
 namespace node {
 /** How long to wait before requesting orphan ancpkginfo/parents from an additional peer. */
 static constexpr auto ORPHAN_ANCESTOR_GETDATA_INTERVAL{60s};
@@ -51,6 +53,7 @@ void TxDownloadImpl::ConnectedPeer(NodeId nodeid, const TxDownloadConnectionInfo
     m_peer_info.emplace(nodeid, PeerInfo(info, package_relay_versions));
     m_sendpackages_received.erase(nodeid);
     if (info.m_wtxid_relay) m_num_wtxid_peers += 1;
+    if (m_peer_info.at(nodeid).SupportsVersion(PackageRelayVersions::PKG_RELAY_ANCPKG)) m_num_ancpkg_relay_peers += 1;
 }
 
 void TxDownloadImpl::DisconnectedPeer(NodeId nodeid)
@@ -60,6 +63,10 @@ void TxDownloadImpl::DisconnectedPeer(NodeId nodeid)
     m_orphanage.EraseForPeer(nodeid);
     m_txrequest.DisconnectedPeer(nodeid);
     m_orphan_resolution_tracker.DisconnectedPeer(nodeid);
+    if (m_peer_info.count(nodeid) > 0) {
+        if (m_peer_info.at(nodeid).m_connection_info.m_wtxid_relay) m_num_wtxid_peers -= 1;
+        if (m_peer_info.at(nodeid).SupportsVersion(PackageRelayVersions::PKG_RELAY_ANCPKG)) m_num_ancpkg_relay_peers -= 1;
+    }
     m_peer_info.erase(nodeid);
     m_sendpackages_received.erase(nodeid);
 }
@@ -313,6 +320,10 @@ std::vector<GenRequest> TxDownloadImpl::GetRequestsToSend(NodeId nodeid, std::ch
     const bool is_package_relay_peer{m_peer_info.at(nodeid).SupportsVersion(PackageRelayVersions::PKG_RELAY_ANCPKG)};
     for (const auto& orphan_gtxid : orphans_ready) {
         Assume(orphan_gtxid.IsWtxid());
+        if (!m_orphanage.HaveTx(orphan_gtxid)) {
+            // No point in trying to resolve an orphan if we don't have it anymore.
+            m_orphan_resolution_tracker.ForgetTxHash(orphan_gtxid.GetHash());
+        }
         if (is_package_relay_peer) {
             LogPrint(BCLog::TXPACKAGES, "requesting ancpkginfo from peer=%d for orphan %s\n", nodeid, orphan_gtxid.GetHash().ToString());
             requests.emplace_back(GenRequest::PkgRequest(orphan_gtxid));
@@ -399,6 +410,43 @@ bool TxDownloadImpl::PackageInfoAllowed(NodeId nodeid, const uint256& wtxid, Pac
     return true;
 }
 
+void TxDownloadImpl::ReceivedAncpkginfo(NodeId nodeid, const std::vector<uint256>& package_wtxids, std::chrono::microseconds current_time)
+    EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)
+{
+    // We assume the caller has already checked PackageInfoAllowed
+    if (!Assume(m_peer_info.count(nodeid) > 0)) return;
+
+    const auto& rep_wtxid{package_wtxids.back()};
+    if (package_wtxids.size() > MAX_PACKAGE_COUNT) {
+        LogPrint(BCLog::NET, "discarding package info from %d for tx %s, too many transactions\n", rep_wtxid.ToString());
+        m_orphan_resolution_tracker.ReceivedResponse(nodeid, rep_wtxid);
+        return;
+    }
+    // We have already validated this exact set of transactions recently, so don't do it again.
+    if (m_recent_rejects_reconsiderable.contains(GetCombinedHash(package_wtxids))) {
+        LogPrint(BCLog::NET, "discarding package info from %d for tx %s, this package has already been rejected\n",
+                 rep_wtxid.ToString());
+        m_orphan_resolution_tracker.ReceivedResponse(nodeid, rep_wtxid);
+        return;
+    }
+    for (const auto& wtxid : package_wtxids) {
+        // If a transaction is in m_recent_rejects and not m_recent_rejects_reconsiderable, that
+        // means it will not become valid by adding another transaction.
+        if (m_recent_rejects.contains(wtxid)) {
+            LogPrint(BCLog::NET, "discarding package from %d for tx %s, tx %s has already been rejected and is not eligible for reconsideration\n",
+                     rep_wtxid.ToString(), wtxid.ToString());
+            m_orphan_resolution_tracker.ReceivedResponse(nodeid, rep_wtxid);
+            return;
+        }
+    }
+    // For now, just add these transactions as announcements.
+    for (const auto& wtxid : package_wtxids) {
+        if (!AlreadyHaveTx(GenTxid::Wtxid(wtxid))) {
+            AddTxAnnouncement(nodeid, GenTxid::Wtxid(wtxid), current_time);
+        }
+    }
+}
+
 void TxDownloadImpl::AddOrphanAnnouncer(NodeId nodeid, const uint256& orphan_wtxid, std::chrono::microseconds now)
 {
     if (!Assume(m_peer_info.count(nodeid) > 0)) return;
@@ -406,6 +454,7 @@ void TxDownloadImpl::AddOrphanAnnouncer(NodeId nodeid, const uint256& orphan_wtx
     if (m_package_info_requested.contains(GetPackageInfoRequestId(nodeid, orphan_wtxid, PackageRelayVersions::PKG_RELAY_ANCPKG))) return;
 
     const auto& info = m_peer_info.at(nodeid).m_connection_info;
+    const bool is_package_relay_peer{m_peer_info.at(nodeid).SupportsVersion(PackageRelayVersions::PKG_RELAY_ANCPKG)};
     // This mirrors the delaying and dropping behavior in ReceivedTxInv in order to preserve
     // existing behavior.
     // TODO: add delays and limits based on the amount of orphan resolution we are already doing
@@ -417,8 +466,12 @@ void TxDownloadImpl::AddOrphanAnnouncer(NodeId nodeid, const uint256& orphan_wtx
 
     auto delay{0us};
     if (!info.m_preferred) delay += NONPREF_PEER_TX_DELAY;
+    // Prefer using package relay if possible. It's not guaranteed that a package relay peer will
+    // announce this orphan but delay the request to give them a chance to do so.
+    if (!is_package_relay_peer && m_num_ancpkg_relay_peers > 0) delay += TXID_RELAY_DELAY;
     // The orphan wtxid is used, but resolution entails requesting the parents by txid.
-    if (m_num_wtxid_peers > 0) delay += TXID_RELAY_DELAY;
+    if (!is_package_relay_peer && m_num_wtxid_peers > 0) delay += TXID_RELAY_DELAY;
+
     const bool overloaded = !info.m_relay_permissions && m_txrequest.CountInFlight(nodeid) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
     if (overloaded) delay += OVERLOADED_PEER_TX_DELAY;
 
