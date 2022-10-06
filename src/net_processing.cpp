@@ -1810,7 +1810,7 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
     if (gArgs.GetBoolArg("-txreconciliation", DEFAULT_TXRECONCILIATION_ENABLE)) {
         m_txreconciliation = std::make_unique<TxReconciliationTracker>(TXRECONCILIATION_VERSION);
     }
-    m_txpackagetracker = std::make_unique<TxPackageTracker>();
+    m_txpackagetracker = std::make_unique<TxPackageTracker>(m_orphanage);
 }
 
 void PeerManagerImpl::StartScheduledTasks(CScheduler& scheduler)
