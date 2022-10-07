@@ -1860,3 +1860,21 @@ class msg_sendtxrcncl:
     def __repr__(self):
         return "msg_sendtxrcncl(version=%lu, salt=%lu)" %\
             (self.version, self.salt)
+
+class msg_sendpackages:
+    __slots__ = ("version")
+    msgtype = b"sendpackages"
+
+    def __init__(self):
+        self.version = 0
+
+    def deserialize(self, f):
+        self.version = struct.unpack("<I", f.read(4))[0]
+
+    def serialize(self):
+        r = b""
+        r += struct.pack("<I", self.version)
+        return r
+
+    def __repr__(self):
+        return "msg_sendpackages(version=%u)".format(self.version)
