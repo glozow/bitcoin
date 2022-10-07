@@ -372,6 +372,11 @@ class PackageRelayTest(BitcoinTestFramework):
         peer_package_relay3.sync_with_ping()
         peer_package_relay3.wait_for_getancpkginfo(int(orphan_wtxid, 16))
 
+        # TODO: the node should also request from another peer if it gets a response, validates
+        # those transactions, and they turn out to be invalid. It's possible that another peer has a
+        # different set of ancestors that are valid (wtxid of child doesn't commit to what the
+        # parents are)
+
     @cleanup
     def test_ancpkginfo_received(self):
         node = self.nodes[0]
