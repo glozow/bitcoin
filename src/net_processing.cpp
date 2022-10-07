@@ -264,6 +264,10 @@ struct Peer {
 
     /** Whether this peer relays txs via wtxid */
     std::atomic<bool> m_wtxid_relay{false};
+
+    /** Whether this peer relays packages */
+    std::atomic<bool> m_package_relay{false};
+
     /** The feerate in the most recent BIP133 `feefilter` message sent to the peer.
      *  It is *not* a p2p protocol violation for the peer to send us
      *  transactions with a lower fee rate than this. See BIP133. */
@@ -490,7 +494,8 @@ class PeerManagerImpl final : public PeerManager
 public:
     PeerManagerImpl(CConnman& connman, AddrMan& addrman,
                     BanMan* banman, ChainstateManager& chainman,
-                    CTxMemPool& pool, bool ignore_incoming_txs);
+                    CTxMemPool& pool, bool ignore_incoming_txs,
+                    bool enable_package_relay);
 
     /** Overridden from CValidationInterface. */
     void BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindexConnected) override
@@ -721,6 +726,9 @@ private:
     /** Whether this node is running in -blocksonly mode */
     const bool m_ignore_incoming_txs;
 
+    /** Whether this node does package relay */
+    const bool m_enable_package_relay;
+
     bool RejectIncomingTxs(const CNode& peer) const;
 
     /** Whether we've completed initial sync yet, for determining when to turn
@@ -766,6 +774,9 @@ private:
 
     /** Number of peers with wtxid relay. */
     std::atomic<int> m_wtxid_relay_peers{0};
+
+    /** Number of peers with package relay. */
+    std::atomic<int> m_package_relay_peers{0};
 
     /** Number of outbound peers with m_chain_sync.m_protect. */
     int m_outbound_peers_with_protect_from_disconnect GUARDED_BY(cs_main) = 0;
@@ -1487,7 +1498,9 @@ void PeerManagerImpl::FinalizeNode(const CNode& node)
         assert(peer != nullptr);
         misbehavior = WITH_LOCK(peer->m_misbehavior_mutex, return peer->m_misbehavior_score);
         m_wtxid_relay_peers -= peer->m_wtxid_relay;
+        m_package_relay_peers -= peer->m_package_relay;
         assert(m_wtxid_relay_peers >= 0);
+        assert(m_package_relay_peers >= 0);
     }
     CNodeState *state = State(nodeid);
     assert(state != nullptr);
@@ -1501,6 +1514,7 @@ void PeerManagerImpl::FinalizeNode(const CNode& node)
     m_orphanage.EraseForPeer(nodeid);
     m_txrequest.DisconnectedPeer(nodeid);
     if (m_txreconciliation) m_txreconciliation->ForgetPeer(nodeid);
+    if (m_txpackagetracker) m_txpackagetracker->DisconnectedPeer(nodeid);
     m_num_preferred_download_peers -= state->fPreferredDownload;
     m_peers_downloading_from -= (state->nBlocksInFlight != 0);
     assert(m_peers_downloading_from >= 0);
@@ -1516,6 +1530,7 @@ void PeerManagerImpl::FinalizeNode(const CNode& node)
         assert(m_peers_downloading_from == 0);
         assert(m_outbound_peers_with_protect_from_disconnect == 0);
         assert(m_wtxid_relay_peers == 0);
+        assert(m_package_relay_peers == 0);
         assert(m_txrequest.Size() == 0);
         assert(m_orphanage.Size() == 0);
     }
@@ -1771,21 +1786,24 @@ std::optional<std::string> PeerManagerImpl::FetchBlock(NodeId peer_id, const CBl
 
 std::unique_ptr<PeerManager> PeerManager::make(CConnman& connman, AddrMan& addrman,
                                                BanMan* banman, ChainstateManager& chainman,
-                                               CTxMemPool& pool, bool ignore_incoming_txs)
+                                               CTxMemPool& pool, bool ignore_incoming_txs,
+                                               bool enable_package_relay)
 {
-    return std::make_unique<PeerManagerImpl>(connman, addrman, banman, chainman, pool, ignore_incoming_txs);
+    return std::make_unique<PeerManagerImpl>(connman, addrman, banman, chainman, pool, ignore_incoming_txs, enable_package_relay);
 }
 
 PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
                                  BanMan* banman, ChainstateManager& chainman,
-                                 CTxMemPool& pool, bool ignore_incoming_txs)
+                                 CTxMemPool& pool, bool ignore_incoming_txs,
+                                 bool enable_package_relay)
     : m_chainparams(chainman.GetParams()),
       m_connman(connman),
       m_addrman(addrman),
       m_banman(banman),
       m_chainman(chainman),
       m_mempool(pool),
-      m_ignore_incoming_txs(ignore_incoming_txs)
+      m_ignore_incoming_txs(ignore_incoming_txs),
+      m_enable_package_relay{enable_package_relay}
 {
     // While Erlay support is incomplete, it must be enabled explicitly via -txreconciliation.
     // This argument can go away after Erlay support is complete.
@@ -3245,6 +3263,14 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
         if (greatest_common_version >= WTXID_RELAY_VERSION) {
             m_connman.PushMessage(&pfrom, msg_maker.Make(NetMsgType::WTXIDRELAY));
+            if (!m_ignore_incoming_txs && m_enable_package_relay) {
+                m_txpackagetracker->ReceivedVersion(peer->m_id);
+                m_txpackagetracker->ReceivedTxRelayInfo(peer->m_id, fRelay);
+                for (const auto version : m_txpackagetracker->GetVersions()) {
+                    m_connman.PushMessage(&pfrom, msg_maker.Make(NetMsgType::SENDPACKAGES, version));
+                }
+                m_txpackagetracker->SentSendpackages(peer->m_id);
+            }
         }
 
         // Signal ADDRv2 support (BIP155).
@@ -3430,6 +3456,10 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                        tx_relay->m_next_inv_send_time == 0s));
         }
 
+        if (m_enable_package_relay && m_txpackagetracker->ReceivedVerack(peer->m_id)) {
+            peer->m_package_relay = true;
+            m_package_relay_peers++;
+        }
         pfrom.fSuccessfullyConnected = true;
         return;
     }
@@ -3458,6 +3488,22 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         return;
     }
 
+    if (msg_type == NetMsgType::SENDPACKAGES) {
+        if (m_enable_package_relay) {
+            if (pfrom.fSuccessfullyConnected) {
+                // Disconnect peers that send a SENDPACKAGES message after VERACK.
+                LogPrint(BCLog::NET, "sendpackages received after verack from peer=%d; disconnecting\n", pfrom.GetId());
+                pfrom.fDisconnect = true;
+                return;
+            }
+            uint32_t sendpackages_version{0};
+            vRecv >> sendpackages_version;
+            m_txpackagetracker->ReceivedSendpackages(peer->m_id, sendpackages_version);
+        }
+    }
+
+
+
     // BIP339 defines feature negotiation of wtxidrelay, which must happen between
     // VERSION and VERACK to avoid relay problems from switching after a connection is up.
     if (msg_type == NetMsgType::WTXIDRELAY) {
@@ -3471,6 +3517,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             if (!peer->m_wtxid_relay) {
                 peer->m_wtxid_relay = true;
                 m_wtxid_relay_peers++;
+                m_txpackagetracker->ReceivedWtxidRelay(peer->m_id);
             } else {
                 LogPrint(BCLog::NET, "ignoring duplicate wtxidrelay from peer=%d\n", pfrom.GetId());
             }
