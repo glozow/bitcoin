@@ -4034,16 +4034,37 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             LOCK(::cs_main);
             if (m_chainman.ActiveChainstate().IsInitialBlockDownload()) return;
         }
-        const auto current_time{GetTime<std::chrono::microseconds>()};
+        // Multiple ancestor packages can have the same representative (different ancestors for
+        // honest or malicious reasons). But since we're only using this to resolve orphans, we
+        // should never be in a situation where we have multiple ancpkginfos out for the same wtxid
+        // and need to deduplicate...?
+
+        std::vector<uint256> pkgtxns_to_request;
         for (const auto& wtxid : package_wtxids) {
-            AddKnownTx(*peer, wtxid);
-            const GenTxid gtxid = GenTxid::Wtxid(wtxid);
-            if (!AlreadyHaveTx(gtxid)) {
-                // For now, just add each of the transactions as regular announcements.
-                // TODO: request transactions together as a package to avoid receiving low feerate
-                // parents that are no good without sponsoring child.
-                AddTxAnnouncement(pfrom, gtxid, current_time);
+            // TODO: not entirely convinced it'd be safe to reject the whole package just because
+            // one thing is in recent_rejects. Of course the whole package would get scrapped if
+            // every transaction relies upon it. But what if you can attach an invalid transaction
+            // to get the rest rejected? Idk, maybe this is ok...
+            if (m_recent_rejects.contains(wtxid)) {
+                LogPrint(BCLog::NET, "discarding package, tx %s has already been rejected\n", wtxid.ToString());
+                return;
             }
+            // Exclude orphanage because we shouldn't rely on the existence of a transaction in our
+            // orphanage, as that can easily be churned by peers due to its limited size. It doesn't
+            // guarantee that we'll keep 1 orphan per peer, for example. If a peer sends us a lot of
+            // orphans, that could cause us to be unable to validate packages.
+            //
+            // This might not be optimal for bandwidth (e.g. we are duplicating requests if multiple
+            // transactions share ancestors and we are requesting their ancestor packages at the
+            // same time), but one could argue that it's safest to just request everything that
+            // hasn't already been accepted. Can be improved.
+            if (!AlreadyHaveTx(GenTxid::Wtxid(wtxid), /*include_orphanage=*/false)) {
+                pkgtxns_to_request.push_back(wtxid);
+            }
+        }
+        if (!pkgtxns_to_request.empty()) {
+            // FIXME: track announcements.
+            m_connman.PushMessage(&pfrom, msgMaker.Make(NetMsgType::GETPKGTXNS, pkgtxns_to_request));
         }
     }
 
