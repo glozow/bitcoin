@@ -134,6 +134,14 @@ class PackageRelayer(P2PTxInvStore):
             return all([item.type == MSG_TX and item.hash in txids for item in last_getdata.inv])
         self.wait_until(test_function, timeout=10)
 
+    def wait_for_getpkgtxns(self, wtxids):
+        def test_function():
+            last_getpkgtxns = self.last_message.get('getpkgtxns')
+            if not last_getpkgtxns:
+                return False
+            return wtxids == last_getpkgtxns.hashes
+        self.wait_until(test_function, timeout=10)
+
     def wait_for_pkgtxns(self, wtxids):
         def test_function():
             last_pkgtxns = self.last_message.get('pkgtxns')
@@ -259,7 +267,8 @@ class PackageRelayTest(BitcoinTestFramework):
         peer_package_relayer.sync_with_ping()
         peer_package_relayer.wait_for_getancpkginfo(int(orphan_wtxid, 16))
         peer_package_relayer.send_and_ping(msg_ancpkginfo([int(wtxid, 16) for wtxid in package_wtxids]))
-        self.wait_until(lambda: "ancpkginfo" in node.getpeerinfo()[0]["bytesrecv_per_msg"])
+        peer_package_relayer.wait_for_getpkgtxns([int(wtxid, 16) for wtxid in package_wtxids])
+        peer_package_relayer.send_and_ping(msg_pkgtxns(txns=package_txns))
 
     @cleanup
     def test_orphan_handling_prefer_outbound(self):
@@ -410,9 +419,9 @@ class PackageRelayTest(BitcoinTestFramework):
         peer2.wait_for_getancpkginfo(int(package_wtxids[-1], 16))
         peer2.send_and_ping(ancpkginfo_message)
         self.fastforward(NONPREF_PEER_TX_DELAY + 1)
-        peer2.wait_for_getdata([int(parent1["tx"].getwtxid(), 16), int(parent2["tx"].getwtxid(), 16)])
-        peer2.send_and_ping(msg_tx(parent1["tx"]))
-        peer2.send_and_ping(msg_tx(parent2["tx"]))
+
+        peer2.wait_for_getpkgtxns([int(wtxid, 16) for wtxid in package_wtxids])
+        peer2.send_and_ping(msg_pkgtxns(txns=package_txns))
         for tx in package_txns:
             assert node.getmempoolentry(tx.rehash())
 

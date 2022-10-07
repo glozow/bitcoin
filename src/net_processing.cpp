@@ -4724,6 +4724,25 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
     if (msg_type == NetMsgType::PKGTXNS) {
         LogPrint(BCLog::NET, "pkgtxns received from peer=%d", pfrom.GetId());
+        std::vector<CTransactionRef> package_txns;
+        vRecv >> package_txns;
+        // FIXME: should deduplicate, run cheap checks to make sure this isn't too large, and sort the package.
+        // Register with txpackagetracker. MaybePunishPeer for a bad transaction or bad package.
+        // Update recent rejects, orphanage, orphan work set. Maybe go back to requesting the ancpkginfo for the transaction. etc.
+        const auto package_res = WITH_LOCK(cs_main, return ProcessNewPackage(m_chainman.ActiveChainstate(), m_mempool, package_txns, /*test_accept=*/false));
+        for (const auto& tx : package_txns) {
+            auto it{package_res.m_tx_results.find(tx->GetWitnessHash())};
+            Assume(it != package_res.m_tx_results.end());
+            if (it->second.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+                LogPrint(BCLog::MEMPOOL, "ProcessNewPackage: peer=%d: accepted %s\n", pfrom.GetId(), tx->GetHash().ToString());
+                RelayTransaction(tx->GetHash(), tx->GetWitnessHash());
+                for (const auto& removedTx : it->second.m_replaced_transactions.value()) {
+                    AddToCompactExtraTransactions(removedTx);
+                }
+            } else if (it->second.m_result_type == MempoolAcceptResult::ResultType::INVALID) {
+                LogPrint(BCLog::MEMPOOL, "ProcessNewPackage: peer=%d: rejected %s\n", pfrom.GetId(), tx->GetHash().ToString());
+            }
+        }
         return;
     }
 
