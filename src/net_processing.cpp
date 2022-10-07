@@ -236,6 +236,7 @@ struct Peer {
 
     /** Whether this peer relays txs via wtxid */
     std::atomic<bool> m_wtxid_relay{false};
+
     /** The feerate in the most recent BIP133 `feefilter` message sent to the peer.
      *  It is *not* a p2p protocol violation for the peer to send us
      *  transactions with a lower fee rate than this. See BIP133. */
@@ -1713,7 +1714,7 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
       m_banman(banman),
       m_chainman(chainman),
       m_mempool(pool),
-      m_txdownloadman(node::TxDownloadOptions{opts.max_orphan_txs, pool}),
+      m_txdownloadman(node::TxDownloadOptions{opts.max_orphan_txs, pool, opts.package_relay}),
       m_opts{opts}
 {
     // While Erlay support is incomplete, it must be enabled explicitly via -txreconciliation.
@@ -3194,6 +3195,19 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
         if (greatest_common_version >= WTXID_RELAY_VERSION) {
             m_connman.PushMessage(&pfrom, msg_maker.Make(NetMsgType::WTXIDRELAY));
+
+            // Always send a sendpackages if:
+            // - Protocol version is at least WTXID_RELAY_VERSION
+            // - We are not in blocksonly mode
+            // - This is a peer we might relay transactions with (not block-relay-only, feeler, or addrfetch)
+            // - We have package relay enabled
+            if (!m_opts.ignore_incoming_txs &&
+                !pfrom.IsFeelerConn() && !pfrom.IsAddrFetchConn() && !pfrom.IsBlockOnlyConn()) {
+                const auto versions_to_send{m_txdownloadman.GetSupportedVersions()};
+                if (versions_to_send != node::PKG_RELAY_NONE) {
+                    m_connman.PushMessage(&pfrom, msg_maker.Make(NetMsgType::SENDPACKAGES, uint64_t{versions_to_send}));
+                }
+            }
         }
 
         // Signal ADDRv2 support (BIP155).
@@ -3419,6 +3433,27 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         // save whether peer selects us as BIP152 high-bandwidth peer
         // (receiving sendcmpct(1) signals high-bandwidth, sendcmpct(0) low-bandwidth)
         pfrom.m_bip152_highbandwidth_from = sendcmpct_hb;
+        return;
+    }
+
+    // BIP331 defines feature negotiation of wtxidrelay, which must happen between
+    // VERSION and VERACK.
+    if (msg_type == NetMsgType::SENDPACKAGES) {
+        if (pfrom.fSuccessfullyConnected) {
+            // Disconnect peers that send a SENDPACKAGES message after VERACK.
+            LogPrint(BCLog::NET, "sendpackages received after verack from peer=%d; disconnecting\n", pfrom.GetId());
+            pfrom.fDisconnect = true;
+            return;
+        }
+        uint64_t sendpackages_versions;
+        vRecv >> sendpackages_versions;
+        // Consider sendpackages from a peer if:
+        // - We are not in blocksonly mode
+        // - This is a peer we might relay transactions with (not block-relay-only, feeler, or addrfetch)
+        // - We have package relay enabled
+        if (!m_opts.ignore_incoming_txs && !pfrom.IsFeelerConn() && !pfrom.IsAddrFetchConn() && !pfrom.IsBlockOnlyConn()) {
+            m_txdownloadman.ReceivedSendpackages(peer->m_id, node::PackageRelayVersions{sendpackages_versions});
+        }
         return;
     }
 

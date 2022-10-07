@@ -47,7 +47,7 @@ struct TxDownloadOptions {
     /** Read-only reference to mempool. */
     const CTxMemPool& m_mempool_ref;
     /** Whether we do package relay (-packagerelay). */
-    bool m_do_package_relay{DEFAULT_DO_PACKAGE_RELAY};
+    bool m_do_package_relay;
 };
 struct TxDownloadConnectionInfo {
     /** Whether this peer is preferred for transaction download. */

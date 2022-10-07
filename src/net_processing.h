@@ -16,6 +16,8 @@ class ChainstateManager;
 
 /** Whether transaction reconciliation protocol should be enabled by default. */
 static constexpr bool DEFAULT_TXRECONCILIATION_ENABLE{false};
+/** Default -packagerelay value. */
+static constexpr auto DEFAULT_DO_PACKAGE_RELAY{false};
 /** Default for -maxorphantx, maximum number of orphan transactions kept in memory */
 static const uint32_t DEFAULT_MAX_ORPHAN_TRANSACTIONS{100};
 /** Default number of non-mempool transactions to keep around for block reconstruction. Includes
@@ -51,6 +53,8 @@ public:
         bool ignore_incoming_txs{DEFAULT_BLOCKSONLY};
         //! Whether transaction reconciliation protocol is enabled
         bool reconcile_txs{DEFAULT_TXRECONCILIATION_ENABLE};
+        //! Whether we do package relay
+        bool package_relay{DEFAULT_DO_PACKAGE_RELAY};
         //! Maximum number of orphan transactions kept in memory
         uint32_t max_orphan_txs{DEFAULT_MAX_ORPHAN_TRANSACTIONS};
         //! Number of non-mempool transactions to keep around for block reconstruction. Includes
