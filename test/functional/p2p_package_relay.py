@@ -131,6 +131,14 @@ class PackageRelayer(P2PTxInvStore):
             return all([item.type == MSG_TX and item.hash in txids for item in last_getdata.inv])
         self.wait_until(test_function, timeout=10)
 
+    def wait_for_getpkgtxns(self, wtxids):
+        def test_function():
+            last_getpkgtxns = self.last_message.get('getpkgtxns')
+            if not last_getpkgtxns:
+                return False
+            return last_getpkgtxns.hashes == wtxids
+        self.wait_until(test_function, timeout=10)
+
     def wait_for_pkgtxns(self, wtxids):
         def test_function():
             last_pkgtxns = self.last_message.get('pkgtxns')
@@ -407,7 +415,8 @@ class PackageRelayTest(BitcoinTestFramework):
         peer2.wait_for_getancpkginfo(int(package_wtxids[-1], 16))
         peer2.send_and_ping(ancpkginfo_message)
         self.fastforward(NONPREF_PEER_TX_DELAY + 1)
-        peer2.wait_for_getdata([int(parent1["tx"].getwtxid(), 16), int(parent2["tx"].getwtxid(), 16)])
+        # The orphan should not be re-requested.
+        peer2.wait_for_getpkgtxns([int(wtxid, 16) for wtxid in package_wtxids[:-1]])
         peer2.send_and_ping(msg_tx(parent1["tx"]))
         peer2.send_and_ping(msg_tx(parent2["tx"]))
         for tx in package_txns:

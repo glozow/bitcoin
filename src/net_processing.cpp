@@ -4130,7 +4130,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             LogPrint(BCLog::NET, "ancpkginfo sent in violation of protocol, disconnecting peer=%d\n", pfrom.GetId());
             pfrom.fDisconnect = true;
         }
-        if (m_txpackagetracker->ReceivedAncPkgInfoResponse(pfrom.GetId(), package_wtxids.back())) {
+        if (!m_txpackagetracker->PkgInfoAllowed(pfrom.GetId(), package_wtxids.back(), RECEIVER_INIT_ANCESTOR_PACKAGES)) {
             LogPrint(BCLog::NET, "unsolicited ancpkginfo sent, disconnecting peer=%d\n", pfrom.GetId());
             pfrom.fDisconnect = true;
         }
@@ -4138,16 +4138,36 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             LOCK(::cs_main);
             if (m_chainman.ActiveChainstate().IsInitialBlockDownload()) return;
         }
-        const auto current_time{GetTime<std::chrono::microseconds>()};
+        // Multiple ancestor packages can have the same representative (different ancestors for
+        // honest or malicious reasons). But since we're only using this to resolve orphans, we
+        // should never be in a situation where we have multiple ancpkginfos out for the same wtxid
         for (const auto& wtxid : package_wtxids) {
-            AddKnownTx(*peer, wtxid);
-            const GenTxid gtxid = GenTxid::Wtxid(wtxid);
-            if (!AlreadyHaveTx(gtxid)) {
-                // For now, just add each of the transactions as regular announcements.
-                // TODO: request transactions together as a package to avoid receiving low feerate
-                // parents that are no good without sponsoring child.
-                AddTxAnnouncement(pfrom, gtxid, current_time);
+            // If a transaction is in m_recent_rejects and not m_recent_rejects_reconsiderable, that
+            // means it will not become valid by adding another transaction.
+            // TODO: not entirely convinced it'd be safe to reject the whole package just because
+            // one thing is in recent_rejects. Of course the whole package would get scrapped if
+            // every transaction relies upon it. But what if you can attach an invalid transaction
+            // to get the rest rejected? Idk, maybe this is ok...
+            if (m_recent_rejects.contains(wtxid)) {
+                LogPrint(BCLog::NET, "discarding package, tx %s has already been rejected and is not eligible for reconsideration\n", wtxid.ToString());
+                // FIXME: IIRC package tracker doesn't need to do anything if we decide to drop a
+                // package or if we already have all txns, we already called
+                // orphan_request_tracker.ReceivedResponse(). It is correct to continue asking
+                // another peer for ancpkginfo because this peer could have provided a false list of
+                // ancestors in order to get us to reject the tx.
+                return;
             }
+        }
+
+        std::vector<uint256> pkgtxns_to_request;
+        for (const auto& wtxid : package_wtxids) {
+            if (!AlreadyHaveTx(GenTxid::Wtxid(wtxid), /*include_orphanage=*/true)) {
+                pkgtxns_to_request.push_back(wtxid);
+            }
+        }
+        if (!pkgtxns_to_request.empty()) {
+            m_txpackagetracker->ReceivedAncPkgInfoResponse(pfrom.GetId(), package_wtxids, pkgtxns_to_request, MAX_PACKAGE_SIZE);
+            m_connman.PushMessage(&pfrom, msgMaker.Make(NetMsgType::GETPKGTXNS, pkgtxns_to_request));
         }
     }
 
@@ -4999,7 +5019,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     // completed in TxRequestTracker.
                     m_txrequest.ReceivedResponse(pfrom.GetId(), inv.hash);
                 } else if (inv.IsMsgAncPkgInfo() && m_enable_package_relay) {
-                    if (m_txpackagetracker->ReceivedAncPkgInfoResponse(pfrom.GetId(), inv.hash)) {
+                    if (!m_txpackagetracker->PkgInfoAllowed(pfrom.GetId(), inv.hash, RECEIVER_INIT_ANCESTOR_PACKAGES)) {
                         LogPrint(BCLog::NET, "unsolicited ancpkginfo sent, disconnecting peer=%d\n", pfrom.GetId());
                         // Unsolicited ancpkginfo or peer is not registered for package relay.
                         pfrom.fDisconnect = true;
