@@ -1386,6 +1386,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
                 // future.  Continue individually validating the rest of the transactions, because
                 // some of them may still be valid.
                 quit_early = true;
+                package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
             } else {
                 txns_new.push_back(tx);
             }
