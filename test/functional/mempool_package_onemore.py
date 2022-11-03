@@ -59,7 +59,7 @@ class MempoolPackagesTest(BitcoinTestFramework):
         # ...not if it's submitted with other transactions
         replacable_tx = self.wallet.create_self_transfer_multi(utxos_to_spend=[chain[0]])
         txns = [replacable_tx["hex"], self.wallet.create_self_transfer_multi(utxos_to_spend=replacable_tx["new_utxos"])["hex"]]
-        assert_equal(self.nodes[0].testmempoolaccept(txns)[0]["package-error"], "package-mempool-limits")
+        assert_equal(self.nodes[0].testmempoolaccept(txns)[0]["reject-reason"], "too-long-mempool-chain")
         assert_raises_rpc_error(-26, "too-long-mempool-chain", self.nodes[0].submitpackage, txns)
         # But not if it chains directly off the first transaction
         self.nodes[0].sendrawtransaction(replacable_tx["hex"])
