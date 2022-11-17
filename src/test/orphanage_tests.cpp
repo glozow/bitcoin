@@ -134,4 +134,80 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
     BOOST_CHECK(orphanage.CountOrphans() == 0);
 }
 
+// Create a transaction with 1 input (must be specified) and num_outputs outputs.
+static CTransactionRef placeholder_tx(const COutPoint& outpoint, size_t num_outputs)
+{
+    CMutableTransaction tx = CMutableTransaction();
+    tx.vin.resize(1);
+    tx.vout.resize(num_outputs);
+    tx.vin[0].prevout = outpoint;
+    for (size_t i = 0; i < num_outputs; ++i) {
+        tx.vout[i].scriptPubKey = CScript() << OP_11 << OP_EQUAL;
+        tx.vout[i].nValue = 1 * COIN;
+    }
+    return MakeTransactionRef(tx);
+}
+BOOST_AUTO_TEST_CASE(orphan_attributions)
+{
+    // This test had non-deterministic coverage due to
+    // randomly selected seeds.
+    // This seed is chosen so that all branches of the function
+    // ecdsa_signature_parse_der_lax are executed during this test.
+    // Specifically branches that run only when an ECDSA
+    // signature's R and S values have leading zeros.
+    g_insecure_rand_ctx = FastRandomContext{uint256{33}};
+
+    // Test that the orphanage properly tracks and reports which peer provided orphan transactions.
+    TxOrphanageTest orphanage;
+    const NodeId good_peer{1};
+    const NodeId bad_peer{2};
+    {
+        auto tx1_parent = placeholder_tx(/*outpoint=*/COutPoint{GetRandHash(), 0}, 1);
+        auto tx2_orphan_valid = placeholder_tx(/*outpoint=*/COutPoint{tx1_parent->GetHash(), 0}, 1);
+        auto tx3_orphan_invalid = placeholder_tx(/*outpoint=*/COutPoint{tx2_orphan_valid->GetHash(), 0}, 1);
+        // Add all children to orphanage.
+        orphanage.AddTx(tx2_orphan_valid, good_peer);
+        orphanage.AddTx(tx3_orphan_invalid, bad_peer);
+
+        // The good peer has provided the missing parent tx1.
+        orphanage.AddChildrenToWorkSet(*tx1_parent, good_peer);
+        NodeId originator;
+        bool more;
+        auto ptx = orphanage.GetTxToReconsider(good_peer, originator, more);
+        BOOST_CHECK_EQUAL(ptx->GetHash(), tx2_orphan_valid->GetHash());
+        BOOST_CHECK_EQUAL(originator, good_peer);
+        BOOST_CHECK_EQUAL(more, false);
+        orphanage.EraseTx(ptx->GetHash());
+        orphanage.AddChildrenToWorkSet(*ptx, good_peer);
+        ptx = orphanage.GetTxToReconsider(good_peer, originator, more);
+        BOOST_CHECK_EQUAL(ptx->GetHash(), tx3_orphan_invalid->GetHash());
+        BOOST_CHECK_EQUAL(originator, bad_peer);
+        BOOST_CHECK_EQUAL(more, false);
+        orphanage.EraseTx(ptx->GetHash());
+    }
+
+    {
+        auto tx4_parent = placeholder_tx(/*outpoint=*/COutPoint{GetRandHash(), 0}, 2);
+        auto tx5_orphan_valid = placeholder_tx(/*outpoint=*/COutPoint{tx4_parent->GetHash(), 0}, 1);
+        auto tx6_orphan_invalid = placeholder_tx(/*outpoint=*/COutPoint{tx4_parent->GetHash(), 1}, 1);
+        orphanage.AddTx(tx5_orphan_valid, good_peer);
+        orphanage.AddTx(tx6_orphan_invalid, bad_peer);
+        // The good peer has provided the missing parent tx4.
+        orphanage.AddChildrenToWorkSet(*tx4_parent, good_peer);
+        NodeId originator;
+        bool more;
+        for (auto i{0}; i < 2; ++i) {
+            auto ptx = orphanage.GetTxToReconsider(good_peer, originator, more);
+            if (ptx->GetHash() == tx5_orphan_valid->GetHash()) {
+                BOOST_CHECK_EQUAL(originator, good_peer);
+            } else {
+                BOOST_CHECK_EQUAL(ptx->GetHash(), tx6_orphan_invalid->GetHash());
+                BOOST_CHECK_EQUAL(originator, bad_peer);
+            }
+            BOOST_CHECK_EQUAL(more, i == 0);
+            orphanage.EraseTx(ptx->GetHash());
+        }
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
