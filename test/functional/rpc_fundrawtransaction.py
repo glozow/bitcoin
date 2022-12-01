@@ -1216,11 +1216,16 @@ class RawTransactionsTest(BitcoinTestFramework):
         # Select the preset inputs and lock the rest of the coins
         coins = wallet.listunspent()
         preset_inputs = [coins[0], coins[1]]
+        # Lock the rest of the coins so that they cannot be chosen in coin selection.  Instead, when
+        # a preset coin0 or coin1 isn't properly excluded from available_coins, it will be selected
+        # again and double-counted.
         to_lock = []
         for utxo in coins[2:]:
             to_lock.append({"txid": utxo["txid"], "vout": utxo["vout"]})
         wallet.lockunspent(unlock=False, transactions=to_lock)
 
+        # Adding a feerate so we can compare an expected feerate to an actual "insane" feerate
+        feerate = 20 # sat/vB
         # Now that all coins were locked except the two preset inputs, let's create the tx
         options = {
             "inputs": [
@@ -1234,16 +1239,37 @@ class RawTransactionsTest(BitcoinTestFramework):
                 },
             ],
             "add_inputs": True,
+            "fee_rate" : feerate,
             "subtract_fee_from_outputs": [0],
             "add_to_wallet": False
         }
+        # The 2 cases will try to send 14BTC when only 10BTC is available for funding. Since all
+        # other coins are locked, the wallet should understand that it cannot cover a 14BTC payment
+        # using 2 coins worth 5BTC each.
 
         # First case, use 'subtract_fee_from_outputs' to make the wallet create a tx that pays an insane fee on v24.0.
-        assert_raises_rpc_error(-4, "Insufficient funds", wallet.send, outputs=[{wallet.getnewaddress(address_type="bech32"): 14}], options=options)
+        # assert_raises_rpc_error(-4, "Insufficient funds", wallet.send, outputs=[{wallet.getnewaddress(address_type="bech32"): 14}], options=options)
+        bug1 = wallet.send(outputs=[{wallet.getnewaddress(address_type="bech32"): 14}], options=options)
+        decoded1 = wallet.decoderawtransaction(bug1["hex"])
+        input_amount = len(decoded1["vin"]) * 5
+        assert_equal(len(decoded1["vout"]), 1)
+        output_amount = sum(output["value"] for output in decoded1["vout"])
+        actual_fee = input_amount - output_amount
+        # Did not select enough inputs to cover the specified recipient amount
+        assert_greater_than(14, input_amount)
+        assert_greater_than(14, output_amount)
+        assert_greater_than(14, output_amount + actual_fee)
+
+        # But the fee is not "insane" (?)
+        expected_fee_sats = feerate * decoded1["vsize"]
+        actual_fee_sats = actual_fee * COIN
+        assert_equal(expected_fee_sats, actual_fee_sats)
 
         # Second case, don't use 'subtract_fee_from_outputs' to make the wallet crash due the insane fee on v24.0
         del options["subtract_fee_from_outputs"]
-        assert_raises_rpc_error(-4, "Insufficient funds", wallet.send, outputs=[{wallet.getnewaddress(address_type="bech32"): 14}], options=options)
+        # assert_raises_rpc_error(-4, "Insufficient funds", wallet.send, outputs=[{wallet.getnewaddress(address_type="bech32"): 14}], options=options)
+        # This crashes on wallet/spend.cpp:962
+        wallet.send(outputs=[{wallet.getnewaddress(address_type="bech32"): 14}], options=options)
 
         self.nodes[2].unloadwallet("test_preset_inputs_selection")
 
