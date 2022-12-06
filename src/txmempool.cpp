@@ -955,17 +955,14 @@ CTxMemPool::setEntries CTxMemPool::GetIterSet(const std::set<uint256>& hashes) c
 
 std::vector<CTxMemPool::txiter> CTxMemPool::GetIterVec(const std::vector<uint256>& txids) const
 {
+    AssertLockHeld(cs);
     std::vector<txiter> ret;
     ret.reserve(txids.size());
     for (const auto& txid : txids) {
-        const auto it = GetIter(txid);
-        assert(it);
-        if (it) {
+        if (auto it{GetIter(txid)}) {
             ret.push_back(*it);
         } else {
-            // return empty vector to let the caller know this failed.
-            std::vector<txiter> empty_vector;
-            return empty_vector;
+            return {};
         }
     }
     return ret;
@@ -1219,32 +1216,37 @@ std::vector<CTxMemPool::txiter> CTxMemPool::CalculateCluster(const std::vector<u
 {
     AssertLockHeld(cs);
     std::vector<txiter> cluster{GetIterVec(txids)};
-    assert(cluster.size() == txids.size());
+    if (cluster.size() != txids.size()) {
+        // We can't continue because the caller specified a tx that doesn't exist in the mempool.
+        // Return an empty vector to let them know this failed.
+        return {};
+    }
+    // Reserve total ancestor + descendant counts of each transaction.  This is an approximation; it
+    // may overestimate because transactions may share ancestors/descendants, and may underestimate
+    // because the cluster may include more than just ancestors and descendants.
     cluster.reserve(std::accumulate(cluster.cbegin(), cluster.cend(), 0, [](size_t sum, const auto it) {
-        return sum + it->GetCountWithAncestors() + it->GetCountWithDescendants(); }));
+        return sum + it->GetCountWithAncestors() + it->GetCountWithDescendants() - 1; }));
     {
-        // Use epoch: visiting an entry means we have added it to the cluster vector.
+        // Use epoch: visiting an entry means we have added it to the cluster vector. It does not
+        // necessarily mean the entry has been processed.
         WITH_FRESH_EPOCH(m_epoch);
         for (const auto& it : cluster) {
             visited(it);
         }
-        // i = index of where the list of unprocessed starts
-        for (size_t i{0}, unprocessed_count{txids.size()}; i < unprocessed_count; ++i) {
-            const auto curr = cluster[i];
-            for (const CTxMemPoolEntry& parent_entry : curr->GetMemPoolParentsConst()) {
+        // i = index of where the list of entries to process starts
+        for (size_t i{0}, to_process_count{txids.size()}; i < to_process_count; ++i) {
+            for (const CTxMemPoolEntry& parent_entry : cluster.at(i)->GetMemPoolParentsConst()) {
                 const auto parent_it = mapTx.iterator_to(parent_entry);
                 if (!visited(parent_it)) {
                     cluster.push_back(parent_it);
-                    // we still need to process this
-                    ++unprocessed_count;
+                    ++to_process_count;
                 }
             }
-            for (const CTxMemPoolEntry& child_entry : curr->GetMemPoolChildrenConst()) {
+            for (const CTxMemPoolEntry& child_entry : cluster.at(i)->GetMemPoolChildrenConst()) {
                 const auto child_it = mapTx.iterator_to(child_entry);
                 if (!visited(child_it)) {
                     cluster.push_back(child_it);
-                    // we still need to process this
-                    ++unprocessed_count;
+                    ++to_process_count;
                 }
             }
         }
