@@ -1312,6 +1312,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
         return PackageMempoolAcceptResult(package_state_quit_early, {});
     }
 
+    AncestorPackage packageified(package);
+    Assume(IsAncestorPackage(packageified.Txns()));
     // IsChildWithParents() guarantees the package is > 1 transactions.
     assert(package.size() > 1);
     // The package must be 1 child with all of its unconfirmed parents. The package is expected to
@@ -1383,7 +1385,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     std::map<uint256, MempoolAcceptResult> individual_results_nonfinal;
     bool quit_early{false};
     std::vector<CTransactionRef> txns_package_eval;
-    for (const auto& tx : package) {
+    for (const auto& tx : packageified.Txns()) {
         const auto& wtxid = tx->GetWitnessHash();
         const auto& txid = tx->GetHash();
         // There are 3 possibilities: already in mempool, same-txid-diff-wtxid already in mempool,
@@ -1394,6 +1396,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             auto iter = m_pool.GetIter(txid);
             assert(iter != std::nullopt);
             results_final.emplace(wtxid, MempoolAcceptResult::MempoolTx(iter.value()->GetTxSize(), iter.value()->GetFee()));
+            packageified.Exclude(tx);
         } else if (m_pool.exists(GenTxid::Txid(txid))) {
             // Transaction with the same non-witness data but different witness (same txid,
             // different wtxid) already exists in the mempool.
@@ -1406,9 +1409,22 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             assert(iter != std::nullopt);
             // Provide the wtxid of the mempool tx so that the caller can look it up in the mempool.
             results_final.emplace(wtxid, MempoolAcceptResult::MempoolTxDifferentWitness(iter.value()->GetTx().GetWitnessHash()));
+            packageified.Exclude(tx);
         } else {
-            if (wtxid == child->GetWitnessHash() && !quit_early) {
+            const auto subpackage = packageified.GetAncestorSet(tx);
+            if (subpackage.empty()) {
+                Assume(quit_early);
+                // Quit early; this transaction depends on a "banned" tx (failed for a non-policy
+                // and non-missing-inputs reason), so this transaction will be invalid due to
+                // missing inputs.
+                TxValidationState tx_state_quit_early;
+                tx_state_quit_early.Invalid(TxValidationResult::TX_MISSING_INPUTS, "bad-txns-inputs-missingorspent");
+                results.emplace(wtxid, MempoolAcceptResult::Failure(tx_state_quit_early));
+                continue;
+            }
+            if (wtxid == child->GetWitnessHash()) {
                 txns_package_eval.push_back(tx);
+                Assume(txns_package_eval == subpackage);
                 // Regardless of whether we're quitting early, validate the child outside of this loop.
                 break;
             }
@@ -1420,6 +1436,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
                 // in package validation, because its fees should only be "used" once.
                 assert(m_pool.exists(GenTxid::Wtxid(wtxid)));
                 results_final.emplace(wtxid, single_res);
+                packageified.Exclude(tx);
             } else if (single_res.m_state.GetResult() != TxValidationResult::TX_MEMPOOL_POLICY &&
                        single_res.m_state.GetResult() != TxValidationResult::TX_MISSING_INPUTS) {
                 // Package validation policy only differs from individual policy in its evaluation
@@ -1434,6 +1451,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
                 quit_early = true;
                 package_state_quit_early.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
                 individual_results_nonfinal.emplace(wtxid, single_res);
+                packageified.Ban(tx);
             } else {
                 individual_results_nonfinal.emplace(wtxid, single_res);
                 txns_package_eval.push_back(tx);
@@ -1442,8 +1460,10 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     }
 
     // Quit early because package validation won't change the result or the entire package has
-    // already been submitted.
-    if (quit_early || txns_package_eval.empty()) {
+    // already been submitted. Since this is an ancestor package, if the child is in, that means all
+    // the other transactions in the package are as well. We check for the child by txid because
+    // same-txid-different-witness is an acceptable case for deduplication in the loop above.
+    if (quit_early || m_pool.exists(GenTxid::Txid(child->GetHash()))) {
         for (const auto& [wtxid, mempoolaccept_res] : individual_results_nonfinal) {
             Assume(results_final.emplace(wtxid, mempoolaccept_res).second);
             Assume(mempoolaccept_res.m_result_type == MempoolAcceptResult::ResultType::INVALID);

@@ -271,6 +271,8 @@ BOOST_FIXTURE_TEST_CASE(noncontextual_package_tests, TestChain100Setup)
 
 BOOST_FIXTURE_TEST_CASE(package_submission_tests, TestChain100Setup)
 {
+    // Make coinbases 0 and 1 mature/spendable.
+    mineBlocks(1);
     LOCK(cs_main);
     unsigned int expected_pool_size = m_node.mempool->size();
     CKey parent_key;
@@ -357,6 +359,55 @@ BOOST_FIXTURE_TEST_CASE(package_submission_tests, TestChain100Setup)
         BOOST_CHECK_EQUAL(it_parent->second.m_state.GetRejectReason(), "bad-witness-nonstandard");
         BOOST_CHECK_EQUAL(it_child->second.m_state.GetResult(), TxValidationResult::TX_MISSING_INPUTS);
         BOOST_CHECK_EQUAL(it_child->second.m_state.GetRejectReason(), "bad-txns-inputs-missingorspent");
+    }
+
+    // Check that validation isn't quitting *too* early.
+    // This package has a child with 2 parents. Parent1 has a consensus issue, while Parent2 is
+    // valid and has a high feerate (can be accepted by itself). Parent1 and the child would be
+    // rejected, and Parent2 should be accepted. Otherwise, anybody could censor a transaction like
+    // Parent2 by broadcasting it in a package similar to this one.
+    {
+        // premature coinbase spend (consensus error)
+        auto tx_parent1_bad{MakeTransactionRef(CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[99],
+                                                                             /*input_vout=*/0,
+                                                                             /*input_height=*/102,
+                                                                             /*input_signing_key=*/coinbaseKey,
+                                                                             /*output_destination=*/parent_locking_script,
+                                                                             /*output_amount=*/ 24 * COIN,
+                                                                             /*submit=*/false))};
+        auto tx_parent2_good{MakeTransactionRef(CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[1],
+                                                                             /*input_vout=*/0,
+                                                                             /*input_height=*/102,
+                                                                             /*input_signing_key=*/coinbaseKey,
+                                                                             /*output_destination=*/parent_locking_script,
+                                                                             /*output_amount=*/ 24 * COIN,
+                                                                             /*submit=*/false))};
+        auto tx_child_quit_early{MakeTransactionRef(CreateValidMempoolTransaction(/*input_transactions=*/{tx_parent1_bad, tx_parent2_good},
+                                                                                  /*inputs=*/{COutPoint{tx_parent1_bad->GetHash(), 0},
+                                                                                              COutPoint{tx_parent2_good->GetHash(), 0}},
+                                                                                  /*input_height=*/102,
+                                                                                  /*input_signing_keys=*/{parent_key},
+                                                                                  /*outputs=*/{CTxOut{23*COIN, child_locking_script}},
+                                                                                  /*submit=*/false))};
+        Package package_quit_too_early{tx_parent1_bad, tx_parent2_good, tx_child_quit_early};
+        auto result_quit_too_early = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
+                                                       package_quit_too_early, /*test_accept=*/ false);
+        expected_pool_size += 1;
+        BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
+        BOOST_CHECK(result_quit_too_early.m_state.IsInvalid());
+        BOOST_CHECK_EQUAL(result_quit_too_early.m_state.GetResult(), PackageValidationResult::PCKG_TX);
+        BOOST_CHECK_EQUAL(result_quit_too_early.m_tx_results.size(), 3);
+        BOOST_CHECK(m_node.mempool->exists(GenTxid::Txid(tx_parent2_good->GetHash())));
+        BOOST_CHECK(!m_node.mempool->exists(GenTxid::Txid(tx_parent1_bad->GetHash())));
+        BOOST_CHECK(!m_node.mempool->exists(GenTxid::Txid(tx_child_quit_early->GetHash())));
+        auto it_parent1 = result_quit_too_early.m_tx_results.find(tx_parent1_bad->GetWitnessHash());
+        auto it_parent2 = result_quit_too_early.m_tx_results.find(tx_parent2_good->GetWitnessHash());
+        auto it_child = result_quit_too_early.m_tx_results.find(tx_child_quit_early->GetWitnessHash());
+        BOOST_CHECK(it_parent1->second.m_state.IsInvalid());
+        BOOST_CHECK_EQUAL(it_parent1->second.m_state.GetResult(), TxValidationResult::TX_PREMATURE_SPEND);
+        BOOST_CHECK_MESSAGE(it_parent2->second.m_state.IsValid(), "parent2 error: " << it_parent2->second.m_state.GetRejectReason());
+        BOOST_CHECK(it_child->second.m_state.IsInvalid());
+        BOOST_CHECK_EQUAL(it_child->second.m_state.GetResult(), TxValidationResult::TX_MISSING_INPUTS);
     }
 
     // Child with missing parent.
