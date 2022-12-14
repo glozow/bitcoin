@@ -1410,6 +1410,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
         }
         return PackageMempoolAcceptResult(package_state_wrapped, {{tx->GetWitnessHash(), single_res}});
     };
+    Packageifier packageified(package);
     // Results from individual validation. "Nonfinal" because if a transaction fails by itself but
     // succeeds later (i.e. when evaluated with a fee-bumping child), the result changes (though not
     // reflected in this map). If a transaction fails more than once, we want to return the first
@@ -1417,7 +1418,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     std::map<uint256, MempoolAcceptResult> individual_results_nonfinal;
     bool quit_early{false};
     std::vector<CTransactionRef> txns_package_eval;
-    for (const auto& tx : package) {
+    for (const auto& tx : packageified.Txns()) {
         const auto& wtxid = tx->GetWitnessHash();
         const auto& txid = tx->GetHash();
         // There are 3 possibilities: already in mempool, same-txid-diff-wtxid already in mempool,
@@ -1428,6 +1429,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             auto iter = m_pool.GetIter(txid);
             assert(iter != std::nullopt);
             results_final.emplace(wtxid, MempoolAcceptResult::MempoolTx(iter.value()->GetTxSize(), iter.value()->GetFee()));
+            packageified.Exclude(tx);
         } else if (m_pool.exists(GenTxid::Txid(txid))) {
             // Transaction with the same non-witness data but different witness (same txid,
             // different wtxid) already exists in the mempool.
@@ -1440,8 +1442,23 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             assert(iter != std::nullopt);
             // Provide the wtxid of the mempool tx so that the caller can look it up in the mempool.
             results_final.emplace(wtxid, MempoolAcceptResult::MempoolTxDifferentWitness(iter.value()->GetTx().GetWitnessHash()));
+            packageified.Exclude(tx);
         } else {
             // Transaction does not already exist in the mempool.
+            const auto subpackage = packageified.GetAncestorSet(tx);
+            if (!subpackage) {
+                Assume(quit_early);
+                // This transaction depends on a tx we will definitely not accept (failed for a
+                // non-policy and non-missing-inputs reason). We already know that this transaction
+                // will be invalid for at least one reason, i.e. a missing input. To minimize the
+                // amount of repeated work, don't validate this tx. Just return missing inputs.
+                TxValidationState tx_state_quit_early;
+                tx_state_quit_early.Invalid(TxValidationResult::TX_MISSING_INPUTS, "bad-txns-inputs-missingorspent");
+                individual_results_nonfinal.emplace(wtxid, MempoolAcceptResult::Failure(tx_state_quit_early));
+                // Don't quit too early. Other transactions may not necessarily depend on the same
+                // parent, and should still be considered.
+                continue;
+            }
             // Try submitting the transaction on its own.
             const auto single_res = AcceptSingleTransaction(tx, single_args);
             if (single_res.m_result_type == MempoolAcceptResult::ResultType::VALID) {
@@ -1449,20 +1466,18 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
                 // in package validation, because its fees should only be "used" once.
                 assert(m_pool.exists(GenTxid::Wtxid(wtxid)));
                 results_final.emplace(wtxid, single_res);
+                packageified.Exclude(tx);
             } else if (single_res.m_state.GetResult() != TxValidationResult::TX_MEMPOOL_POLICY &&
                        single_res.m_state.GetResult() != TxValidationResult::TX_MISSING_INPUTS) {
                 // Package validation policy only differs from individual policy in its evaluation
                 // of feerate. For example, if a transaction fails here due to violation of a
                 // consensus rule, the result will not change when it is submitted as part of a
-                // package. To minimize the amount of repeated work, unless the transaction fails
-                // due to feerate or missing inputs (its parent is a previous transaction in the
-                // package that failed due to feerate), don't run package validation. Note that this
-                // decision might not make sense if different types of packages are allowed in the
-                // future.  Continue individually validating the rest of the transactions, because
-                // some of them may still be valid.
+                // package. Tell the Packageifier that subsequent transactions depending on this one
+                // should be skipped.
                 quit_early = true;
                 package_state_quit_early.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
                 individual_results_nonfinal.emplace(wtxid, single_res);
+                packageified.Ban(tx);
             } else {
                 individual_results_nonfinal.emplace(wtxid, single_res);
                 txns_package_eval.push_back(tx);
@@ -1472,6 +1487,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
 
     // Quit early because package validation won't change the result or the entire package has
     // already been submitted.
+    // If txns_package_eval is empty, all transactions have already passed.
     if (quit_early || txns_package_eval.empty()) {
         for (const auto& [wtxid, mempoolaccept_res] : individual_results_nonfinal) {
             Assume(results_final.emplace(wtxid, mempoolaccept_res).second);
