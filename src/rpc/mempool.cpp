@@ -127,6 +127,9 @@ static RPCHelpMan testmempoolaccept()
                     {
                         {RPCResult::Type::STR_AMOUNT, "base", "transaction fee in " + CURRENCY_UNIT},
                         {RPCResult::Type::STR_AMOUNT, "effective-feerate", /*optional=*/true, "if something other than base feerate was used, the effective feerate in " + CURRENCY_UNIT + " per KvB. For example, the package feerate and/or feerate with modified fees from prioritisetransaction."},
+                        {RPCResult::Type::ARR, "effective-includes", /*optional=*/true, "transactions whose fees and vsizes are included in effective-feerate.",
+                            {RPCResult{RPCResult::Type::STR_HEX, "", "transaction wtxid in hex"},
+                        }},
                     }},
                     {RPCResult::Type::STR, "reject-reason", /*optional=*/true, "Rejection string (only present when 'allowed' is false)"},
                 }},
@@ -220,6 +223,11 @@ static RPCHelpMan testmempoolaccept()
                         fees.pushKV("base", ValueFromAmount(fee));
                         if (fee != tx_result.m_effective_feerate.value().GetFee(virtual_size)) {
                             fees.pushKV("effective-feerate", ValueFromAmount(tx_result.m_effective_feerate.value().GetFeePerK()));
+                            UniValue effective_includes_res(UniValue::VARR);
+                            for (const auto& wtxid : tx_result.m_wtxids_fee_calculations.value()) {
+                                effective_includes_res.push_back(wtxid.ToString());
+                            }
+                            fees.pushKV("effective-includes", effective_includes_res);
                         }
                         result_inner.pushKV("fees", fees);
                     }
@@ -773,6 +781,9 @@ static RPCHelpMan submitpackage()
                         {RPCResult::Type::OBJ, "fees", "Transaction fees", {
                             {RPCResult::Type::STR_AMOUNT, "base", "transaction fee in " + CURRENCY_UNIT},
                             {RPCResult::Type::STR_AMOUNT, "effective-feerate", /*optional=*/true, "if something other than base feerate was used, the effective feerate in " + CURRENCY_UNIT + " per KvB. For example, the package feerate and/or feerate with modified fees from prioritisetransaction."},
+                            {RPCResult::Type::ARR, "effective-includes", /*optional=*/true, "transactions whose fees and vsizes are included in effective-feerate.",
+                                {{RPCResult::Type::STR_HEX, "", "transaction wtxid in hex"},
+                            }},
                         }},
                     }}
                 }},
@@ -873,6 +884,11 @@ static RPCHelpMan submitpackage()
                     if (tx_result.m_result_type == MempoolAcceptResult::ResultType::VALID &&
                         tx_result.m_effective_feerate.value().GetFee(tx_result.m_vsize.value()) != tx_result.m_base_fees.value()) {
                         fees.pushKV("effective-feerate", ValueFromAmount(tx_result.m_effective_feerate.value().GetFeePerK()));
+                        UniValue effective_includes_res(UniValue::VARR);
+                        for (const auto& wtxid : tx_result.m_wtxids_fee_calculations.value()) {
+                            effective_includes_res.push_back(wtxid.ToString());
+                        }
+                        fees.pushKV("effective-includes", effective_includes_res);
                     }
                     result_inner.pushKV("fees", fees);
                     if (it->second.m_replaced_transactions.has_value()) {
