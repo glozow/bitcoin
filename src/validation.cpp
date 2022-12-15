@@ -1360,6 +1360,22 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     // the new transactions. This ensures we don't double-count transaction counts and sizes when
     // checking ancestor/descendant limits, or double-count transaction fees for fee-related policy.
     ATMPArgs single_args = ATMPArgs::SingleInPackageAccept(args);
+    const auto AcceptPackageWrappingSingle = [&](const std::vector<CTransactionRef>& subpackage)
+        EXCLUSIVE_LOCKS_REQUIRED(::cs_main, m_pool.cs) {
+        AssertLockHeld(::cs_main);
+        AssertLockHeld(m_pool.cs);
+        if (subpackage.size() > 1) {
+            return AcceptMultipleTransactions(subpackage, args);
+        }
+        const auto tx = subpackage.front();
+        const auto single_res = AcceptSingleTransaction(tx, single_args);
+        if (single_res.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+            return PackageMempoolAcceptResult(tx->GetWitnessHash(), single_res);
+        }
+        PackageValidationState package_state_wrapped;
+        package_state_wrapped.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
+        return PackageMempoolAcceptResult(package_state_wrapped, {{tx->GetWitnessHash(), single_res}});
+    };
     // Results from individual validation. "Nonfinal" because if a transaction fails by itself but
     // succeeds later (i.e. when evaluated with a fee-bumping child), the result changes (though not
     // reflected in this map). If a transaction fails more than once, we want to return the first
@@ -1431,15 +1447,16 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     }
     // Validate the (deduplicated) transactions as a package. Note that submission_result has its
     // own PackageValidationState; package_state_quit_early is unused past this point.
-    auto submission_result = AcceptMultipleTransactions(txns_package_eval, args);
+    auto submission_result = AcceptPackageWrappingSingle(txns_package_eval);
     // Include already-in-mempool transaction results in the final result.
     for (const auto& [wtxid, mempoolaccept_res] : results_final) {
         Assume(submission_result.m_tx_results.emplace(wtxid, mempoolaccept_res).second);
-        Assume(mempoolaccept_res.m_result_type != MempoolAcceptResult::ResultType::INVALID);
+        Assume(mempoolaccept_res.m_result_type != MempoolAcceptResult::ResultType::INVALID ||
+               mempoolaccept_res.m_state.GetResult() == TxValidationResult::TX_MISSING_INPUTS);
     }
     if (submission_result.m_state.GetResult() == PackageValidationResult::PCKG_TX) {
         // Package validation failed because one or more transactions failed. Provide a result for
-        // each transaction; if AcceptMultipleTransactions() didn't return a result for a tx,
+        // each transaction; if a transaction doesn't have an entry in submission_result,
         // include the previous individual failure reason.
         submission_result.m_tx_results.insert(individual_results_nonfinal.cbegin(),
                                               individual_results_nonfinal.cend());
