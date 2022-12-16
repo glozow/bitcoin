@@ -1432,6 +1432,12 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             // Provide the wtxid of the mempool tx so that the caller can look it up in the mempool.
             results_final.emplace(wtxid, MempoolAcceptResult::MempoolTxDifferentWitness(iter.value()->GetTx().GetWitnessHash()));
         } else {
+            if (wtxid == child->GetWitnessHash() && !quit_early) {
+                Assume(tx == package.back());
+                txns_package_eval.push_back(tx);
+                // Unless we're quitting early, validate the child outside of this loop.
+                break;
+            }
             // Transaction does not already exist in the mempool.
             // Try submitting the transaction on its own.
             const auto single_res = AcceptSingleTransaction(tx, single_args);
