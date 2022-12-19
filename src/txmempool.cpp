@@ -247,6 +247,12 @@ bool CTxMemPool::CalculateMemPoolAncestors(const CTxMemPoolEntry &entry,
                 }
             }
         }
+        // If we're asked to search for parents and the entry already exists in mempool, it is
+        // assumed this is a request to simply calculate the ancestors and not enforce descendant
+        // limits, otherwise we can have an off-by-one error.
+        if (exists(GenTxid::Wtxid(entry.GetTx().GetWitnessHash()))) {
+            assert(limits.descendant_count == Limits::NoLimits().descendant_count);
+        }
     } else {
         // If we're not searching for parents, we require this to already be an
         // entry in the mempool and use the entry's cached parents.
