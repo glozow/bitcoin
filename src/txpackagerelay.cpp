@@ -140,6 +140,10 @@ public:
             orphan_request_tracker.ReceivedInv(nodeid, GenTxid::Txid(wtxid), is_preferred, delay);
         }
     }
+    size_t CountOrphans(NodeId nodeid) const
+    {
+        return orphan_request_tracker.Count(nodeid);
+    }
 
     std::vector<GenTxid> GetOrphanRequests(NodeId nodeid)
     {
@@ -224,7 +228,10 @@ void TxPackageTracker::AddOrphanTx(NodeId nodeid, const uint256& wtxid, bool is_
 {
     m_impl->AddOrphanTx(nodeid, wtxid, is_preferred, expiry);
 }
-
+size_t TxPackageTracker::CountOrphans(NodeId nodeid) const
+{
+    return m_impl->CountOrphans(nodeid);
+}
 std::vector<GenTxid> TxPackageTracker::GetOrphanRequests(NodeId nodeid) const
 {
     return m_impl->GetOrphanRequests(nodeid);
