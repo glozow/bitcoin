@@ -46,6 +46,9 @@ public:
     // Received an orphan. Should request ancpkginfo. Call this for any peer, even if not registered.
     void AddOrphanTx(NodeId nodeid, const uint256& wtxid, bool is_preferred, std::chrono::microseconds expiry);
 
+    // Number of orphans we are considering for this peer.
+    size_t CountOrphans(NodeId nodeid) const;
+
     // Get list of requests that should be sent to resolve orphans. These may be wtxids to send
     // getdata(ANCPKGINFO) or txids corresponding to parents. Automatically marks the orphans as
     // having outgoing requests.

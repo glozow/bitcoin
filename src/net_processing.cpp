@@ -1443,8 +1443,8 @@ void PeerManagerImpl::AddOrphanResolutionCandidate(NodeId nodeid, const uint256&
 {
     AssertLockHeld(::cs_main); // For m_txrequest
     const bool relay_permissions = m_connman.ForNode(nodeid, [](CNode* node) { return node->HasPermission(NetPermissionFlags::Relay); });
-    if (!relay_permissions && m_txrequest.Count(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) {
-        // Too many queued announcements from this peer
+    if (!relay_permissions && m_txpackagetracker->CountOrphans(nodeid) >= DEFAULT_MAX_ORPHAN_TRANSACTIONS) {
+        // Too many queued orphans for this peer
         return;
     }
     // FIXME: add orphan quota
