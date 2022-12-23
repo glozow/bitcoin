@@ -124,8 +124,8 @@ static RPCHelpMan testmempoolaccept()
                     {RPCResult::Type::OBJ, "fees", /*optional=*/true, "Transaction fees (only present if 'allowed' is true)",
                     {
                         {RPCResult::Type::STR_AMOUNT, "base", "transaction fee in " + CURRENCY_UNIT},
-                        {RPCResult::Type::STR_AMOUNT, "effective-feerate", /*optional=*/true, "if something other than base feerate was used, the effective feerate in " + CURRENCY_UNIT + " per KvB. For example, the package feerate and/or feerate with modified fees from prioritisetransaction."},
-                        {RPCResult::Type::ARR, "effective-includes", /*optional=*/true, "transactions whose fees and vsizes are included in effective-feerate.",
+                        {RPCResult::Type::STR_AMOUNT, "effective-feerate", true, "if something other than base feerate was used, the effective feerate in " + CURRENCY_UNIT + " per KvB. For example, the package feerate and/or feerate with modified fees from prioritisetransaction."},
+                        {RPCResult::Type::ARR, "effective-includes", true, "transactions whose fees and vsizes are included in effective-feerate.",
                             {RPCResult{RPCResult::Type::STR_HEX, "", "transaction wtxid in hex"},
                         }},
                     }},
@@ -780,8 +780,8 @@ static RPCHelpMan submitpackage()
                         {RPCResult::Type::NUM, "vsize", "Virtual transaction size as defined in BIP 141."},
                         {RPCResult::Type::OBJ, "fees", "Transaction fees", {
                             {RPCResult::Type::STR_AMOUNT, "base", "transaction fee in " + CURRENCY_UNIT},
-                            {RPCResult::Type::STR_AMOUNT, "effective-feerate", /*optional=*/true, "if something other than base feerate was used, the effective feerate in " + CURRENCY_UNIT + " per KvB. For example, the package feerate and/or feerate with modified fees from prioritisetransaction."},
-                            {RPCResult::Type::ARR, "effective-includes", /*optional=*/true, "transactions whose fees and vsizes are included in effective-feerate.",
+                            {RPCResult::Type::STR_AMOUNT, "effective-feerate", true, "if something other than base feerate was used, the effective feerate in " + CURRENCY_UNIT + " per KvB. For example, the package feerate and/or feerate with modified fees from prioritisetransaction."},
+                            {RPCResult::Type::ARR, "effective-includes", true, "transactions whose fees and vsizes are included in effective-feerate.",
                                 {{RPCResult::Type::STR_HEX, "", "transaction wtxid in hex"},
                             }},
                         }},
