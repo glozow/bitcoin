@@ -81,16 +81,18 @@ int TxOrphanage::_EraseTx(const uint256& txid)
             m_outpoint_to_orphan_it.erase(itPrev);
     }
 
-    size_t old_pos = it->second.list_pos;
-    assert(m_orphan_list[old_pos] == it);
-    if (old_pos + 1 != m_orphan_list.size()) {
-        // Unless we're deleting the last entry in m_orphan_list, move the last
-        // entry to the position we're deleting.
-        auto it_last = m_orphan_list.back();
-        m_orphan_list[old_pos] = it_last;
-        it_last->second.list_pos = old_pos;
+    if (it->second.list_pos.has_value()) {
+        size_t old_pos = it->second.list_pos.value();
+        assert(m_orphan_list[old_pos] == it);
+        if (old_pos + 1 != m_orphan_list.size()) {
+            // Unless we're deleting the last entry in m_orphan_list, move the last
+            // entry to the position we're deleting.
+            auto it_last = m_orphan_list.back();
+            m_orphan_list[old_pos] = it_last;
+            it_last->second.list_pos = old_pos;
+        }
+        m_orphan_list.pop_back();
     }
-    m_orphan_list.pop_back();
     m_wtxid_to_orphan_it.erase(it->second.tx->GetWitnessHash());
 
     m_orphans.erase(it);
@@ -142,7 +144,7 @@ void TxOrphanage::LimitOrphans(unsigned int max_orphans)
         if (nErased > 0) LogPrint(BCLog::MEMPOOL, "Erased %d orphan tx due to expiration\n", nErased);
     }
     FastRandomContext rng;
-    while (m_orphans.size() > max_orphans)
+    while (m_orphan_list.size() > max_orphans)
     {
         // Evict a random orphan:
         size_t randompos = rng.randrange(m_orphan_list.size());
@@ -231,4 +233,26 @@ void TxOrphanage::EraseForBlock(const CBlock& block)
         }
         LogPrint(BCLog::MEMPOOL, "Erased %d orphan tx included or conflicted by block\n", nErased);
     }
+}
+
+void TxOrphanage::ProtectOrphan(const uint256& wtxid)
+{
+    LOCK(m_mutex);
+    const auto it = m_wtxid_to_orphan_it.find(wtxid);
+    if (it == m_wtxid_to_orphan_it.end()) return;
+    // Already protected, nothing to do
+    if (!it->second->second.list_pos.has_value()) return;
+
+    auto old_pos = it->second->second.list_pos.value();
+    assert(m_orphan_list[old_pos] == it->second);
+    if (old_pos + 1 != m_orphan_list.size()) {
+        // Unless we're deleting the last entry in m_orphan_list, move the last
+        // entry to the position we're deleting.
+        auto it_last = m_orphan_list.back();
+        m_orphan_list[old_pos] = it_last;
+        it_last->second.list_pos = old_pos;
+    }
+    m_orphan_list.pop_back();
+    // Set list_pos to -1 to indicate this orphan is protected.
+    it->second->second.list_pos = std::nullopt;
 }
