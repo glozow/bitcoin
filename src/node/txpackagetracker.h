@@ -6,6 +6,7 @@
 #define BITCOIN_NODE_TXPACKAGETRACKER_H
 
 #include <net.h>
+#include <policy/packages.h>
 
 #include <cstdint>
 #include <map>
@@ -96,6 +97,12 @@ public:
 
     /** Record receipt of a notfound message for pkginfo. */
     void ForgetPkgInfo(NodeId nodeid, const uint256& rep_wtxid, uint32_t pkginfo_version);
+
+    /** Record receipt of an ancpkginfo, which transactions are missing (and requested),
+     * and when to expire it. */
+    bool ReceivedAncPkgInfo(NodeId nodeid, const uint256& rep_wtxid, const std::map<uint256, bool>& txdata_status,
+                            const std::vector<uint256>& missing_wtxids, int64_t total_orphan_size,
+                            std::chrono::microseconds expiry);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXPACKAGETRACKER_H
