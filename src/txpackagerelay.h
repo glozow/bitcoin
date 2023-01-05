@@ -61,11 +61,24 @@ public:
      * */
     void FinalizeTransactions(const std::set<uint256>& valid, const std::set<uint256>& invalid);
 
+    enum class TxDataStatus : uint8_t {
+        /** We still need the tx data and may or may not have requested it. */
+        MISSING,
+        /** We have the tx data in our orphanage. */
+        ORPHANAGE,
+        /** We already have the tx data in mempool or confirmed. */
+        ACCEPTED,
+    };
     /** Whether a package info message is allowed:
      * - We agreed to relay packages of this version with this peer.
      * - We solicited this package info.
      * Returns false if the peer should be disconnected. */
     bool PkgInfoAllowed(NodeId nodeid, const uint256& wtxid, uint32_t version);
+    /** Record receipt of an ancpkginfo, which transactions are missing (and requested),
+     * and when to expire it. */
+    bool ReceivedAncPkgInfo(NodeId nodeid, const uint256& rep_wtxid, const std::map<uint256,
+                            TxDataStatus>& txdata_status, int64_t total_orphan_size,
+                            std::chrono::microseconds expiry);
 };
 
 #endif // BITCOIN_TX_PKG_RELAY_H
