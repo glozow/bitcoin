@@ -65,7 +65,7 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer, const std::vecto
         return false;
     }
 
-    auto ret = m_orphans.emplace(wtxid, OrphanTx{tx, {peer}, Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME, m_orphan_list.size(), parent_txids});
+    auto ret = m_orphans.emplace(wtxid, OrphanTx{tx, {peer}, {}, Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME, static_cast<int32_t>(m_orphan_list.size()), parent_txids});
     assert(ret.second);
     m_orphan_list.push_back(ret.first);
     for (const CTxIn& txin : tx->vin) {
@@ -121,21 +121,25 @@ int TxOrphanage::EraseTx(const Wtxid& wtxid)
             m_outpoint_to_orphan_it.erase(itPrev);
     }
 
-    size_t old_pos = it->second.list_pos;
-    assert(m_orphan_list[old_pos] == it);
-    if (old_pos + 1 != m_orphan_list.size()) {
-        // Unless we're deleting the last entry in m_orphan_list, move the last
-        // entry to the position we're deleting.
-        auto it_last = m_orphan_list.back();
-        m_orphan_list[old_pos] = it_last;
-        it_last->second.list_pos = old_pos;
+    if (it->second.IsProtected()) {
+        m_total_protected_orphan_bytes -= it->second.tx->GetTotalSize();
+    } else {
+        size_t old_pos = it->second.list_pos;
+        assert(m_orphan_list[old_pos] == it);
+        if (old_pos + 1 != m_orphan_list.size()) {
+            // Unless we're deleting the last entry in m_orphan_list, move the last
+            // entry to the position we're deleting.
+            auto it_last = m_orphan_list.back();
+            m_orphan_list[old_pos] = it_last;
+            it_last->second.list_pos = old_pos;
+        }
+        m_orphan_list.pop_back();
     }
     const auto& txid = it->second.tx->GetHash();
     // Time spent in orphanage = difference between current and entry time.
     // Entry time is equal to ORPHAN_TX_EXPIRE_TIME earlier than entry's expiry.
     LogPrint(BCLog::TXPACKAGES, "   removed orphan tx %s (wtxid=%s) after %ds\n", txid.ToString(), wtxid.ToString(),
              Ticks<std::chrono::seconds>(NodeClock::now() + ORPHAN_TX_EXPIRE_TIME - it->second.nTimeExpire));
-    m_orphan_list.pop_back();
 
     m_orphans.erase(it);
     return 1;
@@ -156,6 +160,7 @@ void TxOrphanage::EraseForPeer(NodeId peer)
                 nErased += EraseTx(orphan.tx->GetWitnessHash());
             } else {
                 // Don't erase this orphan. Another peer has also announced it, so it may still be useful.
+                UndoProtectOrphan(wtxid, peer);
                 orphan.announcers.erase(peer);
                 SubtractOrphanBytes(orphan.tx->GetTotalSize(), peer);
             }
@@ -192,7 +197,10 @@ std::vector<Wtxid> TxOrphanage::LimitOrphans(unsigned int max_orphans, FastRando
         m_next_sweep = nMinExpTime + ORPHAN_TX_EXPIRE_INTERVAL;
         if (!erased_and_evicted.empty()) LogPrint(BCLog::TXPACKAGES, "Erased %d orphan tx due to expiration\n", erased_and_evicted.size());
     }
-    while (m_orphans.size() > max_orphans)
+
+    // Only consider the non-protected orphans for eviction. This means that m_orphans.size() may
+    // still be larger than max_orphans after evictions.
+    while (m_orphan_list.size() > max_orphans)
     {
         // Evict a random orphan:
         size_t randompos = rng.randrange(m_orphan_list.size());
@@ -362,8 +370,77 @@ void TxOrphanage::EraseOrphanOfPeer(const Wtxid& wtxid, NodeId peer)
             EraseTx(wtxid);
         } else {
             // Don't erase this orphan. Another peer has also announced it, so it may still be useful.
+            UndoProtectOrphan(wtxid, peer);
             it->second.announcers.erase(peer);
             SubtractOrphanBytes(it->second.tx->GetTotalSize(), peer);
         }
     }
+}
+
+std::optional<unsigned int> TxOrphanage::ProtectOrphan(const Wtxid& wtxid, NodeId peer, unsigned int max_size)
+{
+    const auto it = m_orphans.find(wtxid);
+    if (it == m_orphans.end()) return std::nullopt;
+
+    // Tx is larger than max_size, don't protect.
+    if (it->second.tx->GetTotalSize() > max_size) return std::nullopt;
+
+    // Already protected by this peer.
+    if (it->second.protectors.contains(peer)) return std::nullopt;
+
+    // Can't protect a peer you didn't announce.
+    if (!it->second.announcers.contains(peer)) return std::nullopt;
+
+    // Already protected, increase its protection
+    if (it->second.IsProtected()) {
+        it->second.protectors.insert(peer);
+        return it->second.tx->GetTotalSize();
+    }
+
+    it->second.protectors.insert(peer);
+    auto old_pos = it->second.list_pos;
+    assert(m_orphan_list.at(old_pos) == it);
+    if (old_pos + 1 != static_cast<int32_t>(m_orphan_list.size())) {
+        // Unless we're deleting the last entry in m_orphan_list, move the last
+        // entry to the position we're deleting.
+        auto it_last = m_orphan_list.back();
+        m_orphan_list[old_pos] = it_last;
+        it_last->second.list_pos = old_pos;
+    }
+    m_orphan_list.pop_back();
+    // Set list_pos to -1 to indicate this orphan is protected.
+    it->second.list_pos = -1;
+    return it->second.tx->GetTotalSize();
+}
+
+void TxOrphanage::UndoProtectOrphan(const Wtxid& wtxid, NodeId peer)
+{
+    auto it = m_orphans.find(wtxid);
+    if (it == m_orphans.end()) return;
+    // Already not protected, nothing to do
+    if (!it->second.IsProtected()) {
+        return;
+    }
+
+    it->second.protectors.erase(peer);
+
+    // Wasn't protected by this peer or protected by more than one peer.
+    if (!it->second.protectors.empty()) return;
+
+    // Going from protected to unprotected. Add to the end or m_orphan_list.
+    it->second.list_pos = static_cast<int32_t>(m_orphan_list.size());
+    m_orphan_list.push_back(it);
+    m_total_protected_orphan_bytes -= it->second.tx->GetTotalSize();
+}
+
+std::optional<std::pair<unsigned int, std::vector<NodeId>>> TxOrphanage::GetProtectors(const Wtxid& wtxid) const
+{
+    auto it = m_orphans.find(wtxid);
+    if (it == m_orphans.end()) return std::nullopt;
+    if (!it->second.IsProtected()) {
+        return std::nullopt;
+    }
+
+    return std::make_pair(it->second.tx->GetTotalSize(),
+                          std::vector<NodeId>(it->second.protectors.cbegin(), it->second.protectors.cend()));
 }

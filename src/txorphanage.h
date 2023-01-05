@@ -61,7 +61,11 @@ public:
     /** Erase all orphans included in or invalidated by a new block */
     std::vector<Wtxid> EraseForBlock(const CBlock& block);
 
-    /** Limit the orphanage to the given maximum */
+    /** Limit the orphanage to the given maximum. Delete orphans whose expiry has been reached.
+     * The maximum does not apply to protected transactions, i.e., LimitOrphans(100) ensures
+     * that Size() <= 100. However, the total number of transactions including protected ones may
+     * exceed 100. It is the caller's responsibility to ensure that not too many orphans are protected.
+     */
     std::vector<Wtxid> LimitOrphans(unsigned int max_orphans, FastRandomContext& rng);
 
     /** Add any orphans that list a particular tx as a parent into the from peer's work set */
@@ -77,11 +81,25 @@ public:
     /** Erase this peer as an announcer of this orphan. If there are no more announcers, delete the orphan. */
     void EraseOrphanOfPeer(const Wtxid& wtxid, NodeId peer);
 
-    /** Return how many entries exist in the orphange */
+    /** Return how many unprotected entries exist in the orphange. */
     size_t Size() const
     {
-        return m_orphans.size();
+        return m_orphan_list.size();
     }
+
+    /** Protect an orphan from eviction from the orphanage getting full. The orphan may still be
+     * removed for other reasons - expiry, EraseTx, EraseForBlock, EraseForPeer will still remove
+     * an orphan even if it is protected.
+     */
+    std::optional<unsigned int> ProtectOrphan(const Wtxid& wtxid, NodeId peer, unsigned int max_size);
+
+    /** Remove protection by this peer for this orphan, if it exists. The orphan may still be
+     * protected afterward if a different peer has also protected it. */
+    void UndoProtectOrphan(const Wtxid& wtxid, NodeId peer);
+
+    /** If this orphan exists and is protected, return the orphan size and a vector of its
+     * protectors. Otherwise, returns std::nullopt. */
+    std::optional<std::pair<unsigned int, std::vector<NodeId>>> GetProtectors(const Wtxid& wtxid) const;
 
     /** Get an orphan's parent_txids, or std::nullopt if the orphan is not present. */
     std::optional<std::vector<Txid>> GetParentTxids(const Wtxid& wtxid);
@@ -104,10 +122,21 @@ protected:
         CTransactionRef tx;
         /** Peers added with AddTx or AddAnnouncer. */
         std::set<NodeId> announcers;
+        /** Peers that have protected this orphan */
+        std::set<NodeId> protectors;
         NodeSeconds nTimeExpire;
-        size_t list_pos;
+        /** If >= 0: position in m_orphan_list.
+         *  If < 0: not in m_orphan_list because this orphan is protected. */
+        int32_t list_pos;
         /** Txids of the missing parents to request. Determined by peerman. */
         std::vector<Txid> parent_txids;
+
+        /** Whether this orphan is protected. */
+        bool IsProtected() const {
+            Assume(protectors.size() <= announcers.size());
+            Assume((list_pos >= 0) == protectors.empty());
+            return !protectors.empty();
+        }
     };
 
     /** Map from wtxid to orphan transaction record. Limited by
@@ -140,6 +169,9 @@ protected:
 
     /** Total bytes of all transactions. */
     unsigned int m_total_orphan_bytes{0};
+
+    /** Total bytes of all protected orphans. */
+    size_t m_total_protected_orphan_bytes{0};
 
     /** Map from nodeid to the amount of orphans provided by this peer, in bytes.
      * The sum of all values in this map may exceed m_total_orphan_bytes, since multiple peers may
