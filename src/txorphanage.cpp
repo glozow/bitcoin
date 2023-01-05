@@ -47,7 +47,7 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer, const std::vecto
         return false;
     }
 
-    auto ret = m_orphans.emplace(wtxid, OrphanTx{tx, {peer}, Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME, m_orphan_list.size(), parent_txids});
+    auto ret = m_orphans.emplace(wtxid, OrphanTx{tx, {peer}, Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME, static_cast<int32_t>(m_orphan_list.size()), parent_txids});
     assert(ret.second);
     m_orphan_list.push_back(ret.first);
     for (const CTxIn& txin : tx->vin) {
@@ -88,21 +88,26 @@ int TxOrphanage::EraseTx(const Wtxid& wtxid)
             m_outpoint_to_orphan_it.erase(itPrev);
     }
 
-    size_t old_pos = it->second.list_pos;
-    assert(m_orphan_list[old_pos] == it);
-    if (old_pos + 1 != m_orphan_list.size()) {
-        // Unless we're deleting the last entry in m_orphan_list, move the last
-        // entry to the position we're deleting.
-        auto it_last = m_orphan_list.back();
-        m_orphan_list[old_pos] = it_last;
-        it_last->second.list_pos = old_pos;
+    if (!it->second.IsProtected()) {
+        size_t old_pos = it->second.list_pos;
+        assert(m_orphan_list[old_pos] == it);
+        if (old_pos + 1 != m_orphan_list.size()) {
+            // Unless we're deleting the last entry in m_orphan_list, move the last
+            // entry to the position we're deleting.
+            auto it_last = m_orphan_list.back();
+            m_orphan_list[old_pos] = it_last;
+            it_last->second.list_pos = old_pos;
+        }
+        m_orphan_list.pop_back();
+    } else {
+        // This orphan was protected.
+        m_total_protected_orphan_bytes -= it->second.tx->GetTotalSize();
     }
     const auto& txid = it->second.tx->GetHash();
     // Time spent in orphanage = difference between current and entry time.
     // Entry time is equal to ORPHAN_TX_EXPIRE_TIME earlier than entry's expiry.
     LogPrint(BCLog::TXPACKAGES, "   removed orphan tx %s (wtxid=%s) after %ds\n", txid.ToString(), wtxid.ToString(),
              Ticks<std::chrono::seconds>(NodeClock::now() + ORPHAN_TX_EXPIRE_TIME - it->second.nTimeExpire));
-    m_orphan_list.pop_back();
 
     m_orphans.erase(it);
     return 1;
@@ -154,7 +159,10 @@ std::vector<Wtxid> TxOrphanage::LimitOrphans(unsigned int max_orphans, FastRando
         m_next_sweep = nMinExpTime + ORPHAN_TX_EXPIRE_INTERVAL;
         if (!erased_and_evicted.empty()) LogPrint(BCLog::TXPACKAGES, "Erased %d orphan tx due to expiration\n", erased_and_evicted.size());
     }
-    while (m_orphans.size() > max_orphans)
+
+    // Only consider the non-protected orphans for eviction. This means that m_orphans.size() may
+    // still be larger than max_orphans after evictions.
+    while (m_orphan_list.size() > max_orphans)
     {
         // Evict a random orphan:
         size_t randompos = rng.randrange(m_orphan_list.size());
@@ -359,4 +367,52 @@ void TxOrphanage::EraseOrphanOfPeer(const Wtxid& wtxid, NodeId peer)
             it->second.announcers.erase(peer);
         }
     }
+}
+
+void TxOrphanage::ProtectOrphan(const Wtxid& wtxid)
+{
+    const auto it = m_orphans.find(wtxid);
+    if (it == m_orphans.end()) return;
+    // Already protected, increase its protection
+    if (it->second.IsProtected()) {
+        it->second.list_pos -= 1;
+        return;
+    }
+
+    auto old_pos = it->second.list_pos;
+    assert(m_orphan_list.at(old_pos) == it);
+    if (old_pos + 1 != static_cast<int32_t>(m_orphan_list.size())) {
+        // Unless we're deleting the last entry in m_orphan_list, move the last
+        // entry to the position we're deleting.
+        auto it_last = m_orphan_list.back();
+        m_orphan_list[old_pos] = it_last;
+        it_last->second.list_pos = old_pos;
+    }
+    m_orphan_list.pop_back();
+    // Set list_pos to -1 to indicate this orphan is protected.
+    it->second.list_pos = -1;
+}
+
+void TxOrphanage::UndoProtectOrphan(const Wtxid& wtxid)
+{
+    auto it = m_orphans.find(wtxid);
+    if (it == m_orphans.end()) return;
+    // Already not protected, nothing to do
+    if (!Assume(it->second.IsProtected())) {
+        return;
+    }
+    // Protected by more than one peer. Remove one of the protections.
+    if (it->second.list_pos < -1) {
+        it->second.list_pos += 1;
+        return;
+    }
+    // Going from protected to unprotected. Add to the end or m_orphan_list.
+    it->second.list_pos = static_cast<int32_t>(m_orphan_list.size());
+    m_orphan_list.push_back(it);
+    m_total_protected_orphan_bytes -= it->second.tx->GetTotalSize();
+}
+
+size_t TxOrphanage::NumProtected() const
+{
+    return m_orphans.size() - m_orphan_list.size();
 }

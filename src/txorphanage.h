@@ -53,7 +53,12 @@ public:
     /** Erase all orphans included in or invalidated by a new block */
     std::vector<Wtxid> EraseForBlock(const CBlock& block);
 
-    /** Limit the orphanage to the given maximum */
+    /** Limit the orphanage to the given maximum. Delete orphans whose expiry has been reached.
+     * The maximum does not apply to protected transactions, i.e., LimitOrphans(100) ensures
+     * that the number of non-protected orphan entries does not exceed 100. Afterward, Size() may
+     * return a number greater than 100.  It is the caller's responsibility to ensure that not too
+     * many orphans are protected.
+     */
     std::vector<Wtxid> LimitOrphans(unsigned int max_orphans, FastRandomContext& rng);
 
     /** Add any orphans that list a particular tx as a parent into the from peer's work set */
@@ -78,6 +83,16 @@ public:
     {
         return m_orphans.size();
     }
+    /** Protect an orphan from eviction from the orphanage getting full. The orphan may still be
+     * removed due to expiry. If the orphan is already protected (by any peer), nothing happens.
+     */
+    void ProtectOrphan(const Wtxid& wtxid);
+
+    /** Remove protection of an orphan. If the orphan is nonexistent or not protected, nothing happens. */
+    void UndoProtectOrphan(const Wtxid& wtxid);
+
+    /** Return number of protected entries in the orphanage. */
+    size_t NumProtected() const;
 
     /** Get an orphan's parent_txids, or std::nullopt if the orphan is not present. */
     std::optional<std::vector<Txid>> GetParentTxids(const Wtxid& wtxid);
@@ -88,9 +103,14 @@ protected:
         /** Peers added with AddTx or AddAnnouncer. */
         std::set<NodeId> announcers;
         NodeSeconds nTimeExpire;
-        size_t list_pos;
+        /** If >= 0: position in m_orphan_list.
+         *  If  < 0: number of protections on this orphan (multiplied by -1). */
+        int32_t list_pos;
         /** Txids of the missing parents to request. Determined by peerman. */
         std::vector<Txid> parent_txids;
+
+        /** Whether this orphan is protected, based on list_pos. */
+        bool IsProtected() const { return list_pos < 0; }
     };
 
     /** Map from wtxid to orphan transaction record. Limited by
@@ -120,6 +140,9 @@ protected:
 
     /** Timestamp for the next scheduled sweep of expired orphans */
     NodeSeconds m_next_sweep{0s};
+
+    /** Total bytes of all protected orphans. */
+    size_t m_total_protected_orphan_bytes{0};
 };
 
 #endif // BITCOIN_TXORPHANAGE_H
