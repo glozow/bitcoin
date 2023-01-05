@@ -58,7 +58,10 @@ public:
     // - parent of an orphan that we already have.
     void Finalize(const GenTxid& gtxid);
 
-    bool ReceivedAncPkgInfoResponse(NodeId nodeid, const uint256& wtxid);
+    bool PkgInfoAllowed(NodeId nodeid, const uint256& wtxid, uint32_t version);
+    bool ReceivedAncPkgInfoResponse(NodeId nodeid, const std::vector<uint256>& info,
+                                    const std::vector<uint256>& needed, int64_t max_vsize);
+
 };
 
 #endif // BITCOIN_TX_PKG_RELAY_H
