@@ -6,6 +6,7 @@
 #define BITCOIN_TX_PKG_RELAY_H
 
 #include <net.h>
+#include <policy/packages.h>
 
 #include <cstdint>
 #include <map>
@@ -91,6 +92,11 @@ public:
      * - We solicited this package info.
      * Returns false if the peer should be disconnected. */
     bool PkgInfoAllowed(NodeId nodeid, const uint256& wtxid, uint32_t version);
+    /** Record receipt of an ancpkginfo, which transactions are missing (and requested),
+     * and when to expire it. */
+    bool ReceivedAncPkgInfo(NodeId nodeid, const uint256& rep_wtxid, const std::map<uint256, bool>& txdata_status,
+                            const std::vector<uint256>& missing_wtxids, int64_t total_orphan_size,
+                            std::chrono::microseconds expiry);
 };
 
 #endif // BITCOIN_TX_PKG_RELAY_H

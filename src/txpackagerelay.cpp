@@ -6,6 +6,7 @@
 
 #include <common/bloom.h>
 #include <logging.h>
+#include <policy/policy.h>
 #include <txorphanage.h>
 #include <txrequest.h>
 #include <util/hasher.h>
@@ -37,15 +38,94 @@ class TxPackageTracker::Impl {
             return m_txrelay && m_wtxid_relay && m_sendpackages_sent && m_sendpackages_received;
         }
     };
+    /** Represents AncPkgInfo for which we are missing transaction data. */
+    struct PackageToDownload {
+        /** Who provided the ancpkginfo - this is the peer whose work queue to add this package when
+         * all tx data is received. We expect to receive tx data from this peer. */
+        const NodeId m_pkginfo_provider;
+
+        /** Total virtual size of the tx data we have seen so far. This helps us limit how much
+         * txdata worth of orphans we are protecting and quit early if a package exceeds what we
+         * would accept. */
+        int64_t m_total_vsize;
+
+        /** When to stop trying to download this package if we haven't received tx data yet. */
+        std::chrono::microseconds m_expiry;
+
+        /** Representative wtxid, i.e. the orphan in an ancestor package. */
+        const uint256 m_rep_wtxid;
+
+        /** Map from wtxid to status (true indicates it is missing). This can be expanded to further
+         * states such as "already in mempool/confirmed" in the future. */
+        std::map<uint256, bool> m_txdata_status;
+
+        // Package info without wtxids doesn't make sense.
+        PackageToDownload() = delete;
+        // Constructor if you already know size.
+        PackageToDownload(NodeId nodeid,
+                          int64_t total_size,
+                          std::chrono::microseconds expiry,
+                          const uint256& rep_wtxid,
+                          const std::map<uint256, bool>& txdata_status) :
+            m_pkginfo_provider{nodeid},
+            m_total_vsize{total_size},
+            m_expiry{expiry},
+            m_rep_wtxid{rep_wtxid},
+            m_txdata_status{txdata_status}
+        {}
+        // Returns true if any tx data is still needed.
+        bool MissingTxData() {
+            return std::any_of(m_txdata_status.cbegin(), m_txdata_status.cend(),
+                               [](const auto pair){return pair.second;});
+        }
+        // Returns true if total virtual size is exceeded.
+        bool UpdateStatusAndCheckSize(const CTransactionRef& tx, int64_t max_vsize) {
+            auto map_iter = m_txdata_status.find(tx->GetWitnessHash());
+            if (map_iter == m_txdata_status.end()) return false;
+            // Don't double-count transaction size; only increment if this is new.
+            if (!map_iter->second) {
+                m_total_vsize += GetVirtualTransactionSize(*tx);
+            }
+            map_iter->second = false;
+            return m_total_vsize > max_vsize;
+        }
+        bool HasTransactionIn(const std::set<uint256>& wtxidset) const {
+            for (const auto& keyval : m_txdata_status) {
+                if (wtxidset.count(keyval.first) > 0) return true;
+            }
+            return false;
+        }
+        /** Returns wtxid of representative transaction (i.e. the orphan in an ancestor package). */
+        const uint256 RepresentativeWtxid() const { return m_rep_wtxid; }
+    };
+
     using PackageInfoRequestId = uint256;
     PackageInfoRequestId GetPackageInfoRequestId(NodeId nodeid, const uint256& wtxid, uint32_t version) {
         return (CHashWriter(SER_GETHASH, 0) << nodeid << wtxid << version).GetHash();
     }
+    using PackageTxnsRequestId = uint256;
+    PackageTxnsRequestId GetPackageTxnsRequestId(NodeId nodeid, const std::vector<uint256>& wtxids) {
+        return (CHashWriter(SER_GETHASH, 0) << nodeid << GetCombinedHash(wtxids)).GetHash();
+    }
+    PackageTxnsRequestId GetPackageTxnsRequestId(NodeId nodeid, const std::vector<CTransactionRef>& pkgtxns) {
+        return (CHashWriter(SER_GETHASH, 0) << nodeid << GetPackageHash(pkgtxns)).GetHash();
+    }
+    /** List of all ancestor package info we're currently requesting txdata for, indexed by the
+     * nodeid and getpkgtxns request we would have sent them. */
+    std::map<PackageTxnsRequestId, PackageToDownload> pending_package_info GUARDED_BY(m_mutex);
+
+    using PendingMap = decltype(pending_package_info);
+    struct IteratorComparator {
+        template<typename I>
+        bool operator()(const I& a, const I& b) const { return &(*a) < &(*b); }
+    };
 
     struct PeerInfo {
         // What package versions we agreed to relay.
         std::set<uint32_t> m_versions_supported;
         bool SupportsVersion(uint32_t version) { return m_versions_supported.count(version) > 0; }
+
+        std::set<PendingMap::iterator, IteratorComparator> m_package_info_provided;
     };
 
     /** Stores relevant information about the peer prior to verack. Upon completion of version
@@ -135,6 +215,10 @@ public:
             registration_states.erase(it);
         }
         if (auto it{info_per_peer.find(nodeid)}; it != info_per_peer.end()) {
+            for (const auto& pkginfo_iter : it->second.m_package_info_provided) {
+                it->second.m_package_info_provided.erase(pkginfo_iter);
+                pending_package_info.erase(pkginfo_iter);
+            }
             info_per_peer.erase(it);
         }
         orphan_request_tracker.DisconnectedPeer(nodeid);
@@ -158,6 +242,9 @@ public:
         AssertLockNotHeld(m_mutex);
         LOCK(m_mutex);
         auto count{orphan_request_tracker.CountInFlight(nodeid)};
+        if (auto it{info_per_peer.find(nodeid)}; it != info_per_peer.end()) {
+            count += it->second.m_package_info_provided.size();
+        }
         return count;
     }
     size_t Count(NodeId nodeid) const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
@@ -165,15 +252,45 @@ public:
         AssertLockNotHeld(m_mutex);
         LOCK(m_mutex);
         auto count{orphan_request_tracker.Count(nodeid)};
+        if (auto it{info_per_peer.find(nodeid)}; it != info_per_peer.end()) {
+            count += it->second.m_package_info_provided.size();
+        }
         return count;
     }
 
+    void ExpirePackageToDownload(NodeId nodeid, std::chrono::microseconds current_time)
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex)
+    {
+        AssertLockHeld(m_mutex);
+        auto peer_info_it = info_per_peer.find(nodeid);
+        if (peer_info_it == info_per_peer.end()) return;
+        std::set<PackageTxnsRequestId> to_expire;
+        for (const auto& pkginfo_iter : peer_info_it->second.m_package_info_provided) {
+            const auto& packageinfo = pkginfo_iter->second;
+            if (packageinfo.m_expiry < current_time) {
+                LogPrint(BCLog::NET, "expiring package info for tx %s from peer=%d",
+                         packageinfo.RepresentativeWtxid().ToString(), nodeid);
+                to_expire.insert(pkginfo_iter->first);
+                orphanage_ref.UndoProtectOrphan(pkginfo_iter->second.m_rep_wtxid);
+            }
+        }
+        for (const auto& packageid : to_expire) {
+            auto pending_iter = pending_package_info.find(packageid);
+            Assume(pending_iter != pending_package_info.end());
+            if (pending_iter != pending_package_info.end()) {
+                peer_info_it->second.m_package_info_provided.erase(pending_iter);
+                pending_package_info.erase(pending_iter);
+            }
+        }
+    }
     std::vector<GenTxid> GetOrphanRequests(NodeId nodeid, std::chrono::microseconds current_time)
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
     {
         AssertLockNotHeld(m_mutex);
         LOCK(m_mutex);
         std::vector<std::pair<NodeId, GenTxid>> expired;
+        // Expire packages we were trying to download tx data for
+        ExpirePackageToDownload(nodeid, current_time);
         auto tracker_requestable = orphan_request_tracker.GetRequestable(nodeid, current_time, &expired);
         for (const auto& entry : expired) {
             LogPrint(BCLog::NET, "timeout of inflight %s %s from peer=%d\n", entry.second.IsWtxid() ? "ancpkginfo" : "orphan parent",
@@ -224,11 +341,42 @@ public:
     {
         AssertLockNotHeld(m_mutex);
         LOCK(m_mutex);
-        for (const auto& wtxid : valid) {
-            orphan_request_tracker.ForgetTxHash(wtxid);
+        // Do a linear search of all packages. This operation should not be expensive as we don't
+        // expect to be relaying more than 1 package per peer. Nonetheless, process sets together
+        // to be more efficient.
+        std::set<PackageTxnsRequestId> to_erase;
+        for (const auto& [packageid, packageinfo] : pending_package_info) {
+            const auto& rep_wtxid = packageinfo.RepresentativeWtxid();
+            if (valid.count(rep_wtxid) > 0 || invalid.count(rep_wtxid) > 0) {
+                // We have already made a final decision on the transaction of interest.
+                // There is no need to request more information from other peers.
+                to_erase.insert(packageid);
+                orphan_request_tracker.ForgetTxHash(rep_wtxid);
+            } else if (packageinfo.HasTransactionIn(invalid)) {
+                // This package info is known to contain an invalid transaction; don't continue
+                // trying to download or validate it.
+                to_erase.insert(packageid);
+                // However, as it's possible for this information to be incorrect (e.g. a peer
+                // purposefully trying to get us to reject the orphan by providing package info
+                // containing an invalid transaction), don't prevent further orphan resolution
+                // attempts with other peers.
+            } else {
+                // FIXME: Some packages may need less txdata now.
+                // It's fine not to do this *for now* since we always request all missing txdata
+                // from the same peer.
+            }
         }
-        for (const auto& wtxid : invalid) {
-            orphan_request_tracker.ForgetTxHash(wtxid);
+        for (const auto& packageid : to_erase) {
+            auto pending_iter = pending_package_info.find(packageid);
+            Assume(pending_iter != pending_package_info.end());
+            if (pending_iter != pending_package_info.end()) {
+                auto peer_info_it = info_per_peer.find(pending_iter->second.m_pkginfo_provider);
+                Assume(peer_info_it != info_per_peer.end());
+                if (peer_info_it != info_per_peer.end()) {
+                    peer_info_it->second.m_package_info_provided.erase(pending_iter);
+                }
+                pending_package_info.erase(pending_iter);
+            }
         }
     }
     void HandleNewBlock(const CBlock& block)
@@ -253,11 +401,39 @@ public:
         if (info_per_peer.find(nodeid) == info_per_peer.end()) {
             return false;
         }
-        if (!packageinfo_requested.contains(GetPackageInfoRequestId(nodeid, wtxid, RECEIVER_INIT_ANCESTOR_PACKAGES))) {
+        auto peer_info = info_per_peer.find(nodeid)->second;
+        const auto packageid{GetPackageInfoRequestId(nodeid, wtxid, version)};
+        if (!packageinfo_requested.contains(packageid)) {
             return false;
         }
         orphan_request_tracker.ReceivedResponse(nodeid, wtxid);
+        // They already responded to this request.
+        for (const auto& pkginfo_iter : peer_info.m_package_info_provided) {
+            if (wtxid == pkginfo_iter->second.m_rep_wtxid) return false;
+        }
         return true;
+    }
+    bool ReceivedAncPkgInfo(NodeId nodeid, const uint256& rep_wtxid, const std::map<uint256, bool>& txdata_status,
+                            const std::vector<uint256>& missing_wtxids, int64_t total_orphan_size,
+                            std::chrono::microseconds expiry)
+        EXCLUSIVE_LOCKS_REQUIRED(m_mutex)
+    {
+        AssertLockNotHeld(m_mutex);
+        LOCK(m_mutex);
+        auto peer_info_it = info_per_peer.find(nodeid);
+        if (peer_info_it == info_per_peer.end()) return true;
+        const auto pkgtxnsid{GetPackageTxnsRequestId(nodeid, missing_wtxids)};
+        const auto [it, success] = pending_package_info.emplace(pkgtxnsid,
+            PackageToDownload{nodeid, total_orphan_size, expiry, rep_wtxid, txdata_status});
+        Assume(success);
+        for (const auto& [wtxid, missing] : txdata_status) {
+            if (orphanage_ref.HaveTx(GenTxid::Wtxid(wtxid))) {
+                orphanage_ref.ProtectOrphan(wtxid);
+                Assume(orphanage_ref.NumProtected() <= MAX_IN_FLIGHT_PACKAGES * info_per_peer.size());
+            }
+        }
+        peer_info_it->second.m_package_info_provided.emplace(it);
+        return false;
     }
 };
 
@@ -288,4 +464,10 @@ void TxPackageTracker::HandleNewBlock(const CBlock& block) { m_impl->HandleNewBl
 bool TxPackageTracker::PkgInfoAllowed(NodeId nodeid, const uint256& wtxid, uint32_t version)
 {
     return m_impl->PkgInfoAllowed(nodeid, wtxid, version);
+}
+bool TxPackageTracker::ReceivedAncPkgInfo(NodeId nodeid, const uint256& rep_wtxid, const std::map<uint256, bool>& txdata_status,
+                                          const std::vector<uint256>& missing_wtxids, int64_t total_orphan_size,
+                                          std::chrono::microseconds expiry)
+{
+    return m_impl->ReceivedAncPkgInfo(nodeid, rep_wtxid, txdata_status, missing_wtxids, total_orphan_size, expiry);
 }
