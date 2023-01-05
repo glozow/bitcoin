@@ -47,7 +47,12 @@ public:
     /** Erase all orphans included in or invalidated by a new block */
     void EraseForBlock(const CBlock& block) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
-    /** Limit the orphanage to the given maximum */
+    /** Limit the orphanage to the given maximum. Delete orphans whose expiry has been reached.
+     * The maximum does not apply to protected transactions, i.e., LimitOrphans(100) ensures
+     * that the number of non-protected orphan entries does not exceed 100. Afterward, Size() may
+     * return a number greater than 100.  It is the caller's responsibility to ensure that not too
+     * many orphans are protected.
+     */
     void LimitOrphans(unsigned int max_orphans) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Add any orphans that list a particular tx as a parent into a peer's work set */
@@ -59,6 +64,10 @@ public:
         LOCK(m_mutex);
         return m_orphans.size();
     }
+    /** Protect an orphan from eviction from the orphanage getting full. The orphan may still be
+     * removed due to expiry. If the orphan is already protected (by any peer), nothing happens.
+     * TODO: allow protection to expire or be removed? */
+    void ProtectOrphan(const uint256& wtxid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
 protected:
     /** Guards orphan transactions */
@@ -68,7 +77,8 @@ protected:
         CTransactionRef tx;
         NodeId fromPeer;
         int64_t nTimeExpire;
-        size_t list_pos;
+        // Position in m_orphan_list, or std::nullopt if protected from eviction.
+        std::optional<size_t> list_pos;
     };
 
     /** Map from txid to orphan transaction record. Limited by
@@ -77,6 +87,10 @@ protected:
 
     /** Which peer provided a parent tx of orphans that need to be reconsidered */
     std::map<NodeId, std::set<uint256>> m_peer_work_set GUARDED_BY(m_mutex);
+
+    /** Number of orphans protected by this peer, used to check that a single peer does not
+     * protect too many orphans from eviction (should be managed by the caller). */
+    std::map<NodeId, size_t> m_peer_protected GUARDED_BY(m_mutex);
 
     using OrphanMap = decltype(m_orphans);
 
