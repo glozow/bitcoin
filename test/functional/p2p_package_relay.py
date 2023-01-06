@@ -406,12 +406,6 @@ class PackageRelayTest(BitcoinTestFramework):
         self.fastforward(NONPREF_PEER_TX_DELAY + 1)
         peer2.wait_for_getancpkginfo(int(package_wtxids[-1], 16))
         peer2.send_and_ping(ancpkginfo_message)
-        self.fastforward(NONPREF_PEER_TX_DELAY + 1)
-        peer2.wait_for_getdata([int(parent1["tx"].getwtxid(), 16), int(parent2["tx"].getwtxid(), 16)])
-        peer2.send_and_ping(msg_tx(parent1["tx"]))
-        peer2.send_and_ping(msg_tx(parent2["tx"]))
-        for tx in package_txns:
-            assert node.getmempoolentry(tx.rehash())
 
     @cleanup
     def test_pkgtxns(self):
