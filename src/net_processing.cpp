@@ -4181,6 +4181,9 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             return;
         }
 
+        // Note: Multiple ancestor packages can have the same representative (different ancestors for
+        // honest or malicious reasons). But since we're only using this to resolve orphans, we
+        // should never be in a situation where we have multiple ancpkginfos out for the same wtxid
         const auto& rep_wtxid{package_wtxids.back()};
         if (package_wtxids.size() > MAX_PACKAGE_COUNT) {
             LogPrint(BCLog::NET, "discarding package info for tx %s, too many transactions\n", rep_wtxid.ToString());
@@ -4208,14 +4211,28 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 return;
             }
         }
-        // For now, just add these transactions as announcements.
-        const auto current_time{GetTime<std::chrono::microseconds>()};
+        std::map<uint256, bool> txdata_status;
+        std::vector<uint256> pkgtxns_to_request;
         for (const auto& wtxid : package_wtxids) {
             AddKnownTx(*peer, wtxid);
-            if (!AlreadyHaveTx(GenTxid::Wtxid(wtxid)) && !m_chainman.ActiveChainstate().IsInitialBlockDownload()) {
-                AddTxAnnouncement(pfrom, GenTxid::Wtxid(wtxid), current_time);
+            if (AlreadyHaveTx(GenTxid::Wtxid(wtxid), /*include_orphanage=*/true)) {
+                txdata_status.emplace(wtxid, false);
+            } else {
+                txdata_status.emplace(wtxid, true);
+                pkgtxns_to_request.push_back(wtxid);
             }
         }
+        const auto current_time{GetTime<std::chrono::microseconds>()};
+        // FIXME: could be empty if we already have all transactions in orphanage...
+        if (!pkgtxns_to_request.empty()) {
+            // It is correct to continue asking another peer for ancpkginfo because this peer could
+            // have provided a false list of ancestors in order to get us to reject the tx.
+            Assume(txdata_status.size() == package_wtxids.size());
+            m_txpackagetracker->ReceivedAncPkgInfo(pfrom.GetId(), rep_wtxid, txdata_status, pkgtxns_to_request,
+                                                   current_time + GETDATA_TX_INTERVAL);
+            m_connman.PushMessage(&pfrom, msgMaker.Make(NetMsgType::GETPKGTXNS, pkgtxns_to_request));
+        }
+        return;
     }
 
     if (msg_type == NetMsgType::TX) {
