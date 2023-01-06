@@ -47,36 +47,35 @@ class TxPackageTracker::Impl {
         /** Total virtual size of the tx data we have seen so far (includes ORPHANAGE and ACCEPTED). */
         int64_t m_total_vsize;
 
-        enum class Status : uint8_t {
-            /** We still need the tx data and may or may not have requested it. */
-            MISSING,
-            /** We have the tx data in our orphanage. */
-            ORPHANAGE,
-            /** We already have the tx data in mempool or confirmed. */
-            ACCEPTED,
-        };
         /** Map from wtxid to status. */
-        std::map<uint256, Status> m_txdata_status;
+        std::map<uint256, TxDataStatus> m_txdata_status;
 
         // Package info without wtxids doesn't make sense.
         PendingPackage() = delete;
-        PendingPackage(NodeId info, const std::vector<uint256> wtxids) :
-            m_pkginfo_provider{info},
+        // Constructor where everything is missing.
+        PendingPackage(NodeId nodeid, const std::vector<uint256> wtxids) :
+            m_pkginfo_provider{nodeid},
             m_total_vsize{0}
         {
-            for (const auto& wtxid : wtxids) m_txdata_status.emplace(wtxid, Status::MISSING);
+            for (const auto& wtxid : wtxids) m_txdata_status.emplace(wtxid, TxDataStatus::MISSING);
         }
+        // Constructor if you already know size.
+        PendingPackage(NodeId nodeid, const std::map<uint256, TxDataStatus>& txdata_status, int64_t total_size) :
+            m_pkginfo_provider{nodeid},
+            m_total_vsize{total_size},
+            m_txdata_status{txdata_status}
+        {}
         // Returns true if any tx data is still needed.
         bool MissingTxData() {
             return std::any_of(m_txdata_status.cbegin(), m_txdata_status.cend(),
-                               [](const auto pair){return pair.second == Status::MISSING;});
+                               [](const auto pair){return pair.second == TxDataStatus::MISSING;});
         }
         // Returns true if total virtual size is exceeded.
-        bool UpdateStatusAndCheckSize(const CTransactionRef& tx, int64_t max_vsize, Status status) {
+        bool UpdateStatusAndCheckSize(const CTransactionRef& tx, int64_t max_vsize, TxDataStatus status) {
             auto map_iter = m_txdata_status.find(tx->GetWitnessHash());
             if (map_iter == m_txdata_status.end()) return false;
             // Don't double-count transaction size; only increment if this is new.
-            if (map_iter->second != Status::MISSING) {
+            if (map_iter->second != TxDataStatus::MISSING) {
                 m_total_vsize += GetVirtualTransactionSize(*tx);
             }
             map_iter->second = status;
@@ -279,38 +278,25 @@ public:
         if (pending_package_info.count(packageid) > 0) return false;
         return true;
     }
-    bool ReceivedAncPkgInfoResponse(NodeId nodeid, const std::vector<uint256>& info,
-                                    const std::vector<uint256>& needed, int64_t max_vsize)
+    bool ReceivedAncPkgInfo(NodeId nodeid, const uint256& rep_wtxid, const std::map<uint256,
+                            TxDataStatus>& txdata_status, int64_t total_orphan_size)
     {
-        if (info_per_peer.find(nodeid) == info_per_peer.end()) {
-            return true;
-        }
-        auto peer_info = info_per_peer.find(nodeid)->second;
-        const auto packageid{GetPackageInfoRequestId(nodeid, info.back(), RECEIVER_INIT_ANCESTOR_PACKAGES)};
-        PendingPackage pending_package{nodeid, info};
-        for (const auto& wtxid : info) {
-            if (orphanage_ref.HaveTx(GenTxid::Wtxid(wtxid))) {
-                if (pending_package.UpdateStatusAndCheckSize(orphanage_ref.GetTx(wtxid), max_vsize,
-                                                             PendingPackage::Status::ORPHANAGE)) {
-                    // Exceeds maximum total package virtual size
-                    return true; 
-                }
-            }
-        }
-        // This package info seems ok so far.
-        const auto [it, success] = pending_package_info.emplace(packageid, pending_package);
+        auto peer_info_it = info_per_peer.find(nodeid);
+        if (peer_info_it == info_per_peer.end()) return true;
+        const auto packageid{GetPackageInfoRequestId(nodeid, rep_wtxid, RECEIVER_INIT_ANCESTOR_PACKAGES)};
+        const auto [it, success] = pending_package_info.emplace(packageid,
+                                                                PendingPackage{nodeid, txdata_status, total_orphan_size});
         Assume(success);
-        for (const auto& wtxid : info) {
-            // Protect orphan from eviction while we wait for tx data for the rest of the package.
-            // Note this is bounded by MAX_PACKAGE_SIZE and the fact that we only relay one in-flight package per peer.
-            if (orphanage_ref.HaveTx(GenTxid::Wtxid(wtxid))) {
-                orphanage_ref.ProtectOrphan(wtxid);
-            } else {
+        for (const auto& [wtxid, status] : txdata_status) {
+            if (status == TxDataStatus::MISSING) {
                 auto& pending_set = missing_txdata.try_emplace(wtxid).first->second;
                 pending_set.insert(it);
+            } else if (status == TxDataStatus::ORPHANAGE) {
+                Assume(orphanage_ref.HaveTx(GenTxid::Wtxid(wtxid)));
+                orphanage_ref.ProtectOrphan(wtxid);
             }
         }
-        peer_info.m_package_info_provided.emplace(it);
+        peer_info_it->second.m_package_info_provided.emplace(it);
         return false;
     }
 };
@@ -346,8 +332,8 @@ bool TxPackageTracker::PkgInfoAllowed(NodeId nodeid, const uint256& wtxid, uint3
 {
     return m_impl->PkgInfoAllowed(nodeid, wtxid, version);
 }
-bool TxPackageTracker::ReceivedAncPkgInfoResponse(NodeId nodeid, const std::vector<uint256>& info,
-                                                  const std::vector<uint256>& needed, int64_t max_vsize)
+bool TxPackageTracker::ReceivedAncPkgInfo(NodeId nodeid, const uint256& rep_wtxid, const std::map<uint256,
+                                          TxDataStatus>& txdata_status, int64_t total_orphan_size)
 {
-    return m_impl->ReceivedAncPkgInfoResponse(nodeid, info, needed, max_vsize);
+    return m_impl->ReceivedAncPkgInfo(nodeid, rep_wtxid, txdata_status, total_orphan_size);
 }

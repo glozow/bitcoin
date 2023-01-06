@@ -4129,18 +4129,27 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         if (!peer->m_package_relay) {
             LogPrint(BCLog::NET, "ancpkginfo sent in violation of protocol, disconnecting peer=%d\n", pfrom.GetId());
             pfrom.fDisconnect = true;
+            return;
         }
         if (!m_txpackagetracker->PkgInfoAllowed(pfrom.GetId(), package_wtxids.back(), RECEIVER_INIT_ANCESTOR_PACKAGES)) {
             LogPrint(BCLog::NET, "unsolicited ancpkginfo sent, disconnecting peer=%d\n", pfrom.GetId());
             pfrom.fDisconnect = true;
+            return;
+        }
+
+        // Note: Multiple ancestor packages can have the same representative (different ancestors for
+        // honest or malicious reasons). But since we're only using this to resolve orphans, we
+        // should never be in a situation where we have multiple ancpkginfos out for the same wtxid
+        const auto& rep_wtxid{package_wtxids.back()};
+        if (package_wtxids.size() > MAX_PACKAGE_COUNT) {
+            LogPrint(BCLog::NET, "discarding package info for tx %s, too many transactions\n", rep_wtxid.ToString());
+            // FIXME: disconnect?
+            return;
         }
         {
             LOCK(::cs_main);
             if (m_chainman.ActiveChainstate().IsInitialBlockDownload()) return;
         }
-        // Multiple ancestor packages can have the same representative (different ancestors for
-        // honest or malicious reasons). But since we're only using this to resolve orphans, we
-        // should never be in a situation where we have multiple ancpkginfos out for the same wtxid
         for (const auto& wtxid : package_wtxids) {
             // If a transaction is in m_recent_rejects and not m_recent_rejects_reconsiderable, that
             // means it will not become valid by adding another transaction.
@@ -4159,14 +4168,32 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             }
         }
 
+        std::map<uint256, TxPackageTracker::TxDataStatus> txdata_status;
         std::vector<uint256> pkgtxns_to_request;
+        int64_t total_orphan_size{0};
         for (const auto& wtxid : package_wtxids) {
-            if (!AlreadyHaveTx(GenTxid::Wtxid(wtxid), /*include_orphanage=*/true)) {
+            if (m_orphanage.HaveTx(GenTxid::Wtxid(wtxid))) {
+                total_orphan_size += GetVirtualTransactionSize(*m_orphanage.GetTx(wtxid));
+                if (total_orphan_size > MAX_PACKAGE_SIZE * 1000) {
+                    LogPrint(BCLog::NET, "discarding package info for tx %s total vsize too large\n", rep_wtxid.ToString());
+                    return;
+                }
+                txdata_status.emplace(wtxid, TxPackageTracker::TxDataStatus::ORPHANAGE);
+            } else if (AlreadyHaveTx(GenTxid::Wtxid(wtxid), /*include_orphanage=*/true)) {
+                txdata_status.emplace(wtxid, TxPackageTracker::TxDataStatus::ACCEPTED);
+            } else {
+                txdata_status.emplace(wtxid, TxPackageTracker::TxDataStatus::MISSING);
                 pkgtxns_to_request.push_back(wtxid);
             }
         }
         if (!pkgtxns_to_request.empty()) {
-            m_txpackagetracker->ReceivedAncPkgInfoResponse(pfrom.GetId(), package_wtxids, pkgtxns_to_request, MAX_PACKAGE_SIZE);
+            // FIXME: IIRC package tracker doesn't need to do anything if we decide to drop a
+            // package or if we already have all txns, we already called
+            // orphan_request_tracker.ReceivedResponse(). It is correct to continue asking
+            // another peer for ancpkginfo because this peer could have provided a false list of
+            // ancestors in order to get us to reject the tx.
+            Assume(txdata_status.size() == package_wtxids.size());
+            m_txpackagetracker->ReceivedAncPkgInfo(pfrom.GetId(), rep_wtxid, txdata_status, total_orphan_size);
             m_connman.PushMessage(&pfrom, msgMaker.Make(NetMsgType::GETPKGTXNS, pkgtxns_to_request));
         }
     }

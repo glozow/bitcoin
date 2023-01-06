@@ -58,9 +58,21 @@ public:
     // - parent of an orphan that we already have.
     void Finalize(const GenTxid& gtxid);
 
+    enum class TxDataStatus : uint8_t {
+        /** We still need the tx data and may or may not have requested it. */
+        MISSING,
+        /** We have the tx data in our orphanage. */
+        ORPHANAGE,
+        /** We already have the tx data in mempool or confirmed. */
+        ACCEPTED,
+    };
+    /** Whether a package info message is allowed:
+     * - We agreed to relay packages of this version with this peer.
+     * - We solicited this package info.
+     * Returns false if the peer should be disconnected. */
     bool PkgInfoAllowed(NodeId nodeid, const uint256& wtxid, uint32_t version);
-    bool ReceivedAncPkgInfoResponse(NodeId nodeid, const std::vector<uint256>& info,
-                                    const std::vector<uint256>& needed, int64_t max_vsize);
+    bool ReceivedAncPkgInfo(NodeId nodeid, const uint256& rep_wtxid, const std::map<uint256,
+                            TxDataStatus>& txdata_status, int64_t total_orphan_size);
 
 };
 
