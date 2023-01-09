@@ -95,6 +95,13 @@ class TxPackageTracker::Impl {
         }
         /** Returns wtxid of representative transaction (i.e. the orphan in an ancestor package). */
         const uint256 RepresentativeWtxid() const { return m_rep_wtxid; }
+        /** Combined hash of all wtxids in package. */
+        const uint256 GetPackageHash() const {
+            std::vector<uint256> all_wtxids;
+            std::transform(m_txdata_status.cbegin(), m_txdata_status.cend(), std::back_inserter(all_wtxids),
+                [](const auto& mappair) { return mappair.first; });
+            return GetCombinedHash(all_wtxids);
+        }
     };
 
     using PackageInfoRequestId = uint256;
@@ -107,6 +114,9 @@ class TxPackageTracker::Impl {
     }
     PackageTxnsRequestId GetPackageTxnsRequestId(NodeId nodeid, const std::vector<CTransactionRef>& pkgtxns) {
         return (CHashWriter(SER_GETHASH, 0) << nodeid << GetPackageHash(pkgtxns)).GetHash();
+    }
+    PackageTxnsRequestId GetPackageTxnsRequestId(NodeId nodeid, const uint256& combinedhash) {
+        return (CHashWriter(SER_GETHASH, 0) << nodeid << combinedhash).GetHash();
     }
     /** List of all ancestor package info we're currently requesting txdata for, indexed by the
      * nodeid and getpkgtxns request we would have sent them. */
@@ -191,6 +201,9 @@ public:
         }
         if (auto it{info_per_peer.find(nodeid)}; it != info_per_peer.end()) {
             for (const auto& pkginfo_iter : it->second.m_package_info_provided) {
+                if (pkginfo_iter != pending_package_info.end()) {
+                    orphanage_ref.UndoProtectOrphan(pkginfo_iter->second.m_rep_wtxid);
+                }
                 it->second.m_package_info_provided.erase(pkginfo_iter);
                 pending_package_info.erase(pkginfo_iter);
             }
@@ -267,14 +280,15 @@ public:
     {
         AssertLockNotHeld(m_mutex);
         LOCK(m_mutex);
-        std::vector<std::pair<NodeId, GenTxid>> expired;
         // Expire packages we were trying to download tx data for
         ExpirePackageToDownload(nodeid, current_time);
+        std::vector<std::pair<NodeId, GenTxid>> expired;
         auto tracker_requestable = orphan_request_tracker.GetRequestable(nodeid, current_time, &expired);
         for (const auto& entry : expired) {
             LogPrint(BCLog::TXPACKAGES, "\nTimeout of inflight %s %s from peer=%d\n", entry.second.IsWtxid() ? "ancpkginfo" : "orphan parent",
                 entry.second.GetHash().ToString(), entry.first);
         }
+        // Get getdata requests we should send
         std::vector<GenTxid> results;
         for (const auto& gtxid : tracker_requestable) {
             if (gtxid.IsWtxid()) {
@@ -432,6 +446,60 @@ public:
         peer_info_it->second.m_package_info_provided.emplace(it);
         return false;
     }
+    void ReceivedNotFound(NodeId nodeid, const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
+    {
+        AssertLockNotHeld(m_mutex);
+        LOCK(m_mutex);
+        auto peer_info_it = info_per_peer.find(nodeid);
+        if (peer_info_it == info_per_peer.end()) return;
+        const auto pending_iter{pending_package_info.find(GetPackageTxnsRequestId(nodeid, hash))};
+        if (pending_iter != pending_package_info.end()) {
+            auto& pendingpackage{pending_iter->second};
+            for (const auto& [wtxid, missing] : pendingpackage.m_txdata_status) {
+                if (orphanage_ref.HaveTx(GenTxid::Wtxid(wtxid))) {
+                    orphanage_ref.UndoProtectOrphan(wtxid);
+                }
+            }
+            Assume(orphanage_ref.NumProtected() <= MAX_IN_FLIGHT_PACKAGES * info_per_peer.size());
+            LogPrint(BCLog::TXPACKAGES, "\nReceived notfound for package (tx %s) from peer=%d\n", pendingpackage.RepresentativeWtxid().ToString(), nodeid);
+        }
+    }
+    std::optional<PackageToValidate> ReceivedPkgTxns(NodeId nodeid, const std::vector<CTransactionRef>& package_txns)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
+    {
+        AssertLockNotHeld(m_mutex);
+        LOCK(m_mutex);
+        auto peer_info_it = info_per_peer.find(nodeid);
+        if (peer_info_it == info_per_peer.end()) return std::nullopt;
+        const auto pending_iter{pending_package_info.find(GetPackageTxnsRequestId(nodeid, package_txns))};
+        if (pending_iter == pending_package_info.end()) {
+            // For whatever reason, we've been sent a pkgtxns that doesn't correspond to a pending
+            // package. It's possible we already admitted all the transactions, or this response
+            // arrived past the request expiry. Drop it on the ground.
+            return std::nullopt;
+        }
+        std::vector<CTransactionRef> unvalidated_txdata(package_txns.cbegin(), package_txns.cend());
+        auto& pendingpackage{pending_iter->second};
+        LogPrint(BCLog::TXPACKAGES, "\nReceived tx data for package (tx %s) from peer=%d\n", pendingpackage.RepresentativeWtxid().ToString(), nodeid);
+        // Add the other orphanage transactions before updating pending packages map.
+        for (const auto& [wtxid, _] : pendingpackage.m_txdata_status) {
+            if (orphanage_ref.HaveTx(GenTxid::Wtxid(wtxid))) {
+                unvalidated_txdata.push_back(orphanage_ref.GetTx(wtxid));
+            }
+        }
+        // Only update this node's package info. We would have made a separate txdata request if for
+        // other package that also requires this transaction.
+        // update status and check if too many protected orphans
+        for (const auto& tx : package_txns) {
+            if (pendingpackage.UpdateStatusAndCheckSize(tx, MAX_PACKAGE_SIZE * 1000)) {
+                pending_package_info.erase(pending_iter);
+                return std::nullopt;
+            }
+        }
+        Assume(!pendingpackage.MissingTxData()); // FIXME: is this possible when honest?
+        return PackageToValidate{pendingpackage.m_pkginfo_provider, pendingpackage.RepresentativeWtxid(),
+                                 pendingpackage.GetPackageHash(), unvalidated_txdata};
+    }
 };
 
 TxPackageTracker::TxPackageTracker(TxOrphanage& orphanage) : m_impl{std::make_unique<TxPackageTracker::Impl>(orphanage)} {}
@@ -470,5 +538,11 @@ bool TxPackageTracker::ReceivedAncPkgInfo(NodeId nodeid, const uint256& rep_wtxi
                                           std::chrono::microseconds expiry)
 {
     return m_impl->ReceivedAncPkgInfo(nodeid, rep_wtxid, txdata_status, missing_wtxids, total_orphan_size, expiry);
+}
+void TxPackageTracker::ReceivedNotFound(NodeId nodeid, const uint256& hash) { m_impl->ReceivedNotFound(nodeid, hash); }
+std::optional<TxPackageTracker::PackageToValidate> TxPackageTracker::ReceivedPkgTxns(NodeId nodeid,
+    const std::vector<CTransactionRef>& package_txns)
+{
+    return m_impl->ReceivedPkgTxns(nodeid, package_txns);
 }
 } // namespace node

@@ -96,6 +96,36 @@ public:
     bool ReceivedAncPkgInfo(NodeId nodeid, const uint256& rep_wtxid, const std::map<uint256, bool>& txdata_status,
                             const std::vector<uint256>& missing_wtxids, int64_t total_orphan_size,
                             std::chrono::microseconds expiry);
+
+    /** Record receipt of notfound message for pkgtxns. */
+    void ReceivedNotFound(NodeId nodeid, const uint256& hash);
+
+    struct PackageToValidate {
+        /** Who provided the package info. */
+        const NodeId m_info_provider;
+        /** Representative transaction, i.e. orphan in an ancestor package. */
+        const uint256 m_rep_wtxid;
+        /** Combined hash of all transactions in package info. Used to cache failure. */
+        const uint256 m_pkginfo_hash;
+        /** Transactions to submit for mempool validation. */
+        const Package m_unvalidated_txns;
+
+        PackageToValidate() = delete;
+        PackageToValidate(NodeId info_provider,
+                          const uint256& rep_wtxid,
+                          const uint256& pkginfo_hash,
+                          const Package& txns) :
+            m_info_provider{info_provider},
+            m_rep_wtxid{rep_wtxid},
+            m_pkginfo_hash{pkginfo_hash},
+            m_unvalidated_txns{txns}
+        {}
+    };
+
+    /** If there is a package that is missing this tx data, updates the PendingPackage and
+     * returns a PackageToValidate including the other txdata stored in the orphanage.
+     */
+    std::optional<PackageToValidate> ReceivedPkgTxns(NodeId nodeid, const std::vector<CTransactionRef>& package_txns);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXPACKAGETRACKER_H
