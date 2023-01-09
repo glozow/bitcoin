@@ -365,6 +365,8 @@ class PackageRelayTest(BitcoinTestFramework):
         peer_package_relay2 = node.add_p2p_connection(PackageRelayer())
         # Sends an inv for the orphan while the node is requesting ancpkginfo
         peer_package_relay3 = node.add_p2p_connection(PackageRelayer())
+        # Sends an inv for the orphan while the node is requesting txdata using the ancpkginfo
+        peer_package_relay4 = node.add_p2p_connection(PackageRelayer())
 
         peer_package_relay1.send_and_ping(msg_inv([orphan_inv]))
         self.fastforward(NONPREF_PEER_TX_DELAY + 1)
@@ -392,11 +394,21 @@ class PackageRelayTest(BitcoinTestFramework):
         peer_package_relay2.wait_for_getancpkginfo(int(orphan_wtxid, 16))
 
         self.log.info("Test that the node requests ancpkginfo from a different peer if peer disconnects")
-        # Peer 2 disconnected before responding
+        # Peer2 disconnected before responding
         peer_package_relay2.peer_disconnect()
         self.fastforward(1)
         peer_package_relay3.sync_with_ping()
         peer_package_relay3.wait_for_getancpkginfo(int(orphan_wtxid, 16))
+        # Peer3 provides ancpkginfo but doesn't respond to getpkgtxns request
+        ancpkginfo_message = msg_ancpkginfo([int(wtxid, 16) for wtxid in package_wtxids])
+        peer_package_relay3.send_and_ping(ancpkginfo_message)
+        self.fastforward(1)
+        peer_package_relay3.wait_for_getpkgtxns([int(wtxid, 16) for wtxid in package_wtxids[:-1]])
+        peer_package_relay4.send_and_ping(msg_inv([orphan_inv]))
+        # The getpkgtxns request to peer3 expires after 60sec.
+        self.fastforward(60)
+        peer_package_relay3.sync_with_ping()
+        peer_package_relay4.wait_for_getancpkginfo(int(orphan_wtxid, 16))
 
     @cleanup
     def test_ancpkginfo_received(self):
@@ -430,6 +442,9 @@ class PackageRelayTest(BitcoinTestFramework):
         self.fastforward(NONPREF_PEER_TX_DELAY + 1)
         # The orphan should not be re-requested.
         peer2.wait_for_getpkgtxns([int(wtxid, 16) for wtxid in package_wtxids[:-1]])
+        peer2.send_and_ping(msg_pkgtxns(txns=package_txns[:-1]))
+        peer2.sync_with_ping()
+        assert_equal(set(node.getrawmempool()), set([tx.rehash() for tx in package_txns]))
 
     @cleanup
     def test_ancpkginfo_invalid_ancestors(self):
