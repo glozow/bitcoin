@@ -98,3 +98,18 @@ bool IsPackageWellFormed(const Package& txns, PackageValidationState& state, boo
     }
     return true;
 }
+
+uint256 GetCombinedHash(const std::vector<uint256>& wtxids)
+{
+    std::vector<uint256> wtxids_copy(wtxids.cbegin(), wtxids.cend());
+    std::sort(wtxids_copy.begin(), wtxids_copy.end());
+    return (HashWriter() << wtxids_copy).GetSHA256();
+}
+
+uint256 GetPackageHash(const std::vector<CTransactionRef>& transactions)
+{
+    std::vector<uint256> wtxids_copy;
+    std::transform(transactions.cbegin(), transactions.cend(), std::back_inserter(wtxids_copy),
+        [](const auto& tx){ return tx->GetWitnessHash(); });
+    return GetCombinedHash(wtxids_copy);
+}

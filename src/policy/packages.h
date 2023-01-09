@@ -78,4 +78,9 @@ bool IsConsistent(const Package& txns);
  */
 bool IsPackageWellFormed(const Package& txns, PackageValidationState& state, bool require_sorted);
 
+/** Get the hash of these wtxids, concatenated in lexicographical order. */
+uint256 GetCombinedHash(const std::vector<uint256>& wtxids);
+/** Get the hash of these transactions' wtxids, concatenated in lexicographical order. */
+uint256 GetPackageHash(const std::vector<CTransactionRef>& transactions);
+
 #endif // BITCOIN_POLICY_PACKAGES_H
