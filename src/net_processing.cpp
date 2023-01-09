@@ -608,6 +608,10 @@ private:
     bool ProcessOrphanTx(Peer& peer)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex);
 
+    /** Validate package if any */
+    void ProcessPackage(CNode& node, const node::TxPackageTracker::PackageToValidate& package)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex);
+
     /** Process a single headers message from a peer.
      *
      * @param[in]   pfrom     CNode of the peer
@@ -3131,6 +3135,78 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
     return false;
 }
 
+void PeerManagerImpl::ProcessPackage(CNode& node, const node::TxPackageTracker::PackageToValidate& package)
+{
+    AssertLockHeld(g_msgproc_mutex);
+    LOCK(cs_main);
+    // We won't re-validate the exact same transaction or package again.
+    if (m_recent_rejects_reconsiderable.contains(GetPackageHash(package.m_unvalidated_txns))) {
+        // Should we do anything else here?
+        return;
+    }
+    const auto package_result{ProcessNewPackage(m_chainman.ActiveChainstate(), m_mempool,
+                                                package.m_unvalidated_txns, /*test_accept=*/false)};
+    if (package_result.m_state.IsInvalid()) {
+        // If another peer sends the same packageinfo again, we can immediately reject it without
+        // re-downloading the transactions. Note that state.IsInvalid() doesn't mean all
+        // transactions have been rejected.
+        m_recent_rejects_reconsiderable.insert(package.m_pkginfo_hash);
+    }
+    std::set<uint256> successful_txns;
+    std::set<uint256> invalid_final_txns;
+    for (const auto& tx : package.m_unvalidated_txns) {
+        const auto& txid = tx->GetHash();
+        const auto& wtxid = tx->GetWitnessHash();
+        const auto result{package_result.m_tx_results.find(wtxid)};
+        if (package_result.m_state.IsValid() ||
+            package_result.m_state.GetResult() == PackageValidationResult::PCKG_TX) {
+            // If PCKG_TX or valid, every tx should have a result.
+            Assume(result != package_result.m_tx_results.end());
+        }
+        if (result == package_result.m_tx_results.end()) break;
+        if (result->second.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+            LogPrint(BCLog::MEMPOOL, "\nProcessPackage: tx %s from peer=%d accepted\n", txid.ToString(), node.GetId());
+            successful_txns.insert(wtxid);
+            m_txrequest.ForgetTxHash(txid);
+            m_txrequest.ForgetTxHash(wtxid);
+            RelayTransaction(txid, wtxid);
+            node.m_last_tx_time = GetTime<std::chrono::seconds>();
+            for (const CTransactionRef& removedTx : result->second.m_replaced_transactions.value()) {
+                AddToCompactExtraTransactions(removedTx);
+            }
+        } else if (result->second.m_state.GetResult() != TxValidationResult::TX_WITNESS_STRIPPED) {
+            if (result->second.m_state.GetResult() == TxValidationResult::TX_LOW_FEE) {
+                m_recent_rejects_reconsiderable.insert(wtxid);
+                // FIXME: also cache subpackage failure
+            } else {
+                m_recent_rejects.insert(wtxid);
+                if (result->second.m_state.GetResult() == TxValidationResult::TX_INPUTS_NOT_STANDARD && wtxid != txid) {
+                    m_recent_rejects.insert(txid);
+                    m_txrequest.ForgetTxHash(txid);
+                } else if (result->second.m_state.GetResult() == TxValidationResult::TX_CONSENSUS) {
+                    invalid_final_txns.insert(wtxid);
+                }
+            }
+            m_txrequest.ForgetTxHash(wtxid);
+            if (RecursiveDynamicUsage(*tx) < 100000) {
+                AddToCompactExtraTransactions(tx);
+            }
+            LogPrint(BCLog::MEMPOOLREJ, "\nProcessPackage: %s from peer=%d was not accepted: %s\n",
+                     wtxid.ToString(), node.GetId(), result->second.m_state.ToString());
+            MaybePunishNodeForTx(wtxid == package.m_rep_wtxid ? node.GetId() : package.m_info_provider, result->second.m_state);
+        }
+        m_orphanage.EraseTx(wtxid);
+    }
+    m_txpackagetracker->FinalizeTransactions(successful_txns, invalid_final_txns);
+    // Do this last to avoid adding children that were already validated within this package.
+    for (const auto& tx : package.m_unvalidated_txns) {
+        auto iter{package_result.m_tx_results.find(tx->GetWitnessHash())};
+        if (iter != package_result.m_tx_results.end() && iter->second.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+            m_orphanage.AddChildrenToWorkSet(*tx);
+        }
+    }
+}
+
 bool PeerManagerImpl::PrepareBlockFilterRequest(CNode& node, Peer& peer,
                                                 BlockFilterType filter_type, uint32_t start_height,
                                                 const uint256& stop_hash, uint32_t max_height_diff,
@@ -4917,7 +4993,26 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
     }
 
     if (msg_type == NetMsgType::PKGTXNS) {
-        LogPrint(BCLog::NET, "pkgtxns received from peer=%d", pfrom.GetId());
+        if (RejectIncomingTxs(pfrom)) {
+            LogPrint(BCLog::NET, "\npkgtxns sent in violation of protocol peer=%d\n", pfrom.GetId());
+            pfrom.fDisconnect = true;
+            return;
+        }
+        if (!m_txpackagetracker) return;
+        unsigned int num_txns = ReadCompactSize(vRecv);
+        if (num_txns == 0) return;
+        if (num_txns > MAX_PACKAGE_COUNT) {
+            Misbehaving(*peer, 100, strprintf("pkgtxns size = %u", num_txns));
+            return;
+        }
+        std::vector<CTransactionRef> package_txns;
+        package_txns.resize(num_txns);
+        for (unsigned int n = 0; n < num_txns; n++) {
+            vRecv >> package_txns[n];
+        }
+        if (const auto package_to_validate{m_txpackagetracker->ReceivedPkgTxns(pfrom.GetId(), package_txns)}) {
+            ProcessPackage(pfrom, package_to_validate.value());
+        }
         return;
     }
 
@@ -5112,6 +5207,8 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                         pfrom.fDisconnect = true;
                     }
                     m_txpackagetracker->ForgetPkgInfo(pfrom.GetId(), inv.hash, node::RECEIVER_INIT_ANCESTOR_PACKAGES);
+                } else if (inv.IsMsgPkgTxns() && m_enable_package_relay) {
+                    m_txpackagetracker->ReceivedNotFound(pfrom.GetId(), inv.hash);
                 }
             }
         }
