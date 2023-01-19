@@ -78,7 +78,13 @@ bool LoadMempool(CTxMemPool& pool, const fs::path& load_path, Chainstate& active
             }
             if (nTime > TicksSinceEpoch<std::chrono::seconds>(now - pool.m_expiry)) {
                 LOCK(cs_main);
-                const auto& accepted = AcceptToMemoryPool(active_chainstate, tx, nTime, /*bypass_limits=*/false, /*test_accept=*/false);
+                // Make a best effort to persist transactions that were bumped in packages.  Use
+                // bypass_limits=true to bypass feerate checks. This also means the mempool may
+                // temporarily exceed its maximum capacity. bypass_limits is set to false on the
+                // last transaction to call TrimToSize(), ensuring the maximum memory limits are
+                // ultimately enforced and any transactions below minimum feerates are evicted.
+                const bool bypass_limits = num == 0 ? false : true;
+                const auto& accepted = AcceptToMemoryPool(active_chainstate, tx, nTime, /*bypass_limits=*/bypass_limits, /*test_accept=*/false);
                 if (accepted.m_result_type == MempoolAcceptResult::ResultType::VALID) {
                     ++count;
                 } else {
@@ -118,6 +124,8 @@ bool LoadMempool(CTxMemPool& pool, const fs::path& load_path, Chainstate& active
         return false;
     }
 
+    // Note that transactions may have succeeded (i.e. included in count) but later evicted if the
+    // mempool reached capacity and TrimToSize() removed the lowest descendant feerate packages.
     LogPrintf("Imported mempool transactions from disk: %i succeeded, %i failed, %i expired, %i already there, %i waiting for initial broadcast\n", count, failed, expired, already_there, unbroadcast);
     return true;
 }

@@ -27,10 +27,13 @@ from test_framework.wallet import (
 class MempoolLimitTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
-        self.num_nodes = 1
+        self.num_nodes = 2
         self.extra_args = [[
             "-datacarriersize=100000",
             "-maxmempool=5",
+        ],
+        [
+            "-datacarriersize=100000",
         ]]
         self.supports_cli = False
 
@@ -39,25 +42,31 @@ class MempoolLimitTest(BitcoinTestFramework):
         node = self.nodes[0]
         miniwallet = MiniWallet(node)
         relayfee = node.getnetworkinfo()['relayfee']
+        all_transactions = []
 
         self.log.info('Check that mempoolminfee is minrelaytxfee')
         assert_equal(node.getmempoolinfo()['minrelaytxfee'], Decimal('0.00001000'))
         assert_equal(node.getmempoolinfo()['mempoolminfee'], Decimal('0.00001000'))
 
-        tx_batch_size = 25
-        num_of_batches = 3
+        # Batch size 1 is required to ensure every tx has a different feerate, which means the
+        # selection of transaction(s) for eviction is identical across nodes.
+        tx_batch_size = 1
+        num_of_batches = 75
         # Generate UTXOs to flood the mempool
         # 1 to create a tx initially that will be evicted from the mempool later
-        # 3 batches of multiple transactions with a fee rate much higher than the previous UTXO
+        # 75 transactions, each with a fee rate much higher than the previous one
         # And 1 more to verify that this tx does not get added to the mempool with a fee rate less than the mempoolminfee
         # And 2 more for the package cpfp test
         self.generate(miniwallet, 1 + (num_of_batches * tx_batch_size) + 1 + 2)
 
         # Mine 99 blocks so that the UTXOs are allowed to be spent
         self.generate(node, COINBASE_MATURITY - 1)
+        self.disconnect_nodes(0, 1)
 
         self.log.info('Create a mempool tx that will be evicted')
-        tx_to_be_evicted_id = miniwallet.send_self_transfer(from_node=node, fee_rate=relayfee)["txid"]
+        tx_to_be_evicted = miniwallet.send_self_transfer(from_node=node, fee_rate=relayfee)
+        tx_to_be_evicted_id = tx_to_be_evicted["txid"]
+        all_transactions.append(tx_to_be_evicted["hex"])
 
         # Increase the tx fee rate to give the subsequent transactions a higher priority in the mempool
         # The tx has an approx. vsize of 65k, i.e. multiplying the previous fee rate (in sats/kvB)
@@ -67,7 +76,7 @@ class MempoolLimitTest(BitcoinTestFramework):
         self.log.info("Fill up the mempool with txs with higher fee rate")
         for batch_of_txid in range(num_of_batches):
             fee = (batch_of_txid + 1) * base_fee
-            create_lots_of_big_transactions(miniwallet, node, fee, tx_batch_size, txouts)
+            all_transactions.extend(create_lots_of_big_transactions(miniwallet, node, fee, tx_batch_size, txouts)[1])
 
         self.log.info('The tx should be evicted by now')
         # The number of transactions created should be greater than the ones present in the mempool
@@ -81,7 +90,9 @@ class MempoolLimitTest(BitcoinTestFramework):
 
         # Deliberately try to create a tx with a fee less than the minimum mempool fee to assert that it does not get added to the mempool
         self.log.info('Create a mempool tx that will not pass mempoolminfee')
-        assert_raises_rpc_error(-26, "mempool min fee not met", miniwallet.send_self_transfer, from_node=node, fee_rate=relayfee)
+        tx_below_mempoolmin = miniwallet.create_self_transfer(fee_rate=relayfee)
+        assert_raises_rpc_error(-26, "mempool min fee not met", node.sendrawtransaction, tx_below_mempoolmin["hex"])
+        all_transactions.append(tx_below_mempoolmin["hex"])
 
         self.log.info("Check that submitpackage allows cpfp of a parent below mempool min feerate")
         node = self.nodes[0]
@@ -119,7 +130,22 @@ class MempoolLimitTest(BitcoinTestFramework):
 
         # The node will broadcast each transaction, still abiding by its peer's fee filter
         peer.wait_for_broadcast([tx["tx"].getwtxid() for tx in package_txns])
-        self.generate(node, 1)
+        kept_txids = set(node.getrawmempool())
+
+        self.log.info('Test restarting with smaller maxmempool persists the correct transactions.')
+        # All transactions would make it in to a default size mempool:
+        self.nodes[1].prioritisetransaction(tx_rich["txid"], 0, int(DEFAULT_FEE * COIN))
+        for txhex in all_transactions:
+            self.nodes[1].sendrawtransaction(txhex)
+        self.nodes[1].submitpackage([tx["hex"] for tx in package_txns])
+        node1_info = self.nodes[1].getmempoolinfo()
+        assert_equal(node1_info["mempoolminfee"], node1_info["minrelaytxfee"])
+        self.stop_node(1)
+        # Upon restart, the mempool min fee will rise above 1sat/vB due to the limited capacity.
+        self.restart_node(1, extra_args=["-maxmempool=5","-datacarriersize=100000"])
+        node1_info_after_restart = self.nodes[1].getmempoolinfo()
+        assert_greater_than(node1_info_after_restart["mempoolminfee"], node1_info_after_restart["minrelaytxfee"])
+        assert_equal(set(self.nodes[1].getrawmempool()), kept_txids)
 
         self.log.info('Test passing a value below the minimum (5 MB) to -maxmempool throws an error')
         self.stop_node(0)
