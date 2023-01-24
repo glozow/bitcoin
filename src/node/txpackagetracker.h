@@ -102,6 +102,15 @@ public:
     /** Handle new block: Stop trying to resolve orphans that have been confirmed in or conflicted
      * by a block. */
     void HandleNewBlock(const CBlock& block);
+
+    /** Whether a package info message is allowed:
+     * - We agreed to relay packages of this version with this peer.
+     * - We solicited this package info.
+     * Returns false if the peer should be disconnected. */
+    bool PkgInfoAllowed(NodeId nodeid, const uint256& wtxid, uint32_t version);
+
+    /** Record receipt of a notfound message for pkginfo. */
+    void ForgetPkgInfo(NodeId nodeid, const uint256& rep_wtxid, uint32_t pkginfo_version);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXPACKAGETRACKER_H
