@@ -11,6 +11,7 @@
 #include <map>
 #include <vector>
 
+class CBlock;
 namespace node {
 /** Default for -maxorphantx, maximum number of orphan transactions kept in memory */
 static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100;
@@ -34,7 +35,6 @@ public:
     void DisconnectedPeer(NodeId nodeid);
     /** Returns whether a tx is present in the orphanage. */
     bool OrphanageHaveTx(const GenTxid& gtxid) const;
-    bool AddOrphanTx(const CTransactionRef& tx, NodeId peer);
     /** Transaction accepted to mempool. */
     void TransactionAccepted(const CTransactionRef& tx);
     /** Transaction rejected for non-missing-inputs reason. */
@@ -45,6 +45,34 @@ public:
     bool HaveTxToReconsider(NodeId nodeid) const;
     /** Returns the number of transactions in the orphanage. */
     size_t OrphanageSize() const;
+
+    bool AddOrphanTx(const CTransactionRef& tx, NodeId nodeid);
+
+    /** Received an announcement from this peer for a tx we already know is an orphan; should be
+     * called for every peer that announces the tx, even if they are not a package relay peer.
+     * The orphan request tracker will decide when to request what from which peer - use
+     * GetOrphanRequests().
+     * returns whether this transaction has been newly added to the orphanage.
+     */
+    bool AddOrphanTx(NodeId nodeid, const CTransactionRef& wtxid, bool is_preferred, std::chrono::microseconds reqtime);
+
+    /** Number of packages we are working on with this peer. Includes any entries in the orphan
+     * tracker, in-flight orphan parent requests (1 per orphan regardless of how many missing
+     * parents were requested), package info requests, tx data download, and packages in the
+     * validation queue. */
+    size_t Count(NodeId nodeid) const;
+
+    /** Number of packages we are currently working on with this peer (i.e. reserving memory for
+     * storing orphan(s)). Includes in-flight package info requests, tx data download, and packages
+     * in the validation queue. Excludes entries in the orphan tracker that are just candidates. */
+    size_t CountInFlight(NodeId nodeid) const;
+
+    /** Get list of requests that should be sent to resolve orphans. These may be wtxids to send
+     * getdata(ANCPKGINFO) or txids corresponding to parents. Automatically marks the orphans as
+     * having outgoing requests. */
+    std::vector<GenTxid> GetOrphanRequests(NodeId nodeid, std::chrono::microseconds current_time);
+
+    void FinalizeTransactions(const std::set<uint256>& valid, const std::set<uint256>& invalid);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXPACKAGETRACKER_H
