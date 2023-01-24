@@ -19,6 +19,13 @@ static constexpr uint32_t RECEIVER_INIT_ANCESTOR_PACKAGES{0};
 static std::vector<uint32_t> PACKAGE_RELAY_SUPPORTED_VERSIONS = {
     RECEIVER_INIT_ANCESTOR_PACKAGES,
 };
+/** If working on this many packages with a peer, drop any new orphan resolutions with this peer and
+ * try a different peer (assuming another peer announced the tx as well) instead.
+ * Includes package info requests, tx data download, and packages in validation queue.
+ * This is meant to bound the memory reserved for protected orphans; a single peer should not be
+ * able to cause us to store lots of orphans by announcing packages and stalling download.
+ * Individual packages are also bounded in size. */
+static constexpr size_t MAX_IN_FLIGHT_PACKAGES{1};
 
 class TxPackageTracker {
     class Impl;
@@ -73,6 +80,15 @@ public:
     /** Handle new block: Stop trying to resolve orphans that have been confirmed in or conflicted
      * by a block. */
     void HandleNewBlock(const CBlock& block);
+
+    /** Whether a package info message is allowed:
+     * - We agreed to relay packages of this version with this peer.
+     * - We solicited this package info.
+     * Returns false if the peer should be disconnected. */
+    bool PkgInfoAllowed(NodeId nodeid, const uint256& wtxid, uint32_t version);
+
+    /** Record receipt of a notfound message for pkginfo. */
+    void ForgetPkgInfo(NodeId nodeid, const uint256& rep_wtxid, uint32_t pkginfo_version);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXPACKAGETRACKER_H
