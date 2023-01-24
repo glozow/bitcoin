@@ -39,6 +39,10 @@ class TxPackageTracker::Impl {
             return m_txrelay && m_wtxid_relay && m_sendpackages_received;
         }
     };
+    using PackageInfoRequestId = uint256;
+    PackageInfoRequestId GetPackageInfoRequestId(NodeId nodeid, const uint256& wtxid, uint32_t version) {
+        return (CHashWriter(SER_GETHASH, 0) << nodeid << wtxid << version).GetHash();
+    }
 
     struct PeerInfo {
         // What package versions we agreed to relay.
@@ -54,12 +58,14 @@ class TxPackageTracker::Impl {
      * whether or not we relay packages with a peer. */
     std::map<NodeId, PeerInfo> info_per_peer GUARDED_BY(m_mutex);
 
-
     /** Tracks orphans for which we need to request ancestor information. All hashes stored are
      * wtxids, i.e., the wtxid of the orphan. However, the is_wtxid field is used to indicate
      * whether we would request the ancestor information by wtxid (via package relay) or by txid
      * (via prevouts of the missing inputs). */
     TxRequestTracker orphan_request_tracker GUARDED_BY(m_mutex);
+
+    /** Cache of package info requests sent. Used to identify unsolicited package info messages. */
+    CRollingBloomFilter packageinfo_requested GUARDED_BY(m_mutex){50000, 0.000001};
 
 public:
     Impl(const TxPackageTracker::Options& opts) :
@@ -156,9 +162,17 @@ public:
     {
         AssertLockNotHeld(m_mutex);
         LOCK(m_mutex);
-        // Even though this stores the orphan wtxid, is_wtxid=false because we will be requesting the parents via txid.
-        orphan_request_tracker.ReceivedInv(nodeid, GenTxid::Txid(tx.first),
-                                           is_preferred, reqtime);
+        // Skip if already requested in the (recent-ish) past.
+        if (packageinfo_requested.contains(GetPackageInfoRequestId(nodeid, tx.first, RECEIVER_INIT_ANCESTOR_PACKAGES))) return;
+        auto it_peer_info = info_per_peer.find(nodeid);
+        if (it_peer_info != info_per_peer.end() && it_peer_info->second.SupportsVersion(RECEIVER_INIT_ANCESTOR_PACKAGES)) {
+            // Package relay peer: is_wtxid=true because we will be requesting via ancpkginfo.
+            orphan_request_tracker.ReceivedInv(nodeid, GenTxid::Wtxid(tx.first), is_preferred, reqtime);
+        } else {
+            // Even though this stores the orphan wtxid, is_wtxid=false because we will be requesting the parents via txid.
+            orphan_request_tracker.ReceivedInv(nodeid, GenTxid::Txid(tx.first), is_preferred, reqtime);
+        }
+
         if (tx.second && m_orphanage.AddTx(tx.second, nodeid)) {
             // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
             m_orphanage.LimitOrphans(m_max_orphan_count);
@@ -212,35 +226,65 @@ public:
         }
         std::vector<GenTxid> results;
         for (const auto& gtxid : tracker_requestable) {
-            LogPrint(BCLog::TXPACKAGES, "\nResolving orphan %s, requesting by txids of parents from peer=%d\n", gtxid.GetHash().ToString(), nodeid);
-            const auto ptx = m_orphanage.GetTx(gtxid.GetHash());
-            if (!ptx) {
-                // We can't request ancpkginfo and we have no way of knowing what the missing
-                // parents are (it could also be that the orphan has already been resolved).
-                // Give up.
-                orphan_request_tracker.ForgetTxHash(gtxid.GetHash());
-                LogPrint(BCLog::TXPACKAGES, "\nForgetting orphan %s from peer=%d\n", gtxid.GetHash().ToString(), nodeid);
-                continue;
+            if (gtxid.IsWtxid()) {
+                Assume(info_per_peer.find(nodeid) != info_per_peer.end());
+                // Add the orphan's wtxid as-is.
+                LogPrint(BCLog::TXPACKAGES, "\nResolving orphan %s, requesting by ancpkginfo from peer=%d\n", gtxid.GetHash().ToString(), nodeid);
+                results.emplace_back(gtxid);
+                packageinfo_requested.insert(GetPackageInfoRequestId(nodeid, gtxid.GetHash(), RECEIVER_INIT_ANCESTOR_PACKAGES));
+                orphan_request_tracker.RequestedTx(nodeid, gtxid.GetHash(), current_time + ORPHAN_ANCESTOR_GETDATA_INTERVAL);
+            } else {
+                LogPrint(BCLog::TXPACKAGES, "\nResolving orphan %s, requesting by txids of parents from peer=%d\n", gtxid.GetHash().ToString(), nodeid);
+                const auto ptx = m_orphanage.GetTx(gtxid.GetHash());
+                if (!ptx) {
+                    // We can't request ancpkginfo and we have no way of knowing what the missing
+                    // parents are (it could also be that the orphan has already been resolved).
+                    // Give up.
+                    orphan_request_tracker.ForgetTxHash(gtxid.GetHash());
+                    LogPrint(BCLog::TXPACKAGES, "\nForgetting orphan %s from peer=%d\n", gtxid.GetHash().ToString(), nodeid);
+                    continue;
+                }
+                // Add the orphan's parents. Net processing will filter out what we already have.
+                // Deduplicate parent txids, so that we don't have to loop over
+                // the same parent txid more than once down below.
+                std::vector<uint256> unique_parents;
+                unique_parents.reserve(ptx->vin.size());
+                for (const auto& txin : ptx->vin) {
+                    // We start with all parents, and then remove duplicates below.
+                    unique_parents.push_back(txin.prevout.hash);
+                }
+                std::sort(unique_parents.begin(), unique_parents.end());
+                unique_parents.erase(std::unique(unique_parents.begin(), unique_parents.end()), unique_parents.end());
+                for (const auto& txid : unique_parents) {
+                    results.emplace_back(GenTxid::Txid(txid));
+                }
+                // Mark the orphan as requested
+                orphan_request_tracker.RequestedTx(nodeid, gtxid.GetHash(), current_time + ORPHAN_ANCESTOR_GETDATA_INTERVAL);
             }
-            // Add the orphan's parents. Net processing will filter out what we already have.
-            // Deduplicate parent txids, so that we don't have to loop over
-            // the same parent txid more than once down below.
-            std::vector<uint256> unique_parents;
-            unique_parents.reserve(ptx->vin.size());
-            for (const auto& txin : ptx->vin) {
-                // We start with all parents, and then remove duplicates below.
-                unique_parents.push_back(txin.prevout.hash);
-            }
-            std::sort(unique_parents.begin(), unique_parents.end());
-            unique_parents.erase(std::unique(unique_parents.begin(), unique_parents.end()), unique_parents.end());
-            for (const auto& txid : unique_parents) {
-                results.emplace_back(GenTxid::Txid(txid));
-            }
-            // Mark the orphan as requested
-            orphan_request_tracker.RequestedTx(nodeid, gtxid.GetHash(), current_time + ORPHAN_ANCESTOR_GETDATA_INTERVAL);
         }
         if (!results.empty()) LogPrint(BCLog::TXPACKAGES, "\nRequesting %u items from peer=%d\n", results.size(), nodeid);
         return results;
+    }
+    bool PkgInfoAllowed(NodeId nodeid, const uint256& wtxid, uint32_t version) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
+    {
+        AssertLockNotHeld(m_mutex);
+        LOCK(m_mutex);
+        if (info_per_peer.find(nodeid) == info_per_peer.end()) {
+            return false;
+        }
+        if (!packageinfo_requested.contains(GetPackageInfoRequestId(nodeid, wtxid, RECEIVER_INIT_ANCESTOR_PACKAGES))) {
+            return false;
+        }
+        orphan_request_tracker.ReceivedResponse(nodeid, wtxid);
+        return true;
+    }
+    void ForgetPkgInfo(NodeId nodeid, const uint256& rep_wtxid, uint32_t pkginfo_version) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
+    {
+        AssertLockNotHeld(m_mutex);
+        LOCK(m_mutex);
+        if (pkginfo_version == RECEIVER_INIT_ANCESTOR_PACKAGES) {
+            orphan_request_tracker.ReceivedResponse(nodeid, rep_wtxid);
+        }
     }
 };
 
@@ -275,5 +319,13 @@ size_t TxPackageTracker::Count(NodeId nodeid) const { return m_impl->Count(nodei
 size_t TxPackageTracker::CountInFlight(NodeId nodeid) const { return m_impl->CountInFlight(nodeid); }
 std::vector<GenTxid> TxPackageTracker::GetOrphanRequests(NodeId nodeid, std::chrono::microseconds current_time) {
     return m_impl->GetOrphanRequests(nodeid, current_time);
+}
+bool TxPackageTracker::PkgInfoAllowed(NodeId nodeid, const uint256& wtxid, uint32_t version)
+{
+    return m_impl->PkgInfoAllowed(nodeid, wtxid, version);
+}
+void TxPackageTracker::ForgetPkgInfo(NodeId nodeid, const uint256& rep_wtxid, uint32_t pkginfo_version)
+{
+    m_impl->ForgetPkgInfo(nodeid, rep_wtxid, pkginfo_version);
 }
 } // namespace node
