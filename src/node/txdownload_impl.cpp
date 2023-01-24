@@ -294,10 +294,12 @@ void TxDownloadImpl::ReceivedTxInv(NodeId peer, const GenTxid& gtxid, std::chron
     AddTxAnnouncement(peer, gtxid, now);
 }
 
-std::vector<GenTxid> TxDownloadImpl::GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time)
+std::vector<GenRequest> TxDownloadImpl::GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time)
     EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)
 {
     LOCK(m_tx_download_mutex);
+    if (!Assume(m_peer_info.count(nodeid) > 0)) return {};
+    std::vector<GenRequest> requests;
     // First process orphan resolution so that the tx requests can be sent asap
     std::vector<std::pair<NodeId, GenTxid>> expired_orphan_resolution;
     const auto orphans_ready = m_orphan_resolution_tracker.GetRequestable(nodeid, current_time, &expired_orphan_resolution);
@@ -308,11 +310,15 @@ std::vector<GenTxid> TxDownloadImpl::GetRequestsToSend(NodeId nodeid, std::chron
         Assume(orphan_gtxid.IsWtxid());
         m_orphanage.EraseOrphanOfPeer(orphan_gtxid.GetHash(), nodeid);
     }
+    const bool is_package_relay_peer{m_peer_info.at(nodeid).SupportsVersion(PackageRelayVersions::PKG_RELAY_ANCPKG)};
     for (const auto& orphan_gtxid : orphans_ready) {
         Assume(orphan_gtxid.IsWtxid());
-        const auto parent_txids{m_orphanage.GetParentTxids(orphan_gtxid.GetHash())};
-        if (parent_txids.has_value()) {
-            if (!Assume(m_peer_info.count(nodeid) > 0)) continue;
+        if (is_package_relay_peer) {
+            LogPrint(BCLog::TXPACKAGES, "requesting ancpkginfo from peer=%d for orphan %s\n", nodeid, orphan_gtxid.GetHash().ToString());
+            requests.emplace_back(GenRequest::PkgRequest(orphan_gtxid));
+            m_package_info_requested.insert(GetPackageInfoRequestId(nodeid, orphan_gtxid.GetHash(), PackageRelayVersions::PKG_RELAY_ANCPKG));
+            m_orphan_resolution_tracker.RequestedTx(nodeid, orphan_gtxid.GetHash(), current_time + ORPHAN_ANCESTOR_GETDATA_INTERVAL);
+        } else if (auto parent_txids{m_orphanage.GetParentTxids(orphan_gtxid.GetHash())}) {
             const auto& info = m_peer_info.at(nodeid).m_connection_info;
             for (const auto& txid : *parent_txids) {
                 // Schedule with no delay. It should be requested immediately
@@ -331,7 +337,6 @@ std::vector<GenTxid> TxDownloadImpl::GetRequestsToSend(NodeId nodeid, std::chron
     }
 
     // Now process txrequest
-    std::vector<GenTxid> requests;
     std::vector<std::pair<NodeId, GenTxid>> expired;
     auto requestable = m_txrequest.GetRequestable(nodeid, current_time, &expired);
     for (const auto& entry : expired) {
@@ -342,7 +347,7 @@ std::vector<GenTxid> TxDownloadImpl::GetRequestsToSend(NodeId nodeid, std::chron
         if (!AlreadyHaveTxLocked(gtxid)) {
             LogPrint(BCLog::NET, "Requesting %s %s peer=%d\n", gtxid.IsWtxid() ? "wtx" : "tx",
                 gtxid.GetHash().ToString(), nodeid);
-            requests.emplace_back(gtxid);
+            requests.emplace_back(GenRequest::TxRequest(gtxid));
             m_txrequest.RequestedTx(nodeid, gtxid.GetHash(), current_time + GETDATA_TX_INTERVAL);
         } else {
             // We have already seen this transaction, no need to download. This is just a belt-and-suspenders, as
@@ -362,20 +367,44 @@ bool TxDownloadImpl::ReceivedTx(NodeId nodeid, const CTransactionRef& ptx)
     return AlreadyHaveTxLocked(GenTxid::Wtxid(ptx->GetWitnessHash()));
 }
 
-void TxDownloadImpl::ReceivedNotFound(NodeId nodeid, const std::vector<uint256>& txhashes)
+void TxDownloadImpl::ReceivedNotFound(NodeId nodeid, const std::vector<GenRequest>& requests)
     EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)
 {
     LOCK(m_tx_download_mutex);
-    for (const auto& txhash: txhashes) {
-        // If we receive a NOTFOUND message for a tx we requested, mark the announcement for it as
-        // completed in TxRequestTracker.
-        m_txrequest.ReceivedResponse(nodeid, txhash);
+    for (const auto& request: requests) {
+        if (request.m_type == GenRequest::Type::ANCPKGINFO) {
+            // We tried to resolve the orphan with this peer, but they couldn't send the
+            // ancpkginfo. Mark this as a failed orphan resolution attempt.
+            m_orphan_resolution_tracker.ReceivedResponse(nodeid, request.m_id);
+        } else {
+            // If we receive a NOTFOUND message for a tx we requested, mark the announcement for it as
+            // completed in TxRequestTracker.
+            m_txrequest.ReceivedResponse(nodeid, request.m_id);
+        }
     }
+}
+
+bool TxDownloadImpl::PackageInfoAllowed(NodeId nodeid, const uint256& wtxid, PackageRelayVersions version) const
+    EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)
+{
+    LOCK(m_tx_download_mutex);
+    // Not allowed if peer isn't registered
+    if (m_peer_info.count(nodeid) == 0) return false;
+    const auto& peerinfo = m_peer_info.at(nodeid);
+    // Not allowed if we didn't negotiate this version of package relay with this peer
+    if (!peerinfo.SupportsVersion(version)) return false;
+    // Not allowed if we didn't solicit this package info.
+    if (!m_package_info_requested.contains(GetPackageInfoRequestId(nodeid, wtxid, version))) return false;
+
+    return true;
 }
 
 void TxDownloadImpl::AddOrphanAnnouncer(NodeId nodeid, const uint256& orphan_wtxid, std::chrono::microseconds now)
 {
     if (!Assume(m_peer_info.count(nodeid) > 0)) return;
+    // Skip if we already requested ancpkginfo for this tx from this peer recently.
+    if (m_package_info_requested.contains(GetPackageInfoRequestId(nodeid, orphan_wtxid, PackageRelayVersions::PKG_RELAY_ANCPKG))) return;
+
     const auto& info = m_peer_info.at(nodeid).m_connection_info;
     // This mirrors the delaying and dropping behavior in ReceivedTxInv in order to preserve
     // existing behavior.
@@ -393,7 +422,8 @@ void TxDownloadImpl::AddOrphanAnnouncer(NodeId nodeid, const uint256& orphan_wtx
     const bool overloaded = !info.m_relay_permissions && m_txrequest.CountInFlight(nodeid) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
     if (overloaded) delay += OVERLOADED_PEER_TX_DELAY;
 
-    LogPrint(BCLog::TXPACKAGES, "adding peer=%d as a candidate for resolving orphan %s\n", nodeid, orphan_wtxid.ToString());
+    LogPrint(BCLog::TXPACKAGES, "adding peer=%d as a candidate for resolving orphan %s using %s\n", nodeid, orphan_wtxid.ToString(),
+        m_peer_info.at(nodeid).SupportsVersion(PackageRelayVersions::PKG_RELAY_ANCPKG) ? "package relay" : "parent-fetching");
     m_orphanage.AddAnnouncer(orphan_wtxid, nodeid);
     m_orphan_resolution_tracker.ReceivedInv(nodeid, GenTxid::Wtxid(orphan_wtxid), info.m_preferred, now + delay);
 }

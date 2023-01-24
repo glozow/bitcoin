@@ -61,6 +61,29 @@ struct TxDownloadConnectionInfo {
     /** Whether this peer is an inbound peer. */
     const bool m_inbound;
 };
+/** Represents a getdata message. */
+struct GenRequest {
+    uint256 m_id;
+    enum class Type : uint8_t {
+        TXID,       //!> txid only
+        WTXID,      //!> wtxid only
+        ANYTX,      //!> Any tx hash, not package
+        ANCPKGINFO, //!> wtxid, ancpkginfo
+    };
+    Type m_type;
+    GenRequest() = delete;
+    // All construction should be through these static methods.
+    static GenRequest TxRequest(const GenTxid& gtxid) { return GenRequest(gtxid.GetHash(), gtxid.IsWtxid() ? Type::WTXID : Type::TXID); }
+    static GenRequest TxRequest(const uint256& txhash) { return GenRequest(txhash, Type::ANYTX); }
+    static GenRequest PkgRequest(const GenTxid& gtxid) { return GenRequest(gtxid.GetHash(), Type::ANCPKGINFO); }
+    static GenRequest PkgRequest(const uint256& txhash) { return GenRequest(txhash, Type::ANCPKGINFO); }
+
+
+    // Ctor is private to avoid misuse
+    private:
+    explicit GenRequest(const uint256& id, Type type) : m_id{id}, m_type{type} {}
+
+};
 
 class TxDownloadImpl {
 public:
@@ -188,6 +211,16 @@ public:
      * necessarily all peers we are connected to (no block-relay-only and temporary connections). */
     std::map<NodeId, PeerInfo> m_peer_info GUARDED_BY(m_tx_download_mutex);
 
+    /** unique ID for a package information request for a tx to a peer. */
+    using PackageInfoRequestId = uint256;
+    static PackageInfoRequestId GetPackageInfoRequestId(NodeId nodeid, const uint256& wtxid, PackageRelayVersions version) {
+        return (CHashWriter(SER_GETHASH, 0) << nodeid << wtxid << uint64_t{version}).GetSHA256(); 
+    }
+
+    /** Keep track of the package info requests we have sent recently. Used to identify unsolicited
+     * package info messages and already-sent-recently requests. */
+    CRollingBloomFilter m_package_info_requested GUARDED_BY(m_tx_download_mutex){50'000, 0.000001};
+
     /** Number of wtxid relay peers we have. */
     uint32_t m_num_wtxid_peers GUARDED_BY(m_tx_download_mutex){0};
 
@@ -254,7 +287,7 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
 
     /** Get getdata requests to send. */
-    std::vector<GenTxid> GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time)
+    std::vector<GenRequest> GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time)
         EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
 
     /** Marks a tx as ReceivedResponse in txrequest. Returns whether we AlreadyHaveTx. */
@@ -262,7 +295,11 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
 
     /** Marks a tx as ReceivedResponse in txrequest. */
-    void ReceivedNotFound(NodeId nodeid, const std::vector<uint256>& txhashes)
+    void ReceivedNotFound(NodeId nodeid, const std::vector<GenRequest>& txhashes)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
+
+    /** Returns whether a peer is allowed to send this package info. */
+    bool PackageInfoAllowed(NodeId nodeid, const uint256& wtxid, PackageRelayVersions version) const
         EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
 
     /** Creates deduplicated list of missing parents (based on AlreadyHaveTx). Adds tx to orphanage

@@ -67,7 +67,7 @@ public:
         { return m_impl->ReceivedTxInv(peer, gtxid, now); }
 
     /** Get getdata requests to send. */
-    std::vector<GenTxid> GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time) {
+    std::vector<GenRequest> GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time) {
         return m_impl->GetRequestsToSend(nodeid, current_time);
     }
 
@@ -75,7 +75,12 @@ public:
     bool ReceivedTx(NodeId nodeid, const CTransactionRef& ptx) { return m_impl->ReceivedTx(nodeid, ptx); }
 
     /** Should be called when a notfound for a tx has been received. */
-    void ReceivedNotFound(NodeId nodeid, const std::vector<uint256>& txhashes) { m_impl->ReceivedNotFound(nodeid, txhashes); }
+    void ReceivedNotFound(NodeId nodeid, const std::vector<GenRequest>& txhashes) { m_impl->ReceivedNotFound(nodeid, txhashes); }
+
+    /** Returns whether a peer is allowed to send this package info. */
+    bool PackageInfoAllowed(NodeId nodeid, const uint256& wtxid, PackageRelayVersions version) const {
+        return m_impl->PackageInfoAllowed(nodeid, wtxid, version);
+    }
 
     /** Add a new orphan transaction. Returns whether this orphan is going to be processed and the
      * list of deduplicated parent txids that we don't already have. */

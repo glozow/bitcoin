@@ -4689,11 +4689,13 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
     if (msg_type == NetMsgType::NOTFOUND) {
         std::vector<CInv> vInv;
         vRecv >> vInv;
-        std::vector<uint256> tx_invs;
+        std::vector<node::GenRequest> tx_invs;
         if (vInv.size() <= node::MAX_PEER_TX_ANNOUNCEMENTS + MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
             for (CInv &inv : vInv) {
                 if (inv.IsGenTxMsg()) {
-                    tx_invs.emplace_back(inv.hash);
+                    tx_invs.emplace_back(node::GenRequest::TxRequest(inv.hash));
+                } else if (inv.IsMsgAncPkgInfo()) {
+                    tx_invs.emplace_back(node::GenRequest::PkgRequest(inv.hash));
                 }
             }
         }
@@ -5686,8 +5688,16 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
         //
         // Message: getdata (transactions)
         //
-        for (const GenTxid& gtxid : m_txdownloadman.GetRequestsToSend(pto->GetId(), current_time)) {
-            vGetData.emplace_back(gtxid.IsWtxid() ? MSG_WTX : (MSG_TX | GetFetchFlags(*peer)), gtxid.GetHash());
+        for (const auto& request : m_txdownloadman.GetRequestsToSend(pto->GetId(), current_time)) {
+            if (request.m_type == node::GenRequest::Type::TXID) {
+                vGetData.emplace_back((MSG_TX | GetFetchFlags(*peer)), request.m_id);
+            } else if (request.m_type == node::GenRequest::Type::WTXID) {
+                vGetData.emplace_back(MSG_WTX, request.m_id);
+            } else if (request.m_type == node::GenRequest::Type::ANCPKGINFO) {
+                vGetData.emplace_back(MSG_ANCPKGINFO, request.m_id);
+            } else {
+                Assume(false);
+            }
             if (vGetData.size() >= MAX_GETDATA_SZ) {
                 m_connman.PushMessage(pto, msgMaker.Make(NetMsgType::GETDATA, vGetData));
                 vGetData.clear();
