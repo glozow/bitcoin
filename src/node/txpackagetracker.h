@@ -11,6 +11,7 @@
 #include <map>
 #include <vector>
 
+class CBlock;
 class TxOrphanage;
 namespace node {
 static constexpr bool DEFAULT_ENABLE_PACKAGE_RELAY{false};
@@ -22,8 +23,6 @@ class TxPackageTracker {
 public:
     explicit TxPackageTracker();
     ~TxPackageTracker();
-
-    bool OrphanageAddTx(const CTransactionRef& tx, NodeId peer);
 
     /** Check if we already have an orphan transaction (by txid or wtxid) */
     bool OrphanageHaveTx(const GenTxid& gtxid);
@@ -58,6 +57,30 @@ public:
      * still want to try to resolve. Remove its entries from the orphanage and other data
      * structures. */
     void MempoolRejectedTx(const uint256& wtxid);
+
+    /** Add a new orphan or an announcement for a known orphan. This should be called for every
+     * peer that announces the orphan.  The orphan request tracker will decide when to request what
+     * from which peer - use GetOrphanRequests().
+     * @param[in]   tx      CTransactionRef if this is a new orphan, or nullptr if an announcement
+     *                      for a known orphan.
+     * @param[in]   reqtime Some time in the future when the orphan resolution information should be
+     *                      requested. This may be further extended internally.
+     */
+    void AddOrphanTx(NodeId nodeid, const uint256& wtxid, const CTransactionRef& tx, bool is_preferred, std::chrono::microseconds reqtime);
+
+    /** Number of orphans this peer has told us about, including ones for which we don't have
+     * in-flight requests. */
+    size_t Count(NodeId nodeid) const;
+
+    /** Number of packages we are working on with this peer that have in-flight requests. For
+     * example, orphans for which we have requested parents and are waiting for a response (1 per
+     * orphan regardless of how many missing parents were requested). */
+    size_t CountInFlight(NodeId nodeid) const;
+
+    /** Get list of requests that should be sent to resolve orphans. These may be wtxids to send
+     * getdata(ANCPKGINFO) or txids corresponding to parents. Automatically marks the orphans as
+     * having outgoing requests. */
+    std::vector<GenTxid> GetOrphanRequests(NodeId nodeid, std::chrono::microseconds current_time);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXPACKAGETRACKER_H
