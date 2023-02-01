@@ -36,6 +36,32 @@ class PrioritiseTransactionTest(BitcoinTestFramework):
             node.prioritisetransaction(txid, 0, -delta)
         assert_equal(node.getprioritisedtransactions(), {})
 
+    def test_deprioritsation_evict(self):
+        node = self.nodes[0]
+        self.log.info("Test that de-prioritisation of a transaction can cause eviction from mempool")
+        # This transaction pays fees but is de-prioritised after submission.
+        tx_deprio = self.wallet.send_self_transfer(from_node=node, confirmed_only=True)
+        # This transaction is 0-fee and prioritised to allow its submission, then loses its
+        # prioritisation afterward.
+        tx_0fee_prio = self.wallet.create_self_transfer(fee=0, fee_rate=0, confirmed_only=True)
+        compensation_delta = COIN
+        node.prioritisetransaction(tx_0fee_prio["txid"], 0, compensation_delta)
+        node.sendrawtransaction(tx_0fee_prio["hex"])
+
+        assert tx_deprio["txid"] in node.getrawmempool()
+        assert tx_0fee_prio["txid"] in node.getrawmempool()
+
+        # De-prioritise or remove prioritisation
+        node.prioritisetransaction(tx_deprio["txid"], 0, -999999)
+        node.prioritisetransaction(tx_0fee_prio["txid"], 0, -compensation_delta)
+        assert tx_0fee_prio["txid"] not in node.getprioritisedtransactions()
+
+        # Trigger a trim by submitting a transaction successfully
+        tx_new = self.wallet.send_self_transfer(from_node=node)
+        assert tx_new["txid"] in node.getrawmempool()
+        assert tx_deprio["txid"] not in node.getrawmempool()
+        assert tx_0fee_prio["txid"] not in node.getrawmempool()
+
     def test_replacement(self):
         self.log.info("Test tx prioritisation stays after a tx is replaced")
         conflicting_input = self.wallet.get_utxo()
@@ -303,6 +329,8 @@ class PrioritiseTransactionTest(BitcoinTestFramework):
         new_template = self.nodes[0].getblocktemplate({'rules': ['segwit']})
 
         assert template != new_template
+
+        self.test_deprioritsation_evict()
 
 if __name__ == '__main__':
     PrioritiseTransactionTest().main()
