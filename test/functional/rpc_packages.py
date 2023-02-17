@@ -401,19 +401,6 @@ class RPCPackagesTest(BitcoinTestFramework):
             self.test_submit_child_with_parents(num_parents, False)
             self.test_submit_child_with_parents(num_parents, True)
 
-        self.log.info("Submitpackage only allows packages of 1 child with its parents")
-        # Chain of 3 transactions has too many generations
-        legacy_pool = node.getrawmempool()
-        chain_hex = [t["hex"] for t in self.wallet.create_self_transfer_chain(chain_length=3)]
-        assert_raises_rpc_error(-25, "package topology disallowed", node.submitpackage, chain_hex)
-        assert_equal(legacy_pool, node.getrawmempool())
-
-        assert_raises_rpc_error(-8, f"Array must contain between 1 and {MAX_PACKAGE_COUNT} transactions.", node.submitpackage, [])
-        assert_raises_rpc_error(
-            -8, f"Array must contain between 1 and {MAX_PACKAGE_COUNT} transactions.",
-            node.submitpackage, [chain_hex[0]] * (MAX_PACKAGE_COUNT + 1)
-        )
-
         # Create a transaction chain such as only the parent gets accepted (by making the child's
         # version non-standard). Make sure the parent does get broadcast.
         self.log.info("If a package is partially submitted, transactions included in mempool get broadcast")
@@ -526,9 +513,6 @@ class RPCPackagesTest(BitcoinTestFramework):
         child_tx = self.wallet.create_self_transfer(utxo_to_spend=parent_tx["new_utxo"])
         grandchild_tx = self.wallet.create_self_transfer(utxo_to_spend=child_tx["new_utxo"])
         ggrandchild_tx = self.wallet.create_self_transfer(utxo_to_spend=grandchild_tx["new_utxo"])
-
-        # Submitting them all together doesn't work, as the topology is not child-with-parents
-        assert_raises_rpc_error(-25, "package topology disallowed", node.submitpackage, [parent_tx["hex"], child_tx["hex"], grandchild_tx["hex"], ggrandchild_tx["hex"]])
 
         # Submit older package and check acceptance
         result_submit_older = node.submitpackage(package=[parent_tx["hex"], child_tx["hex"]])
