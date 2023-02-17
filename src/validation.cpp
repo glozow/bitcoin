@@ -515,8 +515,8 @@ public:
             };
         }
 
-        /** Parameters for child-with-parents package validation. */
-        static ATMPArgs PackageChildWithParents(const CChainParams& chainparams, int64_t accept_time,
+        /** Parameters for package validation of a tx with ancestors. */
+        static ATMPArgs AnyPackageAccept(const CChainParams& chainparams, int64_t accept_time,
                                                 std::vector<COutPoint>& coins_to_uncache, const std::optional<CFeeRate>& client_maxfeerate) {
             return ATMPArgs{/* m_chainparams */ chainparams,
                             /* m_accept_time */ accept_time,
@@ -1607,26 +1607,14 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     // Used if returning a PackageMempoolAcceptResult directly from this function.
     PackageValidationState package_state_quit_early;
 
-    // There are two topologies we are able to handle through this function:
-    // (1) A single transaction
-    // (2) A child-with-parents package.
     // Check that the package is well-formed. If it isn't, we won't try to validate any of the
     // transactions and thus won't return any MempoolAcceptResults, just a package-wide error.
-
     // Context-free package checks.
     if (!IsWellFormedPackage(package, package_state_quit_early, /*require_sorted=*/true)) {
         return PackageMempoolAcceptResult(package_state_quit_early, {});
     }
 
-    if (package.size() > 1 && !IsChildWithParents(package)) {
-        // All transactions in the package must be a parent of the last transaction. This is just an
-        // opportunity for us to fail fast on a context-free check without taking the mempool lock.
-        package_state_quit_early.Invalid(PackageValidationResult::PCKG_POLICY, "package-not-child-with-parents");
-        return PackageMempoolAcceptResult(package_state_quit_early, {});
-    }
-
     PackageValidationState package_state_final;
-
     LOCK(m_pool.cs);
     MiniGraph package_sorter(package, std::max(m_pool.GetMinFee(), m_pool.m_opts.min_relay_feerate));
 
@@ -1881,7 +1869,7 @@ PackageMempoolAcceptResult ProcessNewPackage(Chainstate& active_chainstate, CTxM
             auto args = MemPoolAccept::ATMPArgs::PackageTestAccept(chainparams, GetTime(), coins_to_uncache);
             return MemPoolAccept(pool, active_chainstate).AcceptMultipleTransactions(package, args);
         } else {
-            auto args = MemPoolAccept::ATMPArgs::PackageChildWithParents(chainparams, GetTime(), coins_to_uncache, client_maxfeerate);
+            auto args = MemPoolAccept::ATMPArgs::AnyPackageAccept(chainparams, GetTime(), coins_to_uncache, client_maxfeerate);
             return MemPoolAccept(pool, active_chainstate).AcceptPackage(package, args);
         }
     }();
