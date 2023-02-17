@@ -1144,10 +1144,6 @@ static RPCHelpMan submitpackage()
                 txns.emplace_back(MakeTransactionRef(std::move(mtx)));
             }
             CHECK_NONFATAL(!txns.empty());
-            if (txns.size() > 1 && !IsChildWithParentsTree(txns)) {
-                throw JSONRPCTransactionError(TransactionError::INVALID_PACKAGE, "package topology disallowed. not child-with-parents or parents depend on each other.");
-            }
-
             NodeContext& node = EnsureAnyNodeContext(request.context);
             CTxMemPool& mempool = EnsureMemPool(node);
             Chainstate& chainstate = EnsureChainman(node).ActiveChainstate();
