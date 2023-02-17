@@ -59,7 +59,7 @@ bool IsConsistent(const Package& txns)
     return true;
 }
 
-bool IsPackageWellFormed(const Package& txns, PackageValidationState& state)
+bool IsPackageWellFormed(const Package& txns, PackageValidationState& state, bool require_sorted)
 {
     const unsigned int package_count = txns.size();
 
@@ -88,7 +88,7 @@ bool IsPackageWellFormed(const Package& txns, PackageValidationState& state)
     // An unsorted package will fail anyway on missing-inputs, but it's better to quit earlier and
     // fail on something less ambiguous (missing-inputs could also be an orphan or trying to
     // spend nonexistent coins).
-    if (!IsSorted(txns, later_txids)) {
+    if (require_sorted && !IsSorted(txns, later_txids)) {
         return state.Invalid(PackageValidationResult::PCKG_POLICY, "package-not-sorted");
     }
 
@@ -97,21 +97,4 @@ bool IsPackageWellFormed(const Package& txns, PackageValidationState& state)
         return state.Invalid(PackageValidationResult::PCKG_POLICY, "conflict-in-package");
     }
     return true;
-}
-
-bool IsChildWithParents(const Package& package)
-{
-    assert(std::all_of(package.cbegin(), package.cend(), [](const auto& tx){return tx != nullptr;}));
-    if (package.size() < 2) return false;
-
-    // The package is expected to be sorted, so the last transaction is the child.
-    const auto& child = package.back();
-    std::unordered_set<uint256, SaltedTxidHasher> input_txids;
-    std::transform(child->vin.cbegin(), child->vin.cend(),
-                   std::inserter(input_txids, input_txids.end()),
-                   [](const auto& input) { return input.prevout.hash; });
-
-    // Every transaction must be a parent of the last transaction in the package.
-    return std::all_of(package.cbegin(), package.cend() - 1,
-                       [&input_txids](const auto& ptx) { return input_txids.count(ptx->GetHash()) > 0; });
 }
