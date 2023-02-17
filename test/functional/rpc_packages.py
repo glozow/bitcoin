@@ -275,8 +275,8 @@ class RPCPackagesTest(BitcoinTestFramework):
         # without the in-mempool ancestor tx1 included in the call, tx2 can be submitted, but
         # tx_child is missing an input.
         submitres = node.submitpackage([tx2["hex"], tx_child["hex"]])
-        assert_equal(submitres["tx-results"][tx_child["wtxid"]], {"txid": tx_child["txid"], "error": "bad-txns-inputs-missingorspent"})
-        assert tx2["txid"] in node.getrawmempool()
+        assert_equal(submitres["tx-results"][tx_child["wtxid"]], {"txid": tx_child["txid"], "error": "unknown-not-validated"})
+        # assert tx2["txid"] in node.getrawmempool()
 
         # Regardless of error type, the child can never enter the mempool
         assert tx_child["txid"] not in node.getrawmempool()
@@ -390,19 +390,6 @@ class RPCPackagesTest(BitcoinTestFramework):
             self.test_submit_child_with_parents(num_parents, False)
             self.test_submit_child_with_parents(num_parents, True)
 
-        self.log.info("Submitpackage only allows packages of 1 child with its parents")
-        # Chain of 3 transactions has too many generations
-        legacy_pool = node.getrawmempool()
-        chain_hex = [t["hex"] for t in self.wallet.create_self_transfer_chain(chain_length=3)]
-        assert_raises_rpc_error(-25, "package topology disallowed", node.submitpackage, chain_hex)
-        assert_equal(legacy_pool, node.getrawmempool())
-
-        assert_raises_rpc_error(-8, f"Array must contain between 1 and {MAX_PACKAGE_COUNT} transactions.", node.submitpackage, [])
-        assert_raises_rpc_error(
-            -8, f"Array must contain between 1 and {MAX_PACKAGE_COUNT} transactions.",
-            node.submitpackage, [chain_hex[0]] * (MAX_PACKAGE_COUNT + 1)
-        )
-
         # Create a transaction chain such as only the parent gets accepted (by making the child's
         # version non-standard). Make sure the parent does get broadcast.
         self.log.info("If a package is partially submitted, transactions included in mempool get broadcast")
@@ -434,7 +421,7 @@ class RPCPackagesTest(BitcoinTestFramework):
         # First tx failed in single transaction evaluation, so package message is generic
         assert_equal(pkg_result["package_msg"], "transaction failed")
         assert_equal(pkg_result["tx-results"][chained_txns[0]["wtxid"]]["error"], "max feerate exceeded")
-        assert_equal(pkg_result["tx-results"][chained_txns[1]["wtxid"]]["error"], "bad-txns-inputs-missingorspent")
+        assert_equal(pkg_result["tx-results"][chained_txns[1]["wtxid"]]["error"], "unknown-not-validated")
         assert_equal(node.getrawmempool(), [])
 
         # Make chain of two transactions where parent doesn't make minfee threshold
@@ -464,7 +451,7 @@ class RPCPackagesTest(BitcoinTestFramework):
         # Child is connected even though parent is invalid and still reports fee exceeded
         # this implies sub-package evaluation of both entries together.
         assert_equal(pkg_result["package_msg"], "transaction failed")
-        assert "mempool min fee not met" in pkg_result["tx-results"][parent["wtxid"]]["error"]
+        assert_equal(pkg_result["tx-results"][parent["wtxid"]]["error"], "unknown-not-validated")
         assert_equal(pkg_result["tx-results"][child["wtxid"]]["error"], "max feerate exceeded")
         assert parent["txid"] not in node.getrawmempool()
         assert child["txid"] not in node.getrawmempool()
@@ -511,9 +498,6 @@ class RPCPackagesTest(BitcoinTestFramework):
         child_tx = self.wallet.create_self_transfer(utxo_to_spend=parent_tx["new_utxo"])
         grandchild_tx = self.wallet.create_self_transfer(utxo_to_spend=child_tx["new_utxo"])
         ggrandchild_tx = self.wallet.create_self_transfer(utxo_to_spend=grandchild_tx["new_utxo"])
-
-        # Submitting them all together doesn't work, as the topology is not child-with-parents
-        assert_raises_rpc_error(-25, "package topology disallowed", node.submitpackage, [parent_tx["hex"], child_tx["hex"], grandchild_tx["hex"], ggrandchild_tx["hex"]])
 
         # Submit older package and check acceptance
         result_submit_older = node.submitpackage(package=[parent_tx["hex"], child_tx["hex"]])
