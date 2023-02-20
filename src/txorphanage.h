@@ -54,11 +54,11 @@ public:
      * has been announced by another peer, don't erase, just remove this peer from the list of announcers. */
     void EraseForPeer(NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
-    /** Erase all orphans included in or invalidated by a new block */
-    void EraseForBlock(const CBlock& block) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    /** Erase all orphans included in or invalidated by a new block. Returns wtxids of erased txns. */
+    std::vector<Wtxid> EraseForBlock(const CBlock& block) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Limit the orphanage to the given maximum. Returns all expired entries. */
-    void LimitOrphans(unsigned int max_orphans, unsigned int max_total_size, FastRandomContext& rng)
+    std::vector<Wtxid> LimitOrphans(unsigned int max_orphans, unsigned int max_total_size, FastRandomContext& rng)
         EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Add any orphans that list a particular tx as a parent into the from peer's work set */
