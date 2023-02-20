@@ -24,6 +24,36 @@ class TxPackageTracker::Impl {
     TxOrphanage m_orphanage;
 
     mutable Mutex m_mutex;
+    struct RegistrationState {
+        // All of the following bools will need to be true
+        /** Whether this peer allows transaction relay from us. */
+        bool m_txrelay{true};
+        // Whether this peer sent a BIP339 wtxidrelay message.
+        bool m_wtxid_relay{false};
+        /** Whether this peer says they can do package relay. */
+        bool m_sendpackages_received{false};
+        /** Versions of package relay supported by this node.
+         * This is a subset of PACKAGE_RELAY_SUPPORTED_VERSIONS. */
+        std::set<uint32_t> m_versions_in_common;
+        bool CanRelayPackages() {
+            return m_txrelay && m_wtxid_relay && m_sendpackages_received;
+        }
+    };
+
+    struct PeerInfo {
+        // What package versions we agreed to relay.
+        std::set<uint32_t> m_versions_supported;
+        bool SupportsVersion(uint32_t version) { return m_versions_supported.count(version) > 0; }
+    };
+
+    /** Stores relevant information about the peer prior to verack. Upon completion of version
+     * handshake, we use this information to decide whether we relay packages with this peer. */
+    std::map<NodeId, RegistrationState> registration_states GUARDED_BY(m_mutex);
+
+    /** Information for each peer we relay packages with. Membership in this map is equivalent to
+     * whether or not we relay packages with a peer. */
+    std::map<NodeId, PeerInfo> info_per_peer GUARDED_BY(m_mutex);
+
 
     /** Tracks orphans for which we need to request ancestor information. All hashes stored are
      * wtxids, i.e., the wtxid of the orphan. However, the is_wtxid field is used to indicate
@@ -69,10 +99,53 @@ public:
         }
         FinalizeTransactions(block_wtxids, conflicted_wtxids);
     }
+    void ReceivedVersion(NodeId nodeid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
+    {
+        AssertLockNotHeld(m_mutex);
+        LOCK(m_mutex);
+        if (registration_states.find(nodeid) != registration_states.end()) return;
+        registration_states.insert(std::make_pair(nodeid, RegistrationState{}));
+    }
+    void ReceivedSendpackages(NodeId nodeid, uint32_t version) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
+    {
+        AssertLockNotHeld(m_mutex);
+        LOCK(m_mutex);
+        const auto it = registration_states.find(nodeid);
+        if (it == registration_states.end()) return;
+        it->second.m_sendpackages_received = true;
+        // Ignore versions we don't understand.
+        if (std::count(PACKAGE_RELAY_SUPPORTED_VERSIONS.cbegin(), PACKAGE_RELAY_SUPPORTED_VERSIONS.cend(), version)) {
+            it->second.m_versions_in_common.insert(version);
+        }
+    }
+
+    bool ReceivedVerack(NodeId nodeid, bool txrelay, bool wtxidrelay) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
+    {
+        AssertLockNotHeld(m_mutex);
+        LOCK(m_mutex);
+        const auto& it = registration_states.find(nodeid);
+        if (it == registration_states.end()) return false;
+        it->second.m_txrelay = txrelay;
+        it->second.m_wtxid_relay = wtxidrelay;
+        const bool final_state = it->second.CanRelayPackages();
+        if (final_state) {
+            auto [peerinfo_it, success] = info_per_peer.insert(std::make_pair(nodeid, PeerInfo{}));
+            peerinfo_it->second.m_versions_supported = it->second.m_versions_in_common;
+        }
+        registration_states.erase(it);
+        return final_state;
+    }
+
     void DisconnectedPeer(NodeId nodeid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
     {
         AssertLockNotHeld(m_mutex);
         LOCK(m_mutex);
+        if (auto it{registration_states.find(nodeid)}; it != registration_states.end()) {
+            registration_states.erase(it);
+        }
+        if (auto it{info_per_peer.find(nodeid)}; it != info_per_peer.end()) {
+            info_per_peer.erase(it);
+        }
         orphan_request_tracker.DisconnectedPeer(nodeid);
         m_orphanage.EraseForPeer(nodeid);
     }
@@ -182,6 +255,11 @@ bool TxPackageTracker::OrphanageHaveTx(const GenTxid& gtxid) const { return m_im
 void TxPackageTracker::AddOrphanTx(NodeId nodeid, const std::pair<uint256, CTransactionRef>& tx, bool is_preferred, std::chrono::microseconds reqtime)
 {
     m_impl->AddOrphanTx(nodeid, tx, is_preferred, reqtime);
+}
+void TxPackageTracker::ReceivedVersion(NodeId nodeid) { m_impl->ReceivedVersion(nodeid); }
+void TxPackageTracker::ReceivedSendpackages(NodeId nodeid, uint32_t version) { m_impl->ReceivedSendpackages(nodeid, version); }
+bool TxPackageTracker::ReceivedVerack(NodeId nodeid, bool txrelay, bool wtxidrelay) {
+    return m_impl->ReceivedVerack(nodeid, txrelay, wtxidrelay);
 }
 /** Transaction accepted to mempool. */
 void TxPackageTracker::TransactionAccepted(const CTransactionRef& tx) { m_impl->TransactionAccepted(tx); }

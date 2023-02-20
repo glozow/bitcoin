@@ -16,6 +16,10 @@ namespace node {
 /** Default for -maxorphantx, maximum number of orphan transactions kept in memory */
 static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100;
 static constexpr bool DEFAULT_ENABLE_PACKAGE_RELAY{false};
+static constexpr uint32_t RECEIVER_INIT_ANCESTOR_PACKAGES{0};
+static std::vector<uint32_t> PACKAGE_RELAY_SUPPORTED_VERSIONS = {
+    RECEIVER_INIT_ANCESTOR_PACKAGES,
+};
 
 class TxPackageTracker {
     class Impl;
@@ -31,6 +35,13 @@ public:
     ~TxPackageTracker();
     /** New block. */
     void BlockConnected(const CBlock& block);
+    /** Get list of supported package relay versions. */
+    std::vector<uint32_t> GetVersions() { return PACKAGE_RELAY_SUPPORTED_VERSIONS; }
+    void ReceivedVersion(NodeId nodeid);
+    void ReceivedSendpackages(NodeId nodeid, uint32_t version);
+    // Finalize the registration state.
+    bool ReceivedVerack(NodeId nodeid, bool txrelay, bool wtxidrelay);
+
     /** Peer has disconnected, tear down state. */
     void DisconnectedPeer(NodeId nodeid);
     /** Returns whether a tx is present in the orphanage. */
