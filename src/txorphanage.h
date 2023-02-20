@@ -36,8 +36,8 @@ public:
      */
     CTransactionRef GetTxToReconsider(NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
-    /** Erase an orphan by txid */
-    int EraseTx(const uint256& txid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    /** Erase an orphan by wtxid */
+    int EraseTx(const uint256& wtxid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Erase all orphans announced by a peer (eg, after that peer disconnects) */
     void EraseForPeer(NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
