@@ -15,6 +15,10 @@ class CBlock;
 class TxOrphanage;
 namespace node {
 static constexpr bool DEFAULT_ENABLE_PACKAGE_RELAY{false};
+static constexpr uint32_t RECEIVER_INIT_ANCESTOR_PACKAGES{0};
+static std::vector<uint32_t> PACKAGE_RELAY_SUPPORTED_VERSIONS = {
+    RECEIVER_INIT_ANCESTOR_PACKAGES,
+};
 
 class TxPackageTracker {
     class Impl;
@@ -55,6 +59,14 @@ public:
 
     /** Return how many entries exist in the orphange */
     size_t OrphanageSize();
+
+    std::vector<uint32_t> GetVersions() { return PACKAGE_RELAY_SUPPORTED_VERSIONS; }
+
+    // We expect this to be called only once
+    void ReceivedVersion(NodeId nodeid);
+    void ReceivedSendpackages(NodeId nodeid, uint32_t version);
+    // Finalize the registration state.
+    bool ReceivedVerack(NodeId nodeid, bool txrelay, bool wtxidrelay);
 
     /** Received an announcement from this peer for a tx we already know is an orphan; should be
      * called for every peer that announces the tx, even if they are not a package relay peer.
