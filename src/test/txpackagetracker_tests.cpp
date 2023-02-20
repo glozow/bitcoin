@@ -29,6 +29,34 @@ static inline CTransactionRef make_tx(const std::vector<COutPoint>& inputs, size
 }
 
 BOOST_FIXTURE_TEST_SUITE(txpackagetracker_tests, BasicTestingSetup)
+BOOST_AUTO_TEST_CASE(orphan_protection)
+{
+    FastRandomContext det_rand{true};
+    TxOrphanage orphanage;
+
+    std::vector<CTransactionRef> protected_txns;
+    for (auto i{0}; i < 100; ++i) {
+        const auto tx{make_tx({COutPoint{det_rand.rand256(), 0}}, 1)};
+        orphanage.AddTx(tx, i);
+        if (i % 10 == 0) {
+            orphanage.ProtectOrphan(tx->GetWitnessHash());
+            protected_txns.push_back(tx);
+        }
+    }
+    BOOST_CHECK_EQUAL(orphanage.Size(), 100);
+    BOOST_CHECK_EQUAL(orphanage.NumProtected(), 10);
+    orphanage.LimitOrphans(/*max_orphans=*/5);
+    BOOST_CHECK_EQUAL(orphanage.Size(), 15);
+    BOOST_CHECK_EQUAL(orphanage.NumProtected(), 10);
+    for (const auto& tx : protected_txns) {
+        BOOST_CHECK(orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash())));
+        BOOST_CHECK(orphanage.HaveTx(GenTxid::Txid(tx->GetHash())));
+        orphanage.UndoProtectOrphan(tx->GetWitnessHash());
+    }
+    BOOST_CHECK_EQUAL(orphanage.NumProtected(), 0);
+    orphanage.LimitOrphans(/*max_orphans=*/5);
+    BOOST_CHECK_EQUAL(orphanage.Size(), 5);
+}
 BOOST_AUTO_TEST_CASE(pkginfo)
 {
     node::TxPackageTracker::Options options;
