@@ -168,6 +168,26 @@ BOOST_AUTO_TEST_CASE(pkginfo)
     BOOST_CHECK_EQUAL(peer4_requests_later.size(), 2);
     // This counts as 1 in-flight request
     BOOST_CHECK_EQUAL(tracker.CountInFlight(4), 1);
+
+    // peer0 is allowed to send ancpkginfo for orphan0, but not for any other tx or version
+    BOOST_CHECK(tracker.PkgInfoAllowed(/*nodeid=*/0, orphan0->GetWitnessHash(), RECEIVER_INIT_ANCESTOR_PACKAGES));
+    BOOST_CHECK(!tracker.PkgInfoAllowed(/*nodeid=*/0, orphan0->GetWitnessHash(), unsupported_package_type));
+    BOOST_CHECK(!tracker.PkgInfoAllowed(/*nodeid=*/0, orphan1->GetWitnessHash(), RECEIVER_INIT_ANCESTOR_PACKAGES));
+    // No other peers are allowed to send ancpkginfo (they disconnected or aren't registered for it)
+    BOOST_CHECK(!tracker.PkgInfoAllowed(/*nodeid=*/1, orphan1->GetWitnessHash(), RECEIVER_INIT_ANCESTOR_PACKAGES));
+    BOOST_CHECK(!tracker.PkgInfoAllowed(/*nodeid=*/2, orphan1->GetWitnessHash(), RECEIVER_INIT_ANCESTOR_PACKAGES));
+    BOOST_CHECK(!tracker.PkgInfoAllowed(/*nodeid=*/3, orphan2->GetWitnessHash(), RECEIVER_INIT_ANCESTOR_PACKAGES));
+    BOOST_CHECK(!tracker.PkgInfoAllowed(/*nodeid=*/4, orphan2->GetWitnessHash(), RECEIVER_INIT_ANCESTOR_PACKAGES));
+
+    // After receiving ancpkginfo, a second ancpkginfo is not allowed
+    const auto missing_wtxid{det_rand.rand256()};
+    std::map<uint256, bool> txdata_status_map;
+    txdata_status_map.emplace(missing_wtxid, true);
+    txdata_status_map.emplace(orphan0->GetWitnessHash(), false);
+    std::vector<uint256> missing_wtxids{missing_wtxid};
+    BOOST_CHECK(!tracker.ReceivedAncPkgInfo(/*nodeid=*/0, orphan0->GetWitnessHash(), txdata_status_map,
+                                            missing_wtxids, GetVirtualTransactionSize(*orphan0), current_time + 100s));
+    BOOST_CHECK(!tracker.PkgInfoAllowed(/*nodeid=*/0, orphan0->GetWitnessHash(), RECEIVER_INIT_ANCESTOR_PACKAGES));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
