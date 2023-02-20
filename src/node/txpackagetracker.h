@@ -15,6 +15,10 @@ class CBlock;
 class TxOrphanage;
 namespace node {
 static constexpr bool DEFAULT_ENABLE_PACKAGE_RELAY{false};
+static constexpr uint32_t RECEIVER_INIT_ANCESTOR_PACKAGES{0};
+static std::vector<uint32_t> PACKAGE_RELAY_SUPPORTED_VERSIONS = {
+    RECEIVER_INIT_ANCESTOR_PACKAGES,
+};
 
 class TxPackageTracker {
     class Impl;
@@ -23,6 +27,14 @@ class TxPackageTracker {
 public:
     explicit TxPackageTracker(TxOrphanage& orphanage);
     ~TxPackageTracker();
+
+    std::vector<uint32_t> GetVersions() { return PACKAGE_RELAY_SUPPORTED_VERSIONS; }
+
+    // We expect this to be called only once
+    void ReceivedVersion(NodeId nodeid);
+    void ReceivedSendpackages(NodeId nodeid, uint32_t version);
+    // Finalize the registration state.
+    bool ReceivedVerack(NodeId nodeid, bool txrelay, bool wtxidrelay);
 
     // Tear down all state
     void DisconnectedPeer(NodeId nodeid);
