@@ -11,14 +11,48 @@ static constexpr auto ORPHAN_ANCESTOR_GETDATA_INTERVAL{60s};
 TxOrphanage& TxDownloadImpl::GetOrphanageRef() EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex) { return m_orphanage; }
 TxRequestTracker& TxDownloadImpl::GetTxRequestRef() EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex) { return m_txrequest; }
 
+PackageRelayVersions TxDownloadImpl::GetSupportedVersions() const
+{
+    return m_opts.m_do_package_relay ?
+        PackageRelayVersions{PKG_RELAY_PKGTXNS | PKG_RELAY_ANCPKG} :
+        PKG_RELAY_NONE;
+}
+
+void TxDownloadImpl::ReceivedSendpackages(NodeId nodeid, PackageRelayVersions version)
+    EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)
+{
+    AssertLockNotHeld(m_tx_download_mutex);
+    LOCK(m_tx_download_mutex);
+    // net processing should not be allowing sendpackages after verack. Don't record sendpackages
+    // for a peer after we have already added them to m_peer_info.
+    if (!Assume(m_peer_info.count(nodeid) == 0)) return;
+    // This doesn't overwrite any existing entry. If a peer sends more than one sendpackages, we
+    // essentially ignore all but the first one.
+    m_sendpackages_received.emplace(nodeid, version);
+}
+
 void TxDownloadImpl::ConnectedPeer(NodeId nodeid, const TxDownloadConnectionInfo& info)
     EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)
 {
     LOCK(m_tx_download_mutex);
     Assume(m_peer_info.count(nodeid) == 0);
-    m_peer_info.emplace(nodeid, PeerInfo(info));
+
+    // We can relay packages with this peer if:
+    // - They sent sendpackages and there are versions we both support (it's possible that we didn't
+    //   have any versions in common).
+    // - They support wtxidrelay
+    // - They want us to relay transactions
+    auto package_relay_versions = (m_sendpackages_received.count(nodeid) > 0 &&
+                                   info.m_relays_txs &&
+                                   info.m_wtxid_relay)
+        ?  PackageRelayVersions{m_sendpackages_received.at(nodeid) & GetSupportedVersions()}
+        : PKG_RELAY_NONE;
+
+    m_peer_info.emplace(nodeid, PeerInfo(info, package_relay_versions));
+    m_sendpackages_received.erase(nodeid);
     if (info.m_wtxid_relay) m_num_wtxid_peers += 1;
 }
+
 void TxDownloadImpl::DisconnectedPeer(NodeId nodeid)
     EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)
 {
@@ -26,6 +60,24 @@ void TxDownloadImpl::DisconnectedPeer(NodeId nodeid)
     m_orphanage.EraseForPeer(nodeid);
     m_txrequest.DisconnectedPeer(nodeid);
     m_orphan_resolution_tracker.DisconnectedPeer(nodeid);
+    m_peer_info.erase(nodeid);
+    m_sendpackages_received.erase(nodeid);
+}
+
+bool TxDownloadImpl::SupportsPackageRelay(NodeId nodeid, PackageRelayVersions version) const
+    EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)
+{
+    LOCK(m_tx_download_mutex);
+    if (m_peer_info.count(nodeid) == 0) return false;
+    return m_peer_info.at(nodeid).SupportsVersion(version);
+}
+
+bool TxDownloadImpl::SupportsPackageRelay(NodeId nodeid) const
+    EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)
+{
+    LOCK(m_tx_download_mutex);
+    if (m_peer_info.count(nodeid) == 0) return false;
+    return m_peer_info.at(nodeid).SupportsPackageRelay();
 }
 
 void TxDownloadImpl::BlockConnected(const CBlock& block, const uint256& tiphash)

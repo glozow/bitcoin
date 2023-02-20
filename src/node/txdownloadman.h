@@ -24,6 +24,19 @@ public:
     explicit TxDownloadManager(const TxDownloadOptions& options) : m_impl{std::make_unique<TxDownloadImpl>(options)} {}
     ~TxDownloadManager() = default;
 
+    /** If we're doing package relay, returns all of the versions we support to put in sendpackages. */
+    PackageRelayVersions GetSupportedVersions() const { return m_impl->GetSupportedVersions(); }
+
+    /** Whether we have negotiated this version of package relay with this peer. */
+    bool SupportsPackageRelay(NodeId nodeid, PackageRelayVersions version) const {
+        return m_impl->SupportsPackageRelay(nodeid, version);
+    }
+    /** Whether we have negotiated any version of package relay with this peer. */
+    bool SupportsPackageRelay(NodeId nodeid) const { return m_impl->SupportsPackageRelay(nodeid); }
+
+    /** Record receipt of a sendpackages message. */
+    void ReceivedSendpackages(NodeId nodeid, PackageRelayVersions version) { m_impl->ReceivedSendpackages(nodeid, version); }
+
     /** Should be called when a peer completes version handshake. */
     void ConnectedPeer(NodeId nodeid, const TxDownloadConnectionInfo& info) { m_impl->ConnectedPeer(nodeid, info); }
 

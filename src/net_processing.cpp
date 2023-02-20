@@ -3389,6 +3389,8 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 .m_preferred = state->fPreferredDownload,
                 .m_relay_permissions = pfrom.HasPermission(NetPermissionFlags::Relay),
                 .m_wtxid_relay = peer->m_wtxid_relay,
+                .m_relays_txs = pfrom.m_relays_txs,
+                .m_inbound = pfrom.IsInboundConn(),
             });
 
         }

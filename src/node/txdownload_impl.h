@@ -30,11 +30,24 @@ static constexpr auto OVERLOADED_PEER_TX_DELAY{2s};
 /** How long to wait before downloading a transaction from an additional peer */
 static constexpr auto GETDATA_TX_INTERVAL{60s};
 
+/** Default -packagerelay value. */
+static constexpr auto DEFAULT_DO_PACKAGE_RELAY{false};
+
+/** The bits in sendpackages "versions" field */
+enum PackageRelayVersions : uint64_t {
+    PKG_RELAY_NONE = 0,
+    // BIP331: getpkgtxns, pkgtxns, MSG_PKGTXNS
+    PKG_RELAY_PKGTXNS = (1 << 0),
+    // BIP331: ancpkginfo, MSG_ANCPKGINFO
+    PKG_RELAY_ANCPKG = (1 << 1),
+};
 struct TxDownloadOptions {
     /** Global maximum number of orphan transactions to keep. Enforced with LimitOrphans. */
     uint32_t m_max_orphan_txs;
     /** Read-only reference to mempool. */
     const CTxMemPool& m_mempool_ref;
+    /** Whether we do package relay (-packagerelay). */
+    bool m_do_package_relay{DEFAULT_DO_PACKAGE_RELAY};
 };
 struct TxDownloadConnectionInfo {
     /** Whether this peer is preferred for transaction download. */
@@ -43,6 +56,10 @@ struct TxDownloadConnectionInfo {
     const bool m_relay_permissions;
     /** Whether this peer supports wtxid relay. */
     const bool m_wtxid_relay;
+    /** Whether this peer is ok with us relaying transactions. */
+    const bool m_relays_txs;
+    /** Whether this peer is an inbound peer. */
+    const bool m_inbound;
 };
 
 class TxDownloadImpl {
@@ -119,11 +136,30 @@ public:
         /** Information relevant to scheduling tx requests. */
         const TxDownloadConnectionInfo m_connection_info;
 
-        PeerInfo(const TxDownloadConnectionInfo& info) : m_connection_info{info} {}
+        /** What package versions we agreed to relay. */
+        PackageRelayVersions m_versions_supported;
+
+        PeerInfo(const TxDownloadConnectionInfo& info, PackageRelayVersions versions) :
+            m_connection_info{info},
+            m_versions_supported{versions}
+        {}
+
+        /** Whether any version of package relay is supported. */
+        bool SupportsPackageRelay() const { return m_versions_supported != PKG_RELAY_NONE; }
+
+        /** Whether version is supported. If multiple bits are set in version, returns whether any
+         * of them are supported. */
+        bool SupportsVersion(PackageRelayVersions version) const { return m_versions_supported & version; }
     };
 
-    /** Information for all of the peers we may download transactions from. This is not necessarily
-     * all peers we are connected to (no block-relay-only and temporary connections). */
+    /** Records the "sendpackages" versions we have received from peers prior to verack. This map
+     * and m_peer_info should not have any keys in common. If the peer connects successfully, we use
+     * this to determine what versions of package relay we both support. */
+    std::map<NodeId, PackageRelayVersions> m_sendpackages_received GUARDED_BY(m_tx_download_mutex);
+
+    /** Information for all of the successfully connected peers we may download transactions from.
+     * This map and m_sendpackages_received should not have any keys in common. This is not
+     * necessarily all peers we are connected to (no block-relay-only and temporary connections). */
     std::map<NodeId, PeerInfo> m_peer_info GUARDED_BY(m_tx_download_mutex);
 
     /** Number of wtxid relay peers we have. */
@@ -147,6 +183,18 @@ public:
     TxOrphanage& GetOrphanageRef() EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex);
 
     TxRequestTracker& GetTxRequestRef() EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex);
+
+    /** Returns all supported versions if m_opts.m_do_package_relay is true, otherwise PKG_RELAY_NONE. */
+    PackageRelayVersions GetSupportedVersions() const;
+
+    /** Whether we have negotiated this version of package relay with this peer. */
+    bool SupportsPackageRelay(NodeId nodeid, PackageRelayVersions version) const;
+
+    /** Whether we have negotiated any version of package relay with this peer. */
+    bool SupportsPackageRelay(NodeId nodeid) const;
+
+    /** Adds version to m_sendpackages_received. */
+    void ReceivedSendpackages(NodeId nodeid, PackageRelayVersions version);
 
     /** Creates a new PeerInfo. Saves the connection info to calculate tx announcement delays later. */
     void ConnectedPeer(NodeId nodeid, const TxDownloadConnectionInfo& info)
