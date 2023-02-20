@@ -15,6 +15,11 @@ class CBlock;
 class TxOrphanage;
 namespace node {
 static constexpr bool DEFAULT_ENABLE_PACKAGE_RELAY{false};
+enum PackageRelayVersions : uint32_t {
+    PKG_RELAY_NONE = 0,
+    // BIP331 Ancestor Package Information
+    PKG_RELAY_ANCPKG = (1 << 0),
+};
 
 class TxPackageTracker {
     class Impl;
@@ -55,6 +60,14 @@ public:
 
     /** Return how many entries exist in the orphange */
     size_t OrphanageSize();
+
+    PackageRelayVersions GetSupportedVersions() const;
+
+    // We expect this to be called only once
+    void ReceivedVersion(NodeId nodeid);
+    void ReceivedSendpackages(NodeId nodeid, PackageRelayVersions versions);
+    // Finalize the registration state.
+    bool ReceivedVerack(NodeId nodeid, bool txrelay, bool wtxidrelay);
 
     /** Received an announcement from this peer for a tx we already know is an orphan; should be
      * called for every peer that announces the tx, even if they are not a package relay peer.
