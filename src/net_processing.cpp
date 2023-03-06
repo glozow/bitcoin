@@ -3082,11 +3082,11 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
         const uint256& orphan_wtxid = porphanTx->GetWitnessHash();
 
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-            LogPrint(BCLog::MEMPOOL, "   accepted orphan tx %s (wtxid=%s)\n", orphanHash.ToString(), orphan_wtxid.ToString());
+            LogPrint(BCLog::TXPACKAGES, "   accepted orphan tx %s (wtxid=%s)\n", orphanHash.ToString(), orphan_wtxid.ToString());
             ProcessValidTx(porphanTx, peer.m_id, result.m_replaced_transactions.value());
             return true;
         } else {
-            LogPrint(BCLog::MEMPOOL, "   invalid orphan tx %s (wtxid=%s) from peer=%d. %s\n",
+            LogPrint(BCLog::TXPACKAGES, "   invalid orphan tx %s (wtxid=%s) from peer=%d. %s\n",
                 orphanHash.ToString(),
                 orphan_wtxid.ToString(),
                 peer.m_id,
