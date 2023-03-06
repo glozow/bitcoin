@@ -34,7 +34,7 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
     unsigned int sz = GetTransactionWeight(*tx);
     if (sz > MAX_STANDARD_TX_WEIGHT)
     {
-        LogPrint(BCLog::MEMPOOL, "ignoring large orphan tx (size: %u, hash: %s)\n", sz, hash.ToString());
+        LogPrint(BCLog::TXPACKAGES, "ignoring large orphan tx (size: %u, hash: %s)\n", sz, hash.ToString());
         return false;
     }
 
@@ -47,7 +47,7 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
         m_outpoint_to_orphan_it[txin.prevout].insert(ret.first);
     }
 
-    LogPrint(BCLog::MEMPOOL, "stored orphan tx %s (mapsz %u outsz %u)\n", hash.ToString(),
+    LogPrint(BCLog::TXPACKAGES, "stored orphan tx %s (mapsz %u outsz %u)\n", hash.ToString(),
              m_orphans.size(), m_outpoint_to_orphan_it.size());
     return true;
 }
@@ -106,7 +106,7 @@ void TxOrphanage::EraseForPeer(NodeId peer)
             nErased += EraseTxNoLock(maybeErase->second.tx->GetHash());
         }
     }
-    if (nErased > 0) LogPrint(BCLog::MEMPOOL, "Erased %d orphan tx from peer=%d\n", nErased, peer);
+    if (nErased > 0) LogPrint(BCLog::TXPACKAGES, "Erased %d orphan tx from peer=%d\n", nErased, peer);
 }
 
 void TxOrphanage::LimitOrphans(unsigned int max_orphans)
@@ -132,7 +132,7 @@ void TxOrphanage::LimitOrphans(unsigned int max_orphans)
         }
         // Sweep again 5 minutes after the next entry that expires in order to batch the linear scan.
         nNextSweep = nMinExpTime + ORPHAN_TX_EXPIRE_INTERVAL;
-        if (nErased > 0) LogPrint(BCLog::MEMPOOL, "Erased %d orphan tx due to expiration\n", nErased);
+        if (nErased > 0) LogPrint(BCLog::TXPACKAGES, "Erased %d orphan tx due to expiration\n", nErased);
     }
     FastRandomContext rng;
     while (m_orphans.size() > max_orphans)
@@ -142,7 +142,7 @@ void TxOrphanage::LimitOrphans(unsigned int max_orphans)
         EraseTxNoLock(m_orphan_list[randompos]->first);
         ++nEvicted;
     }
-    if (nEvicted > 0) LogPrint(BCLog::MEMPOOL, "orphanage overflow, removed %u tx\n", nEvicted);
+    if (nEvicted > 0) LogPrint(BCLog::TXPACKAGES, "orphanage overflow, removed %u tx\n", nEvicted);
 }
 
 void TxOrphanage::AddChildrenToWorkSet(const CTransaction& tx)
@@ -233,6 +233,6 @@ void TxOrphanage::EraseForBlock(const CBlock& block)
         for (const uint256& orphanHash : vOrphanErase) {
             nErased += EraseTxNoLock(orphanHash);
         }
-        LogPrint(BCLog::MEMPOOL, "Erased %d orphan tx included or conflicted by block\n", nErased);
+        LogPrint(BCLog::TXPACKAGES, "Erased %d orphan tx included or conflicted by block\n", nErased);
     }
 }
