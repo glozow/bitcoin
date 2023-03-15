@@ -47,6 +47,7 @@ static RPCHelpMan estimatesmartfee()
             RPCResult::Type::OBJ, "", "",
             {
                 {RPCResult::Type::NUM, "feerate", /*optional=*/true, "estimate fee rate in " + CURRENCY_UNIT + "/kvB (only present if no errors were encountered)"},
+                {RPCResult::Type::NUM, "feerate-other", /*optional=*/true, "OTHER IMPL estimate fee rate in " + CURRENCY_UNIT + "/kvB (only present if no errors were encountered)"},
                 {RPCResult::Type::ARR, "errors", /*optional=*/true, "Errors encountered during processing (if there are any)",
                     {
                         {RPCResult::Type::STR, "", "error"},
@@ -81,14 +82,18 @@ static RPCHelpMan estimatesmartfee()
             UniValue result(UniValue::VOBJ);
             UniValue errors(UniValue::VARR);
             FeeCalculation feeCalc;
-            CFeeRate feeRate{fee_estimator.estimateSmartFee(conf_target, &feeCalc, conservative)};
-            if (feeRate != CFeeRate(0)) {
+            CFeeRate feeRate{fee_estimator.estimateSmartFee(conf_target, &feeCalc, conservative, /*otherimpl=*/false)};
+            FeeCalculation feeCalc2;
+            CFeeRate feeRate2{fee_estimator.estimateSmartFee(conf_target, &feeCalc2, conservative, /*otherimpl=*/true)};
+            if (feeRate != CFeeRate(0) && feeRate2 != CFeeRate(0)) {
                 CFeeRate min_mempool_feerate{mempool.GetMinFee()};
                 CFeeRate min_relay_feerate{mempool.m_min_relay_feerate};
                 feeRate = std::max({feeRate, min_mempool_feerate, min_relay_feerate});
+                feeRate2 = std::max({feeRate2, min_mempool_feerate, min_relay_feerate});
                 result.pushKV("feerate", ValueFromAmount(feeRate.GetFeePerK()));
+                result.pushKV("feerate-other", ValueFromAmount(feeRate2.GetFeePerK()));
             } else {
-                errors.push_back("Insufficient data or no feerate found");
+                errors.push_back("Insufficient data or no feerate found or not both feerates came out");
                 result.pushKV("errors", errors);
             }
             result.pushKV("blocks", feeCalc.returnedTarget);
