@@ -384,7 +384,7 @@ void CTxMemPoolEntry::UpdateAncestorState(int64_t modifySize, CAmount modifyFee,
 
 CTxMemPool::CTxMemPool(const Options& opts)
     : m_check_ratio{opts.check_ratio},
-      minerPolicyEstimator{opts.estimator},
+      minerPolicyEstimator{opts.estimators},
       m_max_size_bytes{opts.max_size_bytes},
       m_expiry{opts.expiry},
       m_incremental_relay_feerate{opts.incremental_relay_feerate},
@@ -458,8 +458,10 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, setEntries &setAnces
     nTransactionsUpdated++;
     totalTxSize += entry.GetTxSize();
     m_total_fee += entry.GetFee();
-    if (minerPolicyEstimator) {
-        minerPolicyEstimator->processTransaction(entry, validFeeEstimate);
+    if (!minerPolicyEstimator.empty()) {
+        for (const auto estimator : minerPolicyEstimator) {
+            estimator->processTransaction(entry, validFeeEstimate);
+        }
     }
 
     vTxHashes.emplace_back(tx.GetWitnessHash(), newit);
@@ -501,7 +503,7 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
     cachedInnerUsage -= memusage::DynamicUsage(it->GetMemPoolParentsConst()) + memusage::DynamicUsage(it->GetMemPoolChildrenConst());
     mapTx.erase(it);
     nTransactionsUpdated++;
-    if (minerPolicyEstimator) {minerPolicyEstimator->removeTx(hash, false);}
+    if (!minerPolicyEstimator.empty()) { for (const auto estimator : minerPolicyEstimator) estimator->removeTx(hash, false);}
 }
 
 // Calculates descendants of entry that are not already in setDescendants, and adds to
@@ -617,7 +619,7 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigne
             entries.push_back(&*i);
     }
     // Before the txs in the new block have been removed from the mempool, update policy estimates
-    if (minerPolicyEstimator) {minerPolicyEstimator->processBlock(nBlockHeight, entries);}
+    if (!minerPolicyEstimator.empty()) { for (const auto estimator : minerPolicyEstimator) estimator->processBlock(nBlockHeight, entries);}
     for (const auto& tx : vtx)
     {
         txiter it = mapTx.find(tx->GetHash());

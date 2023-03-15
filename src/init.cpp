@@ -276,7 +276,7 @@ void Shutdown(NodeContext& node)
     }
 
     // Drop transactions we were still watching, and record fee estimations.
-    if (node.fee_estimator) node.fee_estimator->Flush();
+    if (!node.fee_estimator.empty()) for (const auto& estimator : node.fee_estimator) estimator->Flush();
 
     // FlushStateToDisk generates a ChainStateFlushed callback, which we should avoid missing
     if (node.chainman) {
@@ -336,7 +336,10 @@ void Shutdown(NodeContext& node)
     GetMainSignals().UnregisterBackgroundSignalScheduler();
     node.kernel.reset();
     node.mempool.reset();
-    node.fee_estimator.reset();
+    if (!node.fee_estimator.empty()) {
+        for (auto& estimator : node.fee_estimator) estimator.reset();
+        node.fee_estimator.clear();
+    }
     node.chainman.reset();
     node.scheduler.reset();
 
@@ -1260,10 +1263,10 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
                                               GetRand<uint64_t>(),
                                               *node.addrman, *node.netgroupman, args.GetBoolArg("-networkactive", true));
 
-    assert(!node.fee_estimator);
+    assert(node.fee_estimator.empty());
     // Don't initialize fee estimation with old data if we don't relay transactions,
     // as they would never get updated.
-    if (!ignores_incoming_txs) node.fee_estimator = std::make_unique<CBlockPolicyEstimator>(FeeestPath(args));
+    if (!ignores_incoming_txs) node.fee_estimator.emplace_back(std::make_unique<CBlockPolicyEstimator>(FeeestPath(args)));
 
     // Check port numbers
     for (const std::string port_option : {
@@ -1467,8 +1470,10 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     assert(!node.mempool);
     assert(!node.chainman);
 
+    std::vector<CBlockPolicyEstimator*> estimators;
+    for (const auto& estptr : node.fee_estimator) estimators.push_back(estptr.get());
     CTxMemPool::Options mempool_opts{
-        .estimator = node.fee_estimator.get(),
+        .estimators = estimators,
         .check_ratio = chainparams.DefaultConsistencyChecks() ? 1 : 0,
     };
     if (const auto err{ApplyArgsManOptions(args, chainparams, mempool_opts)}) {

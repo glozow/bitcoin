@@ -6,6 +6,7 @@
 #define BITCOIN_RPC_SERVER_UTIL_H
 
 #include <any>
+#include <vector>
 
 class ArgsManager;
 class CBlockPolicyEstimator;
@@ -27,8 +28,8 @@ ArgsManager& EnsureArgsman(const node::NodeContext& node);
 ArgsManager& EnsureAnyArgsman(const std::any& context);
 ChainstateManager& EnsureChainman(const node::NodeContext& node);
 ChainstateManager& EnsureAnyChainman(const std::any& context);
-CBlockPolicyEstimator& EnsureFeeEstimator(const node::NodeContext& node);
-CBlockPolicyEstimator& EnsureAnyFeeEstimator(const std::any& context);
+std::vector<CBlockPolicyEstimator*> EnsureFeeEstimator(const node::NodeContext& node);
+std::vector<CBlockPolicyEstimator*> EnsureAnyFeeEstimator(const std::any& context);
 CConnman& EnsureConnman(const node::NodeContext& node);
 PeerManager& EnsurePeerman(const node::NodeContext& node);
 

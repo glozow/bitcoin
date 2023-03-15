@@ -63,7 +63,7 @@ static RPCHelpMan estimatesmartfee()
         },
         [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
         {
-            CBlockPolicyEstimator& fee_estimator = EnsureAnyFeeEstimator(request.context);
+            CBlockPolicyEstimator& fee_estimator = *EnsureAnyFeeEstimator(request.context).front();
             const NodeContext& node = EnsureAnyNodeContext(request.context);
             const CTxMemPool& mempool = EnsureMemPool(node);
 
@@ -153,7 +153,7 @@ static RPCHelpMan estimaterawfee()
         },
         [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
         {
-            CBlockPolicyEstimator& fee_estimator = EnsureAnyFeeEstimator(request.context);
+            CBlockPolicyEstimator& fee_estimator = *EnsureAnyFeeEstimator(request.context).front();
 
             unsigned int max_target = fee_estimator.HighestTargetTracked(FeeEstimateHorizon::LONG_HALFLIFE);
             unsigned int conf_target = ParseConfirmTarget(request.params[0], max_target);
