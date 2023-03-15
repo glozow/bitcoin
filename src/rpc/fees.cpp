@@ -47,6 +47,10 @@ static RPCHelpMan estimatesmartfee()
             RPCResult::Type::OBJ, "", "",
             {
                 {RPCResult::Type::NUM, "feerate", /*optional=*/true, "estimate fee rate in " + CURRENCY_UNIT + "/kvB (only present if no errors were encountered)"},
+                {RPCResult::Type::ARR, "feerates", /*optional=*/true, "estimated feerate straight from each estimator",
+                    {
+                        {RPCResult::Type::NUM, "", "feerate in " + CURRENCY_UNIT + "/kvB"},
+                    }},
                 {RPCResult::Type::ARR, "errors", /*optional=*/true, "Errors encountered during processing (if there are any)",
                     {
                         {RPCResult::Type::STR, "", "error"},
@@ -63,7 +67,8 @@ static RPCHelpMan estimatesmartfee()
         },
         [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
         {
-            CBlockPolicyEstimator& fee_estimator = *EnsureAnyFeeEstimator(request.context).front();
+            auto fee_estimators = EnsureAnyFeeEstimator(request.context);
+            CBlockPolicyEstimator& fee_estimator = *fee_estimators.front();
             const NodeContext& node = EnsureAnyNodeContext(request.context);
             const CTxMemPool& mempool = EnsureMemPool(node);
 
@@ -79,6 +84,7 @@ static RPCHelpMan estimatesmartfee()
             }
 
             UniValue result(UniValue::VOBJ);
+            UniValue feerate_results(UniValue::VARR);
             UniValue errors(UniValue::VARR);
             FeeCalculation feeCalc;
             CFeeRate feeRate{fee_estimator.estimateSmartFee(conf_target, &feeCalc, conservative)};
@@ -91,6 +97,15 @@ static RPCHelpMan estimatesmartfee()
                 errors.push_back("Insufficient data or no feerate found");
                 result.pushKV("errors", errors);
             }
+            for (const auto estimator : fee_estimators) {
+                FeeCalculation feeCalc;
+                CFeeRate feeRate{estimator->estimateSmartFee(conf_target, &feeCalc, conservative)};
+                if (feeRate != CFeeRate(0)) {
+                    // Not flooring by minimum feerates because we want pure results.
+                    feerate_results.pushKV("feerate", ValueFromAmount(feeRate.GetFeePerK()));
+                }
+            }
+            if (feerate_results.size() == fee_estimators.size()) result.push_back(feerate_results);
             result.pushKV("blocks", feeCalc.returnedTarget);
             return result;
         },
