@@ -6,12 +6,16 @@
 #define BITCOIN_TXORPHANAGE_H
 
 #include <net.h>
+#include <policy/policy.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <sync.h>
 
 #include <map>
 #include <set>
+
+/** Maximum total size of orphan transactions stored, in bytes. */
+static constexpr size_t MAX_ORPHAN_TOTAL_SIZE{100 * MAX_STANDARD_TX_WEIGHT};
 
 /** A class to track orphan transactions (failed on TX_MISSING_INPUTS)
  * Since we cannot distinguish orphans from bad transactions with
@@ -76,7 +80,17 @@ public:
     /** Return number of protected entries in the orphanage. */
     size_t NumProtected() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
+    /** Return total memory usage of the transactions stored. Does not include overhead of
+     * m_orphans, m_peer_work_set, etc. */
+    size_t TotalOrphanBytes() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
+    {
+        LOCK(m_mutex);
+        return m_total_orphan_bytes;
+    }
+
 protected:
+    size_t m_total_orphan_bytes{0};
+
     /** Guards orphan transactions */
     mutable Mutex m_mutex;
 
