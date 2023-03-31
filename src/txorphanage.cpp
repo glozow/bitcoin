@@ -12,6 +12,29 @@
 
 #include <cassert>
 
+void TxOrphanage::AddOrphanBytes(unsigned int size, NodeId peer)
+{
+    m_peer_bytes_used.try_emplace(peer, 0);
+    m_peer_bytes_used.at(peer) += size;
+}
+
+void TxOrphanage::SubtractOrphanBytes(unsigned int size, NodeId peer)
+{
+    // If our accounting is off, control damage by ensuring we clean up m_peer_bytes_used.
+    auto it = m_peer_bytes_used.find(peer);
+    if (!Assume(it != m_peer_bytes_used.end())) return;
+    if (!Assume(it->second >= size)) {
+        // Equivalent of bytes going to 0.
+        m_peer_bytes_used.erase(it);
+        return;
+    }
+
+    it->second -= size;
+    if (it->second == 0) {
+        m_peer_bytes_used.erase(it);
+    }
+}
+
 bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer, const std::vector<Txid>& parent_txids)
 {
     const Txid& hash = tx->GetHash();
@@ -21,6 +44,7 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer, const std::vecto
         Assume(!it->second.announcers.empty());
         const auto ret = it->second.announcers.insert(peer);
         if (ret.second) {
+            AddOrphanBytes(it->second.tx->GetTotalSize(), peer);
             LogPrint(BCLog::TXPACKAGES, "added peer=%d as announcer of orphan tx %s\n", peer, wtxid.ToString());
         }
         // Even if an announcer was added, no new orphan entry was created.
@@ -50,6 +74,8 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer, const std::vecto
 
     LogPrint(BCLog::TXPACKAGES, "stored orphan tx %s (wtxid=%s), weight: %u (mapsz %u outsz %u)\n", hash.ToString(), wtxid.ToString(), sz,
              m_orphans.size(), m_outpoint_to_orphan_it.size());
+    AddOrphanBytes(tx->GetTotalSize(), peer);
+    m_total_orphan_bytes += tx->GetTotalSize();
     return true;
 }
 
@@ -60,6 +86,7 @@ bool TxOrphanage::AddAnnouncer(const Wtxid& wtxid, NodeId peer)
         Assume(!it->second.announcers.empty());
         const auto ret = it->second.announcers.insert(peer);
         if (ret.second) {
+            AddOrphanBytes(it->second.tx->GetTotalSize(), peer);
             LogPrint(BCLog::TXPACKAGES, "added peer=%d as announcer of orphan tx %s\n", peer, wtxid.ToString());
             return true;
         }
@@ -72,6 +99,12 @@ int TxOrphanage::EraseTx(const Wtxid& wtxid)
     std::map<Wtxid, OrphanTx>::iterator it = m_orphans.find(wtxid);
     if (it == m_orphans.end())
         return 0;
+
+    m_total_orphan_bytes -= it->second.tx->GetTotalSize();
+    for (const auto fromPeer : it->second.announcers) {
+        SubtractOrphanBytes(it->second.tx->GetTotalSize(), fromPeer);
+    }
+
     for (const CTxIn& txin : it->second.tx->vin)
     {
         auto itPrev = m_outpoint_to_orphan_it.find(txin.prevout);
@@ -118,10 +151,15 @@ void TxOrphanage::EraseForPeer(NodeId peer)
             } else {
                 // Don't erase this orphan. Another peer has also announced it, so it may still be useful.
                 orphan.announcers.erase(peer);
+                SubtractOrphanBytes(orphan.tx->GetTotalSize(), peer);
             }
         }
     }
     if (nErased > 0) LogPrint(BCLog::TXPACKAGES, "Erased %d orphan transaction(s) from peer=%d\n", nErased, peer);
+
+    // Belt-and-suspenders if our accounting is off. We shouldn't keep an entry for a disconnected
+    // peer as we will have no other opportunity to delete it.
+    if (!Assume(m_peer_bytes_used.count(peer) == 0)) m_peer_bytes_used.erase(peer);
 }
 
 std::vector<Wtxid> TxOrphanage::LimitOrphans(unsigned int max_orphans, FastRandomContext& rng)
@@ -319,6 +357,7 @@ void TxOrphanage::EraseOrphanOfPeer(const Wtxid& wtxid, NodeId peer)
         } else {
             // Don't erase this orphan. Another peer has also announced it, so it may still be useful.
             it->second.announcers.erase(peer);
+            SubtractOrphanBytes(it->second.tx->GetTotalSize(), peer);
         }
     }
 }

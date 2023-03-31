@@ -83,6 +83,19 @@ public:
     /** Get an orphan's parent_txids, or std::nullopt if the orphan is not present. */
     std::optional<std::vector<Txid>> GetParentTxids(const Wtxid& wtxid);
 
+    /** Return total memory usage of the transactions stored. Does not include overhead of
+     * m_orphans, m_peer_work_set, etc. */
+    unsigned int TotalOrphanBytes() const
+    {
+        return m_total_orphan_bytes;
+    }
+    /** Return total amount of orphans stored by this peer, in bytes. */
+    unsigned int BytesFromPeer(NodeId peer) const
+    {
+        auto peer_bytes_it = m_peer_bytes_used.find(peer);
+        return peer_bytes_it == m_peer_bytes_used.end() ? 0 : peer_bytes_it->second;
+    }
+
 protected:
     struct OrphanTx {
         CTransactionRef tx;
@@ -121,6 +134,22 @@ protected:
 
     /** Timestamp for the next scheduled sweep of expired orphans */
     NodeSeconds m_next_sweep{0s};
+
+    /** Total bytes of all transactions. */
+    unsigned int m_total_orphan_bytes{0};
+
+    /** Map from nodeid to the amount of orphans provided by this peer, in bytes.
+     * The sum of all values in this map may exceed m_total_orphan_bytes, since multiple peers may
+     * provide the same orphan and its bytes are included in all peers' entries. */
+    std::map<NodeId, unsigned int> m_peer_bytes_used;
+
+    /** Add bytes to this peer's entry in m_peer_bytes_used, adding a new entry if it doesn't
+     * already exist. */
+    void AddOrphanBytes(unsigned int size, NodeId peer);
+
+    /** Subtract bytes from this peer's entry in m_peer_bytes_used, removing the peer's entry from
+     * the map if its value becomes 0. */
+    void SubtractOrphanBytes(unsigned int size, NodeId peer);
 };
 
 #endif // BITCOIN_TXORPHANAGE_H

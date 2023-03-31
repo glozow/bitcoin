@@ -4,6 +4,7 @@
 
 #include <arith_uint256.h>
 #include <primitives/transaction.h>
+#include <consensus/validation.h>
 #include <pubkey.h>
 #include <script/sign.h>
 #include <script/signingprovider.h>
@@ -106,6 +107,8 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
     // Freeze time for length of test
     auto now{GetTime<std::chrono::seconds>()};
     SetMockTime(now);
+    size_t expected_count{0};
+    size_t expected_total_size{0};
 
     // 50 orphan transactions:
     for (int i = 0; i < 50; i++)
@@ -119,8 +122,14 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
         tx.vout[0].nValue = i*CENT;
         tx.vout[0].scriptPubKey = GetScriptForDestination(PKHash(key.GetPubKey()));
 
-        orphanage.AddTx(MakeTransactionRef(tx), i, {});
+        auto ptx{MakeTransactionRef(tx)};
+        if (orphanage.AddTx(ptx, i, {})) {
+            ++expected_count;
+            expected_total_size += ptx->GetTotalSize();
+        }
     }
+    BOOST_CHECK_EQUAL(orphanage.Size(), expected_count);
+    BOOST_CHECK_EQUAL(orphanage.TotalOrphanBytes(), expected_total_size);
 
     // ... and 50 that depend on other orphans:
     for (int i = 0; i < 50; i++)
@@ -137,8 +146,14 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
         SignatureData empty;
         BOOST_CHECK(SignSignature(keystore, *txPrev, tx, 0, SIGHASH_ALL, empty));
 
-        orphanage.AddTx(MakeTransactionRef(tx), i, {});
+        auto ptx{MakeTransactionRef(tx)};
+        if (orphanage.AddTx(ptx, i, {})) {
+            ++expected_count;
+            expected_total_size += ptx->GetTotalSize();
+        }
     }
+    BOOST_CHECK_EQUAL(orphanage.Size(), expected_count);
+    BOOST_CHECK_EQUAL(orphanage.TotalOrphanBytes(), expected_total_size);
 
     // This really-big orphan should be ignored:
     for (int i = 0; i < 10; i++)
@@ -164,6 +179,8 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
 
         BOOST_CHECK(!orphanage.AddTx(MakeTransactionRef(tx), i, {}));
     }
+    BOOST_CHECK_EQUAL(orphanage.Size(), expected_count);
+    BOOST_CHECK_EQUAL(orphanage.TotalOrphanBytes(), expected_total_size);
 
     size_t expected_num_orphans = orphanage.CountOrphans();
 
@@ -211,6 +228,11 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
     BOOST_CHECK_EQUAL(orphanage.CountOrphans(), 1);
     orphanage.LimitOrphans(1, rng);
     BOOST_CHECK_EQUAL(orphanage.CountOrphans(), 0);
+
+    expected_count = 0;
+    expected_total_size = 0;
+    BOOST_CHECK_EQUAL(orphanage.CountOrphans(), expected_count);
+    BOOST_CHECK_EQUAL(orphanage.TotalOrphanBytes(), expected_total_size);
 }
 
 BOOST_AUTO_TEST_CASE(same_txid_diff_witness)
