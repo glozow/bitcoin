@@ -15,6 +15,16 @@ static constexpr int64_t ORPHAN_TX_EXPIRE_TIME = 20 * 60;
 /** Minimum time between orphan transactions expire time checks in seconds */
 static constexpr int64_t ORPHAN_TX_EXPIRE_INTERVAL = 5 * 60;
 
+void TxOrphanage::SubtractOrphanBytes(unsigned int size, NodeId peer)
+{
+    AssertLockHeld(m_mutex);
+    if (!Assume(m_peer_bytes_used.count(peer) > 0)) return;
+    if (!Assume(m_peer_bytes_used.at(peer) >= size)) return;
+    m_peer_bytes_used.at(peer) -= size;
+    if (m_peer_bytes_used.at(peer) == 0) {
+        m_peer_bytes_used.erase(peer);
+    }
+}
 
 bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
 {
@@ -47,6 +57,9 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
         m_outpoint_to_orphan_it[txin.prevout].insert(ret.first);
     }
 
+    m_peer_bytes_used.try_emplace(peer, 0);
+    m_peer_bytes_used.at(peer) += tx->GetTotalSize();
+    m_total_orphan_bytes += tx->GetTotalSize();
     LogPrint(BCLog::TXPACKAGES, "stored orphan tx %s (mapsz %u outsz %u)\n", hash.ToString(),
              m_orphans.size(), m_outpoint_to_orphan_it.size());
     return true;
@@ -71,6 +84,8 @@ int TxOrphanage::EraseTxNoLock(const uint256& wtxid)
     const auto wtxid_it = m_wtxid_to_orphan_it.find(wtxid);
     if (wtxid_it == m_wtxid_to_orphan_it.end()) return 0;
     std::map<uint256, OrphanTx>::iterator it = wtxid_it->second;
+    m_total_orphan_bytes -= it->second.tx->GetTotalSize();
+    SubtractOrphanBytes(it->second.tx->GetTotalSize(), it->second.fromPeer);
     for (const CTxIn& txin : it->second.tx->vin)
     {
         auto itPrev = m_outpoint_to_orphan_it.find(txin.prevout);
@@ -115,6 +130,8 @@ void TxOrphanage::EraseForPeer(NodeId peer)
         }
     }
     if (nErased > 0) LogPrint(BCLog::TXPACKAGES, "Erased %d orphan tx from peer=%d\n", nErased, peer);
+    Assume(m_peer_bytes_used.count(peer) == 0);
+    m_peer_bytes_used.erase(peer);
 }
 
 void TxOrphanage::LimitOrphans(unsigned int max_orphans)
