@@ -28,6 +28,23 @@ public:
     };
     TxPackageTracker(const Options& opts);
     ~TxPackageTracker();
+    /** New block. */
+    void BlockConnected(const CBlock& block);
+    /** Peer has disconnected, tear down state. */
+    void DisconnectedPeer(NodeId nodeid);
+    /** Returns whether a tx is present in the orphanage. */
+    bool OrphanageHaveTx(const GenTxid& gtxid) const;
+    bool AddOrphanTx(const CTransactionRef& tx, NodeId peer);
+    /** Transaction accepted to mempool. */
+    void TransactionAccepted(const CTransactionRef& tx);
+    /** Transaction rejected for non-missing-inputs reason. */
+    void TransactionRejected(const uint256& wtxid);
+    /** Get tx from orphan that can be reconsidered. */
+    CTransactionRef GetTxToReconsider(NodeId nodeid);
+    /** Whether there are more orphans from this peer to consider. */
+    bool HaveTxToReconsider(NodeId nodeid) const;
+    /** Returns the number of transactions in the orphanage. */
+    size_t OrphanageSize() const;
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXPACKAGETRACKER_H
