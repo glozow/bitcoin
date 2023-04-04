@@ -12,6 +12,8 @@
 #include <vector>
 
 namespace node {
+/** Default for -maxorphantx, maximum number of orphan transactions kept in memory */
+static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100;
 static constexpr bool DEFAULT_ENABLE_PACKAGE_RELAY{false};
 
 class TxPackageTracker {
@@ -19,7 +21,12 @@ class TxPackageTracker {
     const std::unique_ptr<Impl> m_impl;
 
 public:
-    explicit TxPackageTracker();
+    struct Options {
+        bool enable_package_relay{DEFAULT_ENABLE_PACKAGE_RELAY};
+        /** Maximum number of transactions in orphanage. Configured using -maxorphantx.*/
+        unsigned int max_orphan_count{DEFAULT_MAX_ORPHAN_TRANSACTIONS};
+    };
+    TxPackageTracker(const Options& opts);
     ~TxPackageTracker();
 };
 } // namespace node

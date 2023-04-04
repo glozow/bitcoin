@@ -6,6 +6,7 @@
 #include <consensus/validation.h>
 #include <net_processing.h>
 #include <node/eviction.h>
+#include <node/txpackagetracker.h>
 #include <policy/policy.h>
 #include <primitives/transaction.h>
 #include <script/script.h>
@@ -44,7 +45,7 @@ FUZZ_TARGET_INIT(txorphan, initialize_orphanage)
     // if true, allow duplicate input when constructing tx
     const bool duplicate_input = fuzzed_data_provider.ConsumeBool();
 
-    LIMITED_WHILE(outpoints.size() < 200'000 && fuzzed_data_provider.ConsumeBool(), 10 * DEFAULT_MAX_ORPHAN_TRANSACTIONS)
+    LIMITED_WHILE(outpoints.size() < 200'000 && fuzzed_data_provider.ConsumeBool(), 10 * node::DEFAULT_MAX_ORPHAN_TRANSACTIONS)
     {
         // construct transaction
         const CTransactionRef tx = [&] {
@@ -78,7 +79,7 @@ FUZZ_TARGET_INIT(txorphan, initialize_orphanage)
         }();
 
         // trigger orphanage functions
-        LIMITED_WHILE(fuzzed_data_provider.ConsumeBool(), 10 * DEFAULT_MAX_ORPHAN_TRANSACTIONS)
+        LIMITED_WHILE(fuzzed_data_provider.ConsumeBool(), 10 * node::DEFAULT_MAX_ORPHAN_TRANSACTIONS)
         {
             NodeId peer_id = fuzzed_data_provider.ConsumeIntegral<NodeId>();
 

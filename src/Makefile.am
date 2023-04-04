@@ -220,6 +220,7 @@ BITCOIN_CORE_H = \
   node/minisketchwrapper.h \
   node/psbt.h \
   node/transaction.h \
+  node/txpackage_args.h \
   node/txpackagetracker.h \
   node/txreconciliation.h \
   node/utxo_snapshot.h \
@@ -410,6 +411,7 @@ libbitcoin_node_a_SOURCES = \
   node/minisketchwrapper.cpp \
   node/psbt.cpp \
   node/transaction.cpp \
+  node/txpackage_args.cpp \
   node/txpackagetracker.cpp \
   node/txreconciliation.cpp \
   node/utxo_snapshot.cpp \
