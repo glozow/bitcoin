@@ -69,6 +69,10 @@ public:
     // Orphanage Wrapper Functions
     bool OrphanageAddTx(const CTransactionRef& tx, NodeId peer) { return m_orphanage.AddTx(tx, peer); }
     bool OrphanageHaveTx(const GenTxid& gtxid) { return m_orphanage.HaveTx(gtxid); }
+    int64_t OrphanageGetTxSize(const uint256& wtxid) {
+        auto ptx{m_orphanage.GetTx(wtxid)};
+        return ptx ? GetVirtualTransactionSize(*ptx) : 0;
+    }
     CTransactionRef GetTxToReconsider(NodeId peer) { return m_orphanage.GetTxToReconsider(peer); }
     int EraseOrphanTx(const uint256& txid) { return m_orphanage.EraseTx(txid); }
     void EraseOrphanForPeer(NodeId peer) { m_orphanage.EraseForPeer(peer); }
@@ -268,6 +272,7 @@ TxPackageTracker::~TxPackageTracker() = default;
 
 bool TxPackageTracker::OrphanageAddTx(const CTransactionRef& tx, NodeId peer) { return m_impl->OrphanageAddTx(tx, peer); }
 bool TxPackageTracker::OrphanageHaveTx(const GenTxid& gtxid) { return m_impl->OrphanageHaveTx(gtxid); }
+int64_t TxPackageTracker::OrphanageGetTxSize(const uint256& wtxid) { return m_impl->OrphanageGetTxSize(wtxid); }
 CTransactionRef TxPackageTracker::GetTxToReconsider(NodeId peer) { return m_impl->GetTxToReconsider(peer); }
 int TxPackageTracker::EraseOrphanTx(const uint256& txid) { return m_impl->EraseOrphanTx(txid); }
 void TxPackageTracker::EraseOrphanForPeer(NodeId peer) { m_impl->EraseOrphanForPeer(peer); }

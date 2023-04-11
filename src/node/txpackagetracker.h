@@ -42,6 +42,9 @@ public:
     /** Check if we already have an orphan transaction (by txid or wtxid) */
     bool OrphanageHaveTx(const GenTxid& gtxid);
 
+    /** Get virtual size of an orphan transaction if it exists. */
+    int64_t OrphanageGetTxSize(const uint256& wtxid);
+
     /** Extract a transaction from a peer's work set
      *  Returns nullptr if there are no transactions to work on.
      *  Otherwise returns the transaction reference, and removes
