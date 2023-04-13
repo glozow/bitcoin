@@ -72,7 +72,7 @@ bool ImportMempool(CTxMemPool& pool, const fs::path& load_path, Chainstate& acti
             file >> nFeeDelta;
 
             CAmount amountdelta = nFeeDelta;
-            if (amountdelta) {
+            if (amountdelta && opts.apply_fee_delta_priority) {
                 pool.PrioritiseTransaction(tx->GetHash(), amountdelta);
             }
             if (nTime > TicksSinceEpoch<std::chrono::seconds>(now - pool.m_expiry)) {
@@ -100,17 +100,21 @@ bool ImportMempool(CTxMemPool& pool, const fs::path& load_path, Chainstate& acti
         std::map<uint256, CAmount> mapDeltas;
         file >> mapDeltas;
 
-        for (const auto& i : mapDeltas) {
-            pool.PrioritiseTransaction(i.first, i.second);
+        if (opts.apply_fee_delta_priority) {
+            for (const auto& i : mapDeltas) {
+                pool.PrioritiseTransaction(i.first, i.second);
+            }
         }
 
         std::set<uint256> unbroadcast_txids;
         file >> unbroadcast_txids;
-        unbroadcast = unbroadcast_txids.size();
-        for (const auto& txid : unbroadcast_txids) {
-            // Ensure transactions were accepted to mempool then add to
-            // unbroadcast set.
-            if (pool.get(txid) != nullptr) pool.AddUnbroadcastTx(txid);
+        if (opts.apply_unbroadcast_set) {
+            unbroadcast = unbroadcast_txids.size();
+            for (const auto& txid : unbroadcast_txids) {
+                // Ensure transactions were accepted to mempool then add to
+                // unbroadcast set.
+                if (pool.get(txid) != nullptr) pool.AddUnbroadcastTx(txid);
+            }
         }
     } catch (const std::exception& e) {
         LogPrintf("Failed to deserialize mempool data on disk: %s. Continuing anyway.\n", e.what());

@@ -164,6 +164,7 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "importaddress", 2, "rescan" },
     { "importaddress", 3, "p2sh" },
     { "importpubkey", 2, "rescan" },
+    { "importmempool", 1, "options" },
     { "importmulti", 0, "requests" },
     { "importmulti", 1, "options" },
     { "importdescriptors", 0, "requests" },
