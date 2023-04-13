@@ -71,6 +71,7 @@ using kernel::CCoinsStats;
 using kernel::CoinStatsHashType;
 using kernel::ComputeUTXOStats;
 using kernel::ImportMempool;
+using kernel::ImportMempoolOptions;
 
 using fsbridge::FopenFn;
 using node::BlockManager;
@@ -4105,7 +4106,10 @@ void PruneBlockFilesManual(Chainstate& active_chainstate, int nManualPruneHeight
 void Chainstate::LoadMempool(const fs::path& load_path, FopenFn mockable_fopen_function)
 {
     if (!m_mempool) return;
-    ::ImportMempool(*m_mempool, load_path, *this, mockable_fopen_function);
+    ImportMempool(*m_mempool, load_path, *this,
+                  ImportMempoolOptions{
+                      .mockable_fopen_function = std::move(mockable_fopen_function),
+                  });
     m_mempool->SetLoadTried(!ShutdownRequested());
 }
 
