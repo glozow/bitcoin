@@ -744,7 +744,7 @@ public:
      */
     void CheckBlockIndex();
 
-    /** Load the persisted mempool from disk */
+    /** Attempt to load the persisted mempool from a file on startup and set the mempool "loaded" field when done. */
     void LoadMempool(const fs::path& load_path, fsbridge::FopenFn mockable_fopen_function = fsbridge::fopen);
 
     /** Update the chain tip based on database information, i.e. CoinsTip()'s best block. */
