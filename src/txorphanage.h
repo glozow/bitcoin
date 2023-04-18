@@ -20,14 +20,23 @@
  */
 class TxOrphanage {
 public:
-    /** Add a new orphan transaction */
+    /** Add a new orphan transaction. If the tx already exists, add this peer to its list of announcers.
+      @returns true if the transaction was added as a new orphan. */
     bool AddTx(const CTransactionRef& tx, NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
+    /** Add an additional announcer to an orphan if it exists. Otherwise, do nothing.
+     * @returns true it peer is an announcer of wtxid after this call (including if it was already
+     * an announcer), false if the tx doesn't exist. */
+    bool AddAnnouncer(const Wtxid& wtxid, NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
     /** Get orphan transaction by wtxid. Returns nullptr if we don't have it anymore. */
-    CTransactionRef GetTx(const Wtxid& wtxid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    CTransactionRef GetTx(const Wtxid& wtxid) const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Check if we already have an orphan transaction (by txid or wtxid) */
     bool HaveTx(const GenTxid& gtxid) const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    /** Check if a {tx, peer} exists in the orphanage (by txid or wtxid).*/
+    bool HaveTxAndPeer(const GenTxid& gtxid, NodeId peer) const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Extract a transaction from a peer's work set
      *  Returns nullptr if there are no transactions to work on.
@@ -38,7 +47,8 @@ public:
 
     int EraseTx(const Wtxid& txid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
-    /** Erase all orphans announced by a peer (eg, after that peer disconnects) */
+    /** Maybe erase all orphans announced by a peer (eg, after that peer disconnects). If an orphan
+     * has been announced by another peer, don't erase, just remove this peer from the list of announcers. */
     void EraseForPeer(NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Erase all orphans included in or invalidated by a new block */
@@ -52,6 +62,9 @@ public:
 
     /** Does this peer have any work to do? */
     bool HaveTxToReconsider(NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);;
+
+    /** Erase this peer as an announcer of this orphan. If there are no more announcers, delete the orphan. */
+    void EraseOrphanOfPeer(const Wtxid& wtxid, NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Return how many entries exist in the orphange */
     size_t Size() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
@@ -67,7 +80,9 @@ public:
         LOCK(m_mutex);
         return m_total_orphan_bytes;
     }
-    /** Return total amount of orphans stored by this peer, in bytes. */
+    /** Return total amount of orphans stored by this peer, in bytes.  Since an orphan can have
+     * multiple announcers, the aggregate BytesFromPeer() for all peers may exceed
+     * TotalOrphanBytes(). */
     unsigned int BytesFromPeer(NodeId peer) const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
     {
         LOCK(m_mutex);
@@ -84,9 +99,9 @@ protected:
 
     struct OrphanTx {
         CTransactionRef tx;
-        NodeId fromPeer;
         int64_t nTimeExpire;
         size_t list_pos;
+        std::set<NodeId> announcers;
     };
 
     /** Map from txid to orphan transaction record. Limited by
