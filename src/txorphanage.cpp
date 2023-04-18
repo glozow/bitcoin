@@ -127,6 +127,20 @@ void TxOrphanage::EraseForPeer(NodeId peer)
     m_peer_bytes_used.erase(peer);
 }
 
+std::set<NodeId> TxOrphanage::_GetProtectedPeers() const
+{
+    AssertLockHeld(m_mutex);
+    std::set<NodeId> protected_peers;
+    for (const auto [nodeid, bytes] : m_peer_bytes_used) {
+        if (bytes <= OVERLOADED_PEER_ORPHANAGE_BYTES) {
+            protected_peers.insert(nodeid);
+        }
+    }
+    // If no peers are overloaded, all peers are candidates for eviction.
+    if (protected_peers.size() == m_peer_bytes_used.size()) protected_peers.clear();
+    return protected_peers;
+}
+
 void TxOrphanage::LimitOrphans(unsigned int max_orphans)
 {
     LOCK(m_mutex);
@@ -155,10 +169,13 @@ void TxOrphanage::LimitOrphans(unsigned int max_orphans)
     FastRandomContext rng;
     while (m_orphans.size() > max_orphans || m_total_orphan_bytes > MAX_ORPHAN_TOTAL_SIZE)
     {
+        const auto protected_peers{_GetProtectedPeers()};
         // Randomly select an orphan, weighted by the number of bytes used by each orphan.
         size_t randompos = rng.randrange(m_total_orphan_bytes);
         for (const auto orphan_it : m_orphan_list) {
-            if (randompos <= orphan_it->second.tx->GetTotalSize()) {
+            if (protected_peers.count(orphan_it->second.fromPeer) > 0) {
+                continue;
+            } else if (randompos <= orphan_it->second.tx->GetTotalSize()) {
                 nEvicted += _EraseTx(orphan_it->second.tx->GetWitnessHash());
             } else {
                 randompos -= orphan_it->second.tx->GetTotalSize();
