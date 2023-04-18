@@ -20,7 +20,8 @@
  */
 class TxOrphanage {
 public:
-    /** Add a new orphan transaction */
+    /** Add a new orphan transaction. If the tx already exists, add this peer to its list of announcers.
+      @returns true if the transaction was added as a new orphan. */
     bool AddTx(const CTransactionRef& tx, NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Get orphan transaction by wtxid. Returns nullptr if we don't have it anymore. */
@@ -39,7 +40,8 @@ public:
     /** Erase an orphan by wtxid */
     int EraseTx(const uint256& wtxid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
-    /** Erase all orphans announced by a peer (eg, after that peer disconnects) */
+    /** Maybe erase all orphans announced by a peer (eg, after that peer disconnects). If an orphan
+     * has been announced by another peer, don't erase, just remove this peer from the list of announcers. */
     void EraseForPeer(NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Erase all orphans included in or invalidated by a new block. Returns wtxids of erased txns. */
@@ -68,17 +70,15 @@ public:
         LOCK(m_mutex);
         return m_total_orphan_bytes;
     }
-    /** Return total amount of orphans stored by this transaction, in bytes. */
+    /** Return total amount of orphans stored by this transaction, in bytes. Since an orphan can
+     * have multiple announcers, the aggregate BytesFromPeer() for all peers may exceed
+     * TotalOrphanBytes(). */
     unsigned int BytesFromPeer(NodeId peer) const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
     {
         LOCK(m_mutex);
         auto peer_bytes_it = m_peer_bytes_used.find(peer);
         return peer_bytes_it == m_peer_bytes_used.end() ? 0 : peer_bytes_it->second;
     }
-
-    /** Remove a peer from an orphan's announcers list, erasing the orphan if this is the only peer
-     * who announced it. If the orphan doesn't exist or does not list this peer as an announcer, do nothing. */
-    void EraseOrphanOfPeer(const uint256& wtxid, NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Subtract bytes from this peer's entry in m_peer_bytes_used. If the value becomes zero,
      * remove this peer's entry from the map. */
@@ -92,9 +92,9 @@ protected:
 
     struct OrphanTx {
         CTransactionRef tx;
-        NodeId fromPeer;
         int64_t nTimeExpire;
         size_t list_pos;
+        std::set<NodeId> announcers;
     };
 
     /** Map from txid to orphan transaction record. Limited by
