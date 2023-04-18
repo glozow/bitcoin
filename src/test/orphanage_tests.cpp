@@ -47,6 +47,42 @@ static void MakeNewKeyWithFastRandomContext(CKey& key)
     assert(key.IsValid());
 }
 
+static CTransactionRef MakeLargeOrphan()
+{
+    CKey key;
+    MakeNewKeyWithFastRandomContext(key);
+    CMutableTransaction tx;
+    tx.vout.resize(1);
+    tx.vout[0].nValue = CENT;
+    tx.vout[0].scriptPubKey = GetScriptForDestination(PKHash(key.GetPubKey()));
+    tx.vin.resize(80);
+    for (unsigned int j = 0; j < tx.vin.size(); j++) {
+        tx.vin[j].prevout.n = j;
+        tx.vin[j].prevout.hash = GetRandHash();
+        tx.vin[j].scriptWitness.stack.reserve(100);
+        for (int i = 0; i < 100; ++i) {
+            tx.vin[j].scriptWitness.stack.push_back(std::vector<unsigned char>(j));
+        }
+    }
+    return MakeTransactionRef(tx);
+}
+
+static CTransactionRef MakeSmallOrphan()
+{
+    CKey key;
+    MakeNewKeyWithFastRandomContext(key);
+    CMutableTransaction tx;
+    tx.vout.resize(1);
+    tx.vout[0].nValue = CENT;
+    tx.vout[0].scriptPubKey = GetScriptForDestination(PKHash(key.GetPubKey()));
+    tx.vin.resize(1);
+    tx.vin[0].prevout.n = 2;
+    tx.vin[0].prevout.hash = GetRandHash();
+    tx.vin[0].scriptWitness.stack.reserve(1);
+    tx.vin[0].scriptWitness.stack.push_back(std::vector<unsigned char>(2));
+    return MakeTransactionRef(tx);
+}
+
 BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
 {
     // This test had non-deterministic coverage due to
@@ -191,6 +227,151 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
             // The maximum size should be exceeded at some point, otherwise this test is useless.
             BOOST_CHECK(i < 149);
         }
+    }
+}
+BOOST_AUTO_TEST_CASE(multiple_announcers)
+{
+    const NodeId node0{0};
+    const NodeId node1{1};
+    size_t expected_total_count{0};
+    size_t expected_total_size{0};
+    size_t expected_node0_size{0};
+    size_t expected_node1_size{0};
+    TxOrphanageTest orphanage;
+    // Check that accounting for bytes per peer is accurate.
+    {
+        auto ptx{MakeLargeOrphan()};
+        const auto tx_size = ptx->GetTotalSize();
+        orphanage.AddTx(ptx, node0);
+        expected_total_size += tx_size;
+        expected_total_count += 1;
+        expected_node0_size += tx_size;
+        BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK_EQUAL(orphanage.TotalOrphanBytes(), expected_total_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node0), expected_node0_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node1), expected_node1_size);
+        // Adding again should do nothing.
+        orphanage.AddTx(ptx, node0);
+        BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK_EQUAL(orphanage.TotalOrphanBytes(), expected_total_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node0), expected_node0_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node1), expected_node1_size);
+        // Adding existing tx for another peer should change that peer's bytes, but not total bytes.
+        orphanage.AddTx(ptx, node1);
+        expected_node1_size += tx_size;
+        BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK_EQUAL(orphanage.TotalOrphanBytes(), expected_total_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node0), expected_node0_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node1), expected_node1_size);
+        // if EraseForPeer is called for an orphan with multiple announcers, the orphanage should only
+        // decrement the number of bytes for that peer.
+        orphanage.EraseForPeer(node0);
+        expected_node0_size -= tx_size;
+        BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK_EQUAL(orphanage.TotalOrphanBytes(), expected_total_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node0), expected_node0_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node1), expected_node1_size);
+        // EraseForPeer should delete the orphan if it's the only announcer left.
+        orphanage.EraseForPeer(node1);
+        expected_total_count -= 1;
+        expected_total_size -= tx_size;
+        expected_node1_size -= tx_size;
+        BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK_EQUAL(orphanage.TotalOrphanBytes(), expected_total_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node0), expected_node0_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node1), expected_node1_size);
+    }
+
+    // Check that overloaded peers are evicted first
+    {
+        BOOST_CHECK(orphanage.GetProtectedPeers().empty());
+        CTransactionRef protected_tx;
+        for (NodeId nodeid{1}; nodeid < 15; ++nodeid) {
+            while (orphanage.BytesFromPeer(nodeid) <= OVERLOADED_PEER_ORPHANAGE_BYTES) {
+                auto ptx{MakeLargeOrphan()};
+                const auto tx_size = ptx->GetTotalSize();
+                orphanage.AddTx(ptx, nodeid);
+                expected_total_size += tx_size;
+                expected_total_count += 1;
+            }
+            BOOST_CHECK(orphanage.IsOverloaded(nodeid));
+        }
+        std::vector<uint256> node0_wtxids;
+        // Node0 has plenty of orphans to resolve, but is not overloaded
+        for (auto i{0}; i < 5; ++i) {
+            auto ptx{MakeSmallOrphan()};
+            const auto tx_size = ptx->GetTotalSize();
+            orphanage.AddTx(ptx, node0);
+            expected_total_count += 1;
+            expected_total_size += tx_size;
+            expected_node0_size += tx_size;
+            node0_wtxids.push_back(ptx->GetWitnessHash());
+        }
+        BOOST_CHECK(!orphanage.IsOverloaded(node0));
+        BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK_EQUAL(orphanage.TotalOrphanBytes(), expected_total_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node0), expected_node0_size);
+
+        // There are 14 overloaded peers. Transactions from those peers only should be evicted.
+        BOOST_CHECK_EQUAL(orphanage.GetProtectedPeers().size(), 1);
+        for (auto i{0}; i < 14; ++i) {
+            BOOST_CHECK(!orphanage.IsOverloaded(node0));
+            const auto protected_peers{orphanage.GetProtectedPeers()};
+            BOOST_CHECK(protected_peers.count(node0) > 0);
+            // node0 and the i peers whose transactions have been evicted.
+            BOOST_CHECK_EQUAL(protected_peers.size(), i + 1);
+            orphanage.LimitOrphans(orphanage.Size() - 1);
+            expected_total_count -= 1;
+            BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+            // All of node0's peers should be safe.
+            for (const auto& wtxid : node0_wtxids) {
+                BOOST_CHECK(orphanage.HaveTx(GenTxid::Wtxid(wtxid)));
+            }
+            for (NodeId nodeid{0}; nodeid < 15; ++nodeid) {
+                orphanage.BytesFromPeer(nodeid);
+            }
+        }
+        // Now that no peers are overloaded, there are no protected peers.
+        BOOST_CHECK_EQUAL(orphanage.GetProtectedPeers().size(), 0);
+
+        for (NodeId i{0}; i < 15; ++i) orphanage.EraseForPeer(i);
+        expected_total_count = 0;
+        expected_total_size = 0;
+        expected_node0_size = 0;
+        expected_node1_size = 0;
+        BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK_EQUAL(orphanage.TotalOrphanBytes(), expected_total_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node0), expected_node0_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node1), expected_node1_size);
+    }
+
+    // Check that an orphan is protected if it has 1 non-overloaded announcer.
+    {
+        CTransactionRef protected_tx;
+        for (auto i{0}; i < 3; ++i) {
+            auto ptx{MakeLargeOrphan()};
+            const auto tx_size = ptx->GetTotalSize();
+            orphanage.AddTx(ptx, node0);
+            expected_total_size += tx_size;
+            expected_total_count += 1;
+            expected_node0_size += tx_size;
+            if (i == 0) {
+                orphanage.AddTx(ptx, node1);
+                expected_node1_size += tx_size;
+                protected_tx = ptx;
+                BOOST_CHECK(!orphanage.IsOverloaded(node1));
+            }
+        }
+        BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK_EQUAL(orphanage.TotalOrphanBytes(), expected_total_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node0), expected_node0_size);
+        BOOST_CHECK_EQUAL(orphanage.BytesFromPeer(node1), expected_node1_size);
+        BOOST_CHECK(orphanage.IsOverloaded(node0));
+        for (NodeId i{1}; i < 20; ++i) BOOST_CHECK(!orphanage.IsOverloaded(i));
+        orphanage.LimitOrphans(orphanage.Size() - 1);
+        expected_total_count -= 1;
+        BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK(orphanage.HaveTx(GenTxid::Wtxid(protected_tx->GetWitnessHash())));
     }
 }
 
