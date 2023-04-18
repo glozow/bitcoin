@@ -155,10 +155,15 @@ void TxOrphanage::LimitOrphans(unsigned int max_orphans)
     FastRandomContext rng;
     while (m_orphans.size() > max_orphans || m_total_orphan_bytes > MAX_ORPHAN_TOTAL_SIZE)
     {
-        // Evict a random orphan:
-        size_t randompos = rng.randrange(m_orphan_list.size());
-        _EraseTx(m_orphan_list[randompos]->second.tx->GetWitnessHash());
-        ++nEvicted;
+        // Randomly select an orphan, weighted by the number of bytes used by each orphan.
+        size_t randompos = rng.randrange(m_total_orphan_bytes);
+        for (const auto orphan_it : m_orphan_list) {
+            if (randompos <= orphan_it->second.tx->GetTotalSize()) {
+                nEvicted += _EraseTx(orphan_it->second.tx->GetWitnessHash());
+            } else {
+                randompos -= orphan_it->second.tx->GetTotalSize();
+            }
+        }
     }
     if (nEvicted > 0) LogPrint(BCLog::TXPACKAGES, "orphanage overflow, removed %u tx\n", nEvicted);
 }
