@@ -18,6 +18,7 @@ static constexpr int64_t ORPHAN_TX_EXPIRE_INTERVAL = 5 * 60;
 bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
 {
     LOCK(m_mutex);
+    if (tx == nullptr) return false;
 
     const uint256& hash = tx->GetHash();
     if (m_orphans.count(hash))
