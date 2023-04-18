@@ -16,6 +16,10 @@
 
 /** Maximum total size of orphan transactions stored, in bytes. */
 static constexpr size_t MAX_ORPHAN_TOTAL_SIZE{100 * MAX_STANDARD_TX_WEIGHT};
+/** Soft maximum amount of orphans a peer may store before they are "overloaded." When the hard
+ * maximum is reached (MAX_ORPHAN_TOTAL_SIZE), orphans from overloaded peers are candidates for
+ * eviction. If no orphans meet this criterion, all are candidates. */
+static constexpr size_t OVERLOADED_PEER_ORPHANAGE_BYTES{2 * MAX_STANDARD_TX_WEIGHT};
 
 /** A class to track orphan transactions (failed on TX_MISSING_INPUTS)
  * Since we cannot distinguish orphans from bad transactions with
@@ -78,6 +82,14 @@ public:
         auto peer_bytes_it = m_peer_bytes_used.find(peer);
         return peer_bytes_it == m_peer_bytes_used.end() ? 0 : peer_bytes_it->second;
     }
+    bool IsOverloaded(NodeId peer) const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
+    {
+        LOCK(m_mutex);
+        auto peer_bytes_it = m_peer_bytes_used.find(peer);
+        return peer_bytes_it == m_peer_bytes_used.end() ? false : peer_bytes_it->second > OVERLOADED_PEER_ORPHANAGE_BYTES;
+    }
+    /** Get peers whose orphans are protected for eviction, i.e. are not overloaded. */
+    std::set<NodeId> GetProtectedPeers() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
 protected:
     size_t m_total_orphan_bytes{0};
@@ -126,6 +138,9 @@ protected:
 
     /** Erase an orphan by txid */
     int _EraseTx(const uint256& txid) EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
+
+    /** Get peers whose orphans are protected for eviction, i.e. are not overloaded. */
+    std::set<NodeId> _GetProtectedPeers() const EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
 };
 
 #endif // BITCOIN_TXORPHANAGE_H
