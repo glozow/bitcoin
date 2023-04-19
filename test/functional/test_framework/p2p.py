@@ -95,6 +95,14 @@ P2P_SUBVERSION = "/python-p2p-tester:0.0.3/"
 P2P_VERSION_RELAY = 1
 # Delay after receiving a tx inv before requesting transactions from non-preferred peers, in seconds
 NONPREF_PEER_TX_DELAY = 2
+# Delay for requesting transactions via txids if we have wtxid-relaying peers, in seconds
+TXID_RELAY_DELAY = 2
+# Wait time before orphan request expires, in seconds
+ORPHAN_ANCESTOR_GETDATA_INTERVAL = 60
+# How long a transaction has to be in the mempool before it can unconditionally be relayed
+UNCONDITIONAL_RELAY_DELAY = 120
+# Delay for requesting transactions if the peer has MAX_PEER_TX_REQUEST_IN_FLIGHT or more requests
+OVERLOADED_PEER_TX_DELAY = 2
 
 MESSAGEMAP = {
     b"addr": msg_addr,
