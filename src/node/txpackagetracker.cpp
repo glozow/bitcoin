@@ -238,6 +238,9 @@ public:
         // Skip if already requested in the (recent-ish) past.
         if (packageinfo_requested.contains(GetPackageInfoRequestId(nodeid, wtxid, PKG_RELAY_ANCPKG))) return;
 
+        // Add delay to the reqtime if this peer is already using a lot of orphanage space.
+        if (m_orphanage.IsOverloaded(nodeid)) reqtime += ORPHANAGE_OVERLOAD_DELAY;
+
         auto it_peer_info = info_per_peer.find(nodeid);
         if (it_peer_info != info_per_peer.end() && it_peer_info->second.SupportsVersion(PKG_RELAY_ANCPKG)) {
             // Package relay peer: is_wtxid=true because we will be requesting via ancpkginfo.
@@ -287,6 +290,9 @@ public:
             if (packageinfo.m_expiry < current_time) {
                 LogPrint(BCLog::TXPACKAGES, "\nExpiring package info for tx %s from peer=%d\n",
                          packageinfo.RepresentativeWtxid().ToString(), nodeid);
+                for (const auto& [wtxid, _] : pkginfo_iter->second.m_txdata_status) {
+                    m_orphanage.EraseOrphanOfPeer(wtxid, nodeid);
+                }
                 to_expire.insert(pkginfo_iter->first);
             }
         }
