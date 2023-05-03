@@ -2258,10 +2258,9 @@ CTransactionRef PeerManagerImpl::FindTxForGetData(const Peer::TxRelay& tx_relay,
 {
     auto txinfo = m_mempool.info(gtxid);
     if (txinfo.tx) {
-        // If a TX could have been INVed in reply to a MEMPOOL request,
-        // or is older than UNCONDITIONAL_RELAY_DELAY, permit the request
+        // If a TX is older than UNCONDITIONAL_RELAY_DELAY, permit the request
         // unconditionally.
-        if ((mempool_req.count() && txinfo.m_time <= mempool_req) || txinfo.m_time <= now - UNCONDITIONAL_RELAY_DELAY) {
+        if (txinfo.m_time <= now - UNCONDITIONAL_RELAY_DELAY) {
             return std::move(txinfo.tx);
         }
     }
@@ -5636,7 +5635,7 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
                             if (!tx_relay->m_bloom_filter->IsRelevantAndUpdate(*txinfo.tx)) continue;
                         }
                         tx_relay->m_tx_inventory_known_filter.insert(hash);
-                        // Responses to MEMPOOL requests bypass the m_recently_announced_invs filter.
+                        tx_relay->m_recently_announced_invs.insert(hash);
                         vInv.push_back(inv);
                         if (vInv.size() == MAX_INV_SZ) {
                             m_connman.PushMessage(pto, msgMaker.Make(NetMsgType::INV, vInv));
