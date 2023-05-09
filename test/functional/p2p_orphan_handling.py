@@ -182,12 +182,79 @@ class OrphanHandlingTest(BitcoinTestFramework):
         peer_early_unresponsive.sync_with_ping()
         peer_late_announcer.wait_for_getdata_txids([int(parent_tx.rehash(), 16)])
 
+    @cleanup
+    def test_orphanage_dos(self):
+        self.log.info("Test that the node can still resolve orphans when a peer is using lots of orphanage space")
+        self.restart_node(0, extra_args=["-maxorphantx=3"])
+        node = self.nodes[0]
+        peer_doser = node.add_p2p_connection(PeerTxRelayer())
+        peer_normal = node.add_p2p_connection(PeerTxRelayer())
+
+        large_orphans = [self.create_large_orphan() for _ in range(4)]
+        # Check to make sure these are orphans, within max standard size (to be accepted into the orphanage), and that 3 of them
+        # would make peer_doser an overloaded orphanage occupant.
+        for large_orphan in large_orphans:
+            assert_greater_than_or_equal(100000, large_orphan.get_vsize())
+            assert_greater_than_or_equal(3 * large_orphan.get_vsize(), 2 * 100000)
+            testres = node.testmempoolaccept([large_orphan.serialize().hex()])
+            assert not testres[0]["allowed"]
+            assert_equal(testres[0]["reject-reason"], "missing-inputs")
+
+        # Send the first 3 large orphans from peer_doser
+        self.log.info("Send very large orphans from one DoSy peer, reaching maximum orphanage capacity")
+        for large_orphan in large_orphans[:3]:
+            peer_doser.send_message(msg_inv([CInv(t=MSG_WTX, h=int(large_orphan.getwtxid(), 16))]))
+            self.log.info("Sent large orphan inv {}".format(large_orphan.getwtxid()))
+            self.fastforward(30)
+            peer_doser.wait_for_getdata([int(large_orphan.getwtxid(), 16)])
+            peer_doser.send_and_ping(msg_tx(large_orphan))
+            self.log.info("Sent large orphan tx {}".format(large_orphan.getwtxid()))
+            self.fastforward(30)
+            peer_doser.wait_for_getdata([large_orphan.vin[0].prevout.hash])
+            self.log.info("Got parent request for orphan tx {}".format(large_orphan.getwtxid()))
+
+        self.log.info("Send a normal orphan from another peer, triggering orphanage eviction")
+        orphan_wtxid, orphan_tx, parent_tx = self.create_package()
+        orphan_inv = CInv(t=MSG_WTX, h=int(orphan_wtxid, 16))
+        self.log.info("sent normal orphan inv {}".format(orphan_wtxid))
+        peer_normal.send_and_ping(msg_inv([orphan_inv]))
+        self.fastforward(30)
+        peer_normal.wait_for_getdata([int(orphan_wtxid, 16)])
+        # This is the 4th orphan added to the orphanage, exceeding the maximum of 3.
+        # peer_normal is protected from eviction because it's not taking up a huge amount of space in the orphanage.
+        peer_normal.send_and_ping(msg_tx(orphan_tx))
+        self.log.info("Sent normal orphan tx {}".format(orphan_wtxid))
+        self.fastforward(30)
+        peer_normal.wait_for_getdata([int(parent_tx.rehash(), 16)])
+        self.log.info("Got parent request for orphan tx {}".format(orphan_wtxid))
+
+        # peer_normal hasn't sent the parent yet.
+        # Send another large orphan from peer_doser, exceeding the maximum of 3.
+        # peer_normal is protected from eviction because it's not taking up a huge amount of space in the orphanage.
+        self.log.info("Send another very large orphan from the DoSy peer, triggering orphanage eviction again")
+        large_orphan = large_orphans[3]
+        peer_doser.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=int(large_orphan.getwtxid(), 16))]))
+        self.fastforward(40)
+        self.log.info("Sent large orphan inv {}".format(large_orphan.getwtxid()))
+        peer_doser.wait_for_getdata([int(large_orphan.getwtxid(), 16)])
+        peer_doser.send_and_ping(msg_tx(large_orphan))
+        self.log.info("Sent large orphan tx {}".format(large_orphan.getwtxid()))
+        self.fastforward(30)
+        peer_doser.wait_for_getdata([large_orphan.vin[0].prevout.hash])
+        self.log.info("Got parent request for orphan tx {}".format(large_orphan.getwtxid()))
+
+        self.log.info("Provide the normal orphan's parent. The orphan should have been kept and now processed.")
+        peer_normal.send_and_ping(msg_tx(parent_tx))
+        assert_equal(node.getmempoolentry(orphan_tx.rehash())["ancestorcount"], 2)
+        assert_equal(node.getmempoolentry(parent_tx.rehash())["descendantcount"], 2)
+
 
     def run_test(self):
         self.wallet = MiniWallet(self.nodes[0])
         self.generate(self.wallet, 160)
         self.test_orphan_handling_prefer_outbound()
         self.test_announcers_before_and_after()
+        # self.test_orphanage_dos()
 
 
 if __name__ == '__main__':
