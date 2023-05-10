@@ -799,5 +799,50 @@ BOOST_AUTO_TEST_CASE(MempoolAncestryTestsDiamond)
     BOOST_CHECK_EQUAL(ancestors, 4ULL);
     BOOST_CHECK_EQUAL(descendants, 4ULL);
 }
+BOOST_AUTO_TEST_CASE(comparator_tests)
+{
+    CTxMemPool& pool = *Assert(m_node.mempool);
+    LOCK2(::cs_main, pool.cs);
+    //   ta
+    //    ^
+    //   tb
+    //  ^  ^
+    // tc  td
+    //
+    // not in mempool: te, tf
+    CTransactionRef ta, tb, tc, td, te, tf;
+    ta = make_tx(/*output_values=*/{COIN});
+    tb = make_tx(/*output_values=*/{COIN, COIN}, /*inputs=*/ {ta});
+    tc = make_tx(/*output_values=*/{COIN}, /*inputs=*/{tb}, /*input_indices=*/{0});
+    td = make_tx(/*output_values=*/{COIN}, /*inputs=*/{tb}, /*input_indices=*/{1});
+    te = make_tx(/*output_values=*/{COIN * 2});
+    tf = make_tx(/*output_values=*/{COIN * 3});
+    TestMemPoolEntryHelper entry;
+    pool.addUnchecked(entry.Fee(10000LL).FromTx(ta));
+    pool.addUnchecked(entry.Fee(10000LL).FromTx(tb));
+    pool.addUnchecked(entry.Fee(10000LL).FromTx(tc));
+    pool.addUnchecked(entry.Fee(20000LL).FromTx(td));
+
+    BOOST_CHECK(pool.CompareDepthAndScore(ta->GetWitnessHash(), tb->GetWitnessHash(), /*use_wtxid=*/true));
+    BOOST_CHECK(pool.CompareDepthAndScore(ta->GetWitnessHash(), tc->GetWitnessHash(), /*use_wtxid=*/true));
+    BOOST_CHECK(pool.CompareDepthAndScore(ta->GetWitnessHash(), td->GetWitnessHash(), /*use_wtxid=*/true));
+    BOOST_CHECK(pool.CompareDepthAndScore(tb->GetWitnessHash(), tc->GetWitnessHash(), /*use_wtxid=*/true));
+    BOOST_CHECK(pool.CompareDepthAndScore(tb->GetWitnessHash(), td->GetWitnessHash(), /*use_wtxid=*/true));
+    // Same ancestor count but td has higher feerate
+    BOOST_CHECK(pool.CompareDepthAndScore(td->GetWitnessHash(), tc->GetWitnessHash(), /*use_wtxid=*/true));
+
+    // not-in-mempool is always considered first
+    BOOST_CHECK(!pool.CompareDepthAndScore(ta->GetWitnessHash(), te->GetWitnessHash(), /*use_wtxid=*/true));
+    BOOST_CHECK(!pool.CompareDepthAndScore(tb->GetWitnessHash(), te->GetWitnessHash(), /*use_wtxid=*/true));
+    BOOST_CHECK(!pool.CompareDepthAndScore(tc->GetWitnessHash(), te->GetWitnessHash(), /*use_wtxid=*/true));
+    BOOST_CHECK(!pool.CompareDepthAndScore(td->GetWitnessHash(), te->GetWitnessHash(), /*use_wtxid=*/true));
+    BOOST_CHECK(!pool.CompareDepthAndScore(te->GetWitnessHash(), te->GetWitnessHash(), /*use_wtxid=*/true));
+    BOOST_CHECK(!pool.CompareDepthAndScore(tf->GetWitnessHash(), te->GetWitnessHash(), /*use_wtxid=*/true));
+
+    BOOST_CHECK(pool.CompareDepthAndScore(tf->GetWitnessHash(), ta->GetWitnessHash(), /*use_wtxid=*/true));
+    BOOST_CHECK(pool.CompareDepthAndScore(tf->GetWitnessHash(), tb->GetWitnessHash(), /*use_wtxid=*/true));
+    BOOST_CHECK(pool.CompareDepthAndScore(tf->GetWitnessHash(), tc->GetWitnessHash(), /*use_wtxid=*/true));
+    BOOST_CHECK(pool.CompareDepthAndScore(tf->GetWitnessHash(), td->GetWitnessHash(), /*use_wtxid=*/true));
+}
 
 BOOST_AUTO_TEST_SUITE_END()
