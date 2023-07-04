@@ -18,6 +18,9 @@ class TxPackageTracker::Impl {
     /** Manages unvalidated tx data (orphan transactions for which we are downloading ancestors). */
     TxOrphanage m_orphanage;
 
+    /** Global maximum number of transactions in the orphanage, used when calling LimitOrphans(). */
+    const size_t m_max_orphanage_count;
+
     mutable Mutex m_mutex;
 
     /** Tracks orphans for which we need to request ancestor information. All hashes stored are
@@ -25,7 +28,9 @@ class TxPackageTracker::Impl {
     TxRequestTracker m_orphan_request_tracker GUARDED_BY(m_mutex);
 
 public:
-    Impl() = default;
+    Impl(const Options& options) :
+        m_max_orphanage_count{options.m_max_orphanage_count}
+    {}
 
     // Orphanage Wrapper Functions
     bool OrphanageHaveTx(const GenTxid& gtxid) { return m_orphanage.HaveTx(gtxid); }
@@ -57,7 +62,6 @@ public:
             m_orphan_request_tracker.ForgetTxHash(wtxid);
         }
     }
-    void LimitOrphans(unsigned int max_orphans) { m_orphanage.LimitOrphans(max_orphans); }
     bool HaveTxToReconsider(NodeId peer) { return m_orphanage.HaveTxToReconsider(peer); }
     size_t OrphanageSize() { return m_orphanage.Size(); }
     void MempoolAcceptedTx(const CTransactionRef& ptx) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
@@ -90,6 +94,8 @@ public:
         } else {
             m_orphanage.AddTx(m_orphanage.GetTx(wtxid), nodeid);
         }
+        // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
+        m_orphanage.LimitOrphans(m_max_orphanage_count);
     }
     size_t CountInFlight(NodeId nodeid) const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
     {
@@ -150,14 +156,13 @@ public:
     }
 };
 
-TxPackageTracker::TxPackageTracker() : m_impl{std::make_unique<TxPackageTracker::Impl>()} {}
+TxPackageTracker::TxPackageTracker(const Options& options) : m_impl{std::make_unique<TxPackageTracker::Impl>(options)} {}
 TxPackageTracker::~TxPackageTracker() = default;
 
 bool TxPackageTracker::OrphanageHaveTx(const GenTxid& gtxid) { return m_impl->OrphanageHaveTx(gtxid); }
 CTransactionRef TxPackageTracker::GetTxToReconsider(NodeId peer) { return m_impl->GetTxToReconsider(peer); }
 void TxPackageTracker::DisconnectedPeer(NodeId peer) { m_impl->DisconnectedPeer(peer); }
 void TxPackageTracker::BlockConnected(const CBlock& block) { m_impl->BlockConnected(block); }
-void TxPackageTracker::LimitOrphans(unsigned int max_orphans) { m_impl->LimitOrphans(max_orphans); }
 bool TxPackageTracker::HaveTxToReconsider(NodeId peer) { return m_impl->HaveTxToReconsider(peer); }
 size_t TxPackageTracker::OrphanageSize() { return m_impl->OrphanageSize(); }
 void TxPackageTracker::MempoolAcceptedTx(const CTransactionRef& ptx) { return m_impl->MempoolAcceptedTx(ptx); }

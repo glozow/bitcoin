@@ -19,9 +19,12 @@ static constexpr bool DEFAULT_ENABLE_PACKAGE_RELAY{false};
 class TxPackageTracker {
     class Impl;
     const std::unique_ptr<Impl> m_impl;
-
 public:
-    explicit TxPackageTracker();
+    struct Options {
+        unsigned int m_max_orphanage_count;
+    };
+
+    explicit TxPackageTracker(const Options& options);
     ~TxPackageTracker();
 
     /** Check if we already have an orphan transaction (by txid or wtxid) */
@@ -39,8 +42,6 @@ public:
 
     /** Erase all orphans included in or invalidated by a new block */
     void BlockConnected(const CBlock& block);
-
-    void LimitOrphans(unsigned int max_orphans);
 
     /** Does this peer have any orphans to validate? */
     bool HaveTxToReconsider(NodeId peer);
