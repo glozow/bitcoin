@@ -35,8 +35,6 @@ public:
      */
     CTransactionRef GetTxToReconsider(NodeId peer);
 
-    int EraseOrphanTx(const uint256& wtxid);
-
     /** Erase all orphans announced by a peer (eg, after that peer disconnects) */
     void DisconnectedPeer(NodeId peer);
 
@@ -45,13 +43,21 @@ public:
 
     void LimitOrphans(unsigned int max_orphans);
 
-    void AddChildrenToWorkSet(const CTransaction& tx);
-
     /** Does this peer have any orphans to validate? */
     bool HaveTxToReconsider(NodeId peer);
 
     /** Return how many entries exist in the orphange */
     size_t OrphanageSize();
+
+    /** Should be called when a transaction is accepted to the mempool. If it was an orphan we were
+     * trying to resolve, remove its entries from the orphanage and other data structures. If it is
+     * the ancestor of an orphan, add the orphan to its associated peer's workset. */
+    void MempoolAcceptedTx(const CTransactionRef& ptx);
+
+    /** Should be called when a transaction is rejected from the mempool and is not an orphan we
+     * still want to try to resolve. Remove its entries from the orphanage and other data
+     * structures. */
+    void MempoolRejectedTx(const uint256& wtxid);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXPACKAGETRACKER_H

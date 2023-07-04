@@ -2969,8 +2969,7 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
                 m_mempool.size(), m_mempool.DynamicMemoryUsage() / 1000);
             LogPrint(BCLog::TXPACKAGES, "   accepted orphan tx %s\n", orphan_wtxid.ToString());
             RelayTransaction(orphanHash, porphanTx->GetWitnessHash());
-            m_txpackagetracker->AddChildrenToWorkSet(*porphanTx);
-            m_txpackagetracker->EraseOrphanTx(orphan_wtxid);
+            m_txpackagetracker->MempoolAcceptedTx(porphanTx);
             for (const CTransactionRef& removedTx : result.m_replaced_transactions.value()) {
                 AddToCompactExtraTransactions(removedTx);
             }
@@ -3015,7 +3014,7 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
                     m_recent_rejects.insert(porphanTx->GetHash());
                 }
             }
-            m_txpackagetracker->EraseOrphanTx(orphan_wtxid);
+            m_txpackagetracker->MempoolRejectedTx(orphan_wtxid);
             return true;
         }
     }
@@ -4186,7 +4185,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             m_txrequest.ForgetTxHash(tx.GetHash());
             m_txrequest.ForgetTxHash(tx.GetWitnessHash());
             RelayTransaction(tx.GetHash(), tx.GetWitnessHash());
-            m_txpackagetracker->AddChildrenToWorkSet(tx);
+            m_txpackagetracker->MempoolAcceptedTx(ptx);
 
             pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
 
@@ -4289,6 +4288,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 if (RecursiveDynamicUsage(*ptx) < 100000) {
                     AddToCompactExtraTransactions(ptx);
                 }
+                m_txpackagetracker->MempoolRejectedTx(tx.GetWitnessHash());
             }
         }
 
