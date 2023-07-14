@@ -473,4 +473,50 @@ BOOST_FIXTURE_TEST_CASE(calculate_cluster, TestChain100Setup)
     }
 }
 
+BOOST_FIXTURE_TEST_CASE(manual_ctor, TestChain100Setup)
+{
+    CTxMemPool& pool = *Assert(m_node.mempool);
+    LOCK2(cs_main, pool.cs);
+    {
+        // 3 pairs of fee-bumping grandparent + parent, plus 1 low-feerate child.
+        // 0 fee + high fee
+        auto grandparent_zero_fee = make_tx({{m_coinbase_txns.at(0)->GetHash(), 0}}, 1);
+        auto parent_high_feerate = make_tx({{grandparent_zero_fee->GetHash(), 0}}, 1);
+        // double low fee + med fee
+        auto grandparent_double_low_feerate = make_tx({{m_coinbase_txns.at(2)->GetHash(), 0}}, 1);
+        auto parent_med_feerate = make_tx({{grandparent_double_low_feerate->GetHash(), 0}}, 1);
+        // low fee + double low fee
+        auto grandparent_low_feerate = make_tx({{m_coinbase_txns.at(1)->GetHash(), 0}}, 1);
+        auto parent_double_low_feerate = make_tx({{grandparent_low_feerate->GetHash(), 0}}, 1);
+        // child is below the cpfp package feerates
+        auto child = make_tx({{parent_high_feerate->GetHash(), 0}, {parent_double_low_feerate->GetHash(), 0}, {parent_med_feerate->GetHash(), 0}}, 1);
+        std::vector<node::MiniMinerMempoolEntry> miniminer_info;
+        miniminer_info.push_back(node::MiniMinerMempoolEntry{    0,     0, 100, 100, grandparent_zero_fee});
+        miniminer_info.push_back(node::MiniMinerMempoolEntry{10000, 10000, 100, 200, parent_high_feerate});
+        miniminer_info.push_back(node::MiniMinerMempoolEntry{  200,   200, 100, 100, grandparent_double_low_feerate});
+        miniminer_info.push_back(node::MiniMinerMempoolEntry{ 1000,  1200, 100, 200, parent_med_feerate});
+        miniminer_info.push_back(node::MiniMinerMempoolEntry{  100,   100, 100, 100, grandparent_low_feerate});
+        miniminer_info.push_back(node::MiniMinerMempoolEntry{  200,   300, 100, 200, parent_double_low_feerate});
+        miniminer_info.push_back(node::MiniMinerMempoolEntry{   10, 11510, 100, 700, child});
+        std::map<uint256, std::set<uint256>> descendant_caches;
+        descendant_caches.emplace(grandparent_zero_fee->GetHash(), std::set<uint256>{grandparent_zero_fee->GetHash(), parent_high_feerate->GetHash(), child->GetHash()});
+        descendant_caches.emplace(grandparent_low_feerate->GetHash(), std::set<uint256>{grandparent_low_feerate->GetHash(), parent_double_low_feerate->GetHash(), child->GetHash()});
+        descendant_caches.emplace(grandparent_double_low_feerate->GetHash(), std::set<uint256>{grandparent_double_low_feerate->GetHash(), parent_med_feerate->GetHash(), child->GetHash()});
+        descendant_caches.emplace(parent_high_feerate->GetHash(), std::set<uint256>{parent_high_feerate->GetHash(), child->GetHash()});
+        descendant_caches.emplace(parent_med_feerate->GetHash(), std::set<uint256>{parent_med_feerate->GetHash(), child->GetHash()});
+        descendant_caches.emplace(parent_double_low_feerate->GetHash(), std::set<uint256>{parent_double_low_feerate->GetHash(), child->GetHash()});
+        descendant_caches.emplace(child->GetHash(), std::set<uint256>{child->GetHash()});
+        node::MiniMiner miniminer_manual(miniminer_info, descendant_caches);
+        BOOST_CHECK(miniminer_manual.IsReadyToCalculate());
+        const auto sequences{miniminer_manual.Linearize()};
+        BOOST_CHECK_EQUAL(sequences.at(grandparent_zero_fee->GetHash()), 0);
+        BOOST_CHECK_EQUAL(sequences.at(parent_high_feerate->GetHash()), 0);
+        BOOST_CHECK_EQUAL(sequences.at(grandparent_double_low_feerate->GetHash()), 1);
+        BOOST_CHECK_EQUAL(sequences.at(parent_med_feerate->GetHash()), 1);
+        BOOST_CHECK_EQUAL(sequences.at(grandparent_low_feerate->GetHash()), 2);
+        BOOST_CHECK_EQUAL(sequences.at(parent_double_low_feerate->GetHash()), 2);
+        BOOST_CHECK_EQUAL(sequences.at(child->GetHash()), 3);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

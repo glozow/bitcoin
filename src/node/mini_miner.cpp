@@ -124,6 +124,34 @@ MiniMiner::MiniMiner(const CTxMemPool& mempool, const std::vector<COutPoint>& ou
     SanityCheck();
 }
 
+MiniMiner::MiniMiner(const std::vector<MiniMinerMempoolEntry>& manual_entries,
+                     const std::map<uint256, std::set<uint256>>& descendant_caches)
+{
+    for (const auto& entry : manual_entries) {
+        const auto& txid = entry.GetTx().GetHash();
+        // Just forward these args onto MiniMinerMempoolEntry
+        auto [mapiter, success] = m_entries_by_txid.emplace(txid, entry);
+            /* MiniMinerMempoolEntry{std::get<0>(args), std::get<1>(args), std::get<2>(args), std::get<3>(args), std::get<4>(args)}); */
+        m_entries.push_back(mapiter);
+    }
+    // Descendant cache is already built, but we need to translate them to m_entries_by_txid iters.
+    for (const auto& [txid, desc_txids] : descendant_caches) {
+        Assume(!desc_txids.empty());
+        std::vector<MockEntryMap::iterator> cached_descendants;
+        for (const auto& desc_txid : desc_txids) {
+            auto desc_it{m_entries_by_txid.find(desc_txid)};
+            Assume(desc_it != m_entries_by_txid.end());
+            if (desc_it != m_entries_by_txid.end()) cached_descendants.emplace_back(desc_it);
+        }
+        m_descendant_set_by_txid.emplace(txid, cached_descendants);
+    }
+    Assume(m_to_be_replaced.empty());
+    Assume(m_requested_outpoints_by_txid.empty());
+    Assume(m_bump_fees.empty());
+    Assume(m_mining_sequence.empty());
+    SanityCheck();
+}
+
 // Compare by min(ancestor feerate, individual feerate), then iterator
 //
 // Under the ancestor-based mining approach, high-feerate children can pay for parents, but high-feerate
@@ -204,8 +232,9 @@ void MiniMiner::SanityCheck() const
         [&](const auto& txid){return m_entries_by_txid.find(txid) == m_entries_by_txid.end();}));
 }
 
-void MiniMiner::BuildMockTemplate(const CFeeRate& target_feerate)
+void MiniMiner::BuildMockTemplate(std::optional<CFeeRate> target_feerate)
 {
+    uint32_t sequence_num{0};
     while (!m_entries_by_txid.empty()) {
         // Sort again, since transaction removal may change some m_entries' ancestor feerates.
         std::sort(m_entries.begin(), m_entries.end(), AncestorFeerateComparator());
@@ -216,7 +245,8 @@ void MiniMiner::BuildMockTemplate(const CFeeRate& target_feerate)
         const auto ancestor_package_size = (*best_iter)->second.GetSizeWithAncestors();
         const auto ancestor_package_fee = (*best_iter)->second.GetModFeesWithAncestors();
         // Stop here. Everything that didn't "make it into the block" has bumpfee.
-        if (ancestor_package_fee < target_feerate.GetFee(ancestor_package_size)) {
+        if (target_feerate.has_value() &&
+            ancestor_package_fee < target_feerate->GetFee(ancestor_package_size)) {
             break;
         }
 
@@ -240,12 +270,26 @@ void MiniMiner::BuildMockTemplate(const CFeeRate& target_feerate)
                 to_process.erase(iter);
             }
         }
+        // Track the order in which transactions were selected.
+        for (const auto& ancestor : ancestors) {
+            m_mining_sequence.emplace(ancestor->first, sequence_num);
+        }
         DeleteAncestorPackage(ancestors);
         SanityCheck();
+        ++sequence_num;
     }
-    Assume(m_in_block.empty() || m_total_fees >= target_feerate.GetFee(m_total_vsize));
+    Assume(m_in_block.empty() || !target_feerate.has_value() || m_total_fees >= target_feerate->GetFee(m_total_vsize));
+    Assume(m_in_block.empty() || sequence_num > 0);
+    Assume(m_in_block.size() == m_mining_sequence.size());
     // Do not try to continue building the block template with a different feerate.
     m_ready_to_calculate = false;
+}
+
+
+std::map<uint256, uint32_t> MiniMiner::Linearize()
+{
+    BuildMockTemplate(std::nullopt);
+    return m_mining_sequence;
 }
 
 std::map<COutPoint, CAmount> MiniMiner::CalculateBumpFees(const CFeeRate& target_feerate)
