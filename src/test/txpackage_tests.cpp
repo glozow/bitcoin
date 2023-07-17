@@ -575,8 +575,8 @@ BOOST_FIXTURE_TEST_CASE(package_submission_tests, TestChain100Setup)
         BOOST_CHECK(it_child != result_quit_early.m_tx_results.end());
         BOOST_CHECK_EQUAL(it_parent->second.m_state.GetResult(), TxValidationResult::TX_WITNESS_MUTATED);
         BOOST_CHECK_EQUAL(it_parent->second.m_state.GetRejectReason(), "bad-witness-nonstandard");
-        BOOST_CHECK_EQUAL(it_child->second.m_state.GetResult(), TxValidationResult::TX_MISSING_INPUTS);
-        BOOST_CHECK_EQUAL(it_child->second.m_state.GetRejectReason(), "bad-txns-inputs-missingorspent");
+        BOOST_CHECK_EQUAL(it_child->second.m_state.GetResult(), TxValidationResult::TX_UNKNOWN);
+        BOOST_CHECK_EQUAL(it_child->second.m_state.GetRejectReason(), "unknown-not-validated");
     }
 
     // Child with missing parent.
@@ -947,8 +947,10 @@ BOOST_FIXTURE_TEST_CASE(package_cpfp_tests, TestChain100Setup)
         BOOST_CHECK_EQUAL(submit_cpfp_deprio.m_tx_results.size(), package_cpfp.size());
         BOOST_CHECK_EQUAL(submit_cpfp_deprio.m_tx_results.find(tx_parent->GetWitnessHash())->second.m_state.GetResult(),
                           TxValidationResult::TX_MEMPOOL_POLICY);
+        // Package validation is aborted because the parent feerate is below min relay feerate. The
+        // child result is filled with TX_UNKNOWN.
         BOOST_CHECK_EQUAL(submit_cpfp_deprio.m_tx_results.find(tx_child->GetWitnessHash())->second.m_state.GetResult(),
-                          TxValidationResult::TX_MISSING_INPUTS);
+                          TxValidationResult::TX_UNKNOWN);
         BOOST_CHECK(submit_cpfp_deprio.m_tx_results.find(tx_parent->GetWitnessHash())->second.m_state.GetRejectReason() == "min relay fee not met");
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
         const CFeeRate expected_feerate(0, GetVirtualTransactionSize(*tx_parent) + GetVirtualTransactionSize(*tx_child));
@@ -1024,9 +1026,9 @@ BOOST_FIXTURE_TEST_CASE(package_cpfp_tests, TestChain100Setup)
         BOOST_CHECK_EQUAL(submit_package_too_low.m_state.GetResult(), PackageValidationResult::PCKG_POLICY);
         BOOST_CHECK_EQUAL(submit_package_too_low.m_state.GetRejectReason(), "package-fee-too-low");
         BOOST_CHECK_EQUAL(submit_package_too_low.m_tx_results.at(tx_parent_cheap->GetWitnessHash()).m_state.GetResult(),
-                          TxValidationResult::TX_SINGLE_FAILURE);
+                          TxValidationResult::TX_UNKNOWN);
         BOOST_CHECK_EQUAL(submit_package_too_low.m_tx_results.at(tx_child_cheap->GetWitnessHash()).m_state.GetResult(),
-                          TxValidationResult::TX_MISSING_INPUTS);
+                          TxValidationResult::TX_UNKNOWN);
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
     }
 
