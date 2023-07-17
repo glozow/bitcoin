@@ -27,6 +27,7 @@
 #include <logging/timer.h>
 #include <node/blockstorage.h>
 #include <node/utxo_snapshot.h>
+#include <policy/ancestor_packages.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
 #include <policy/settings.h>
@@ -1380,6 +1381,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
         package_state_quit_early.Invalid(PackageValidationResult::PCKG_POLICY, "package-not-child-with-parents");
         return PackageMempoolAcceptResult(package_state_quit_early, {});
     }
+    AncestorPackage linearized_package{package};
 
     // IsChildWithParents() guarantees the package is > 1 transactions.
     assert(package.size() > 1);
@@ -1435,7 +1437,6 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     // result, when it was considered on its own. So changes will only be from invalid -> valid.
     std::map<uint256, MempoolAcceptResult> individual_results_nonfinal;
     bool quit_early{false};
-    std::vector<CTransactionRef> txns_package_eval;
     for (const auto& tx : package) {
         const auto& wtxid = tx->GetWitnessHash();
         const auto& txid = tx->GetHash();
@@ -1447,6 +1448,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             auto iter = m_pool.GetIter(txid);
             assert(iter != std::nullopt);
             results_final.emplace(wtxid, MempoolAcceptResult::MempoolTx(iter.value()->GetTxSize(), iter.value()->GetFee()));
+            linearized_package.Skip(tx);
         } else if (m_pool.exists(GenTxid::Txid(txid))) {
             // Transaction with the same non-witness data but different witness (same txid,
             // different wtxid) already exists in the mempool.
@@ -1459,39 +1461,73 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             assert(iter != std::nullopt);
             // Provide the wtxid of the mempool tx so that the caller can look it up in the mempool.
             results_final.emplace(wtxid, MempoolAcceptResult::MempoolTxDifferentWitness(iter.value()->GetTx().GetWitnessHash()));
+            linearized_package.Skip(tx);
         } else {
             // Transaction does not already exist in the mempool.
-            // Try submitting the transaction on its own.
+            // Try submitting the transaction on its own, unless it has dependencies (then we
+            // know there will be a "missing inputs" failure).
+            const auto subpackage = linearized_package.GetAncestorSet(tx);
+            if (!subpackage || subpackage->size() > 1) continue;
             const auto single_res = AcceptSingleTransaction(tx, single_args);
             if (single_res.m_result_type == MempoolAcceptResult::ResultType::VALID) {
                 // The transaction succeeded on its own and is now in the mempool. Don't include it
                 // in package validation, because its fees should only be "used" once.
-                assert(m_pool.exists(GenTxid::Wtxid(wtxid)));
+                linearized_package.Skip(tx);
                 results_final.emplace(wtxid, single_res);
-            } else if (single_res.m_state.GetResult() != TxValidationResult::TX_SINGLE_FAILURE &&
-                       single_res.m_state.GetResult() != TxValidationResult::TX_MISSING_INPUTS) {
-                // Package validation policy only differs from individual policy in its evaluation
-                // of feerate. For example, if a transaction fails here due to violation of a
-                // consensus rule, the result will not change when it is submitted as part of a
-                // package. To minimize the amount of repeated work, unless the transaction fails
-                // due to feerate or missing inputs (its parent is a previous transaction in the
-                // package that failed due to feerate), don't run package validation. Note that this
-                // decision might not make sense if different types of packages are allowed in the
-                // future.  Continue individually validating the rest of the transactions, because
-                // some of them may still be valid.
-                quit_early = true;
-                package_state_quit_early.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
-                individual_results_nonfinal.emplace(wtxid, single_res);
             } else {
-                individual_results_nonfinal.emplace(wtxid, single_res);
-                txns_package_eval.push_back(tx);
+                switch (single_res.m_state.GetResult()) {
+                case TxValidationResult::TX_SINGLE_FAILURE:
+                {
+                    break;
+                }
+                case TxValidationResult::TX_MISSING_INPUTS: case TxValidationResult::TX_CONFLICT:
+                {
+                    // If there is a conflict that we won't be able to resolve, or we have no
+                    // in-package dependencies but are still missing inputs, we know all of the
+                    // package transactions that depend on this one "dangle" and won't make it.
+                    // This error may happen if we have a different chainstate from our peer:
+                    // - a package parent already confirmed for us (txn-already-known),
+                    // - a package parent already confirmed for our peer so they didn't include it
+                    //   in the ancestor package (bad-txns-inputs-missingorspent).
+                    linearized_package.SkipWithDescendants(tx);
+                    individual_results_nonfinal.emplace(wtxid, single_res);
+                    break;
+                }
+                case TxValidationResult::TX_RESULT_UNSET: case TxValidationResult::TX_UNKNOWN: case TxValidationResult::TX_NO_MEMPOOL:
+                {
+                    // These results shouldn't be possible.
+                    Assume(false);
+                    break;
+                }
+                default:
+                {
+                    // If a transaction fails for any other reason, abort validation for the whole
+                    // package because:
+                    // - apart from TX_SINGLE_FAILURE (i.e. low feerate but can be CPFP'd), there is
+                    //   no way for package validation policy to change the transaction from invalid
+                    //   to valid.
+                    // - assuming there are valid transactions in this package (which is the only
+                    //   reason we would want to continue), the only computationally reasonable way
+                    //   to deal with this situation is to wait for a different peer to announce
+                    //   them to us and be open to retrying them. If the package has been
+                    //   maliciously stuffed with invalid transactions, trying to find the optimal
+                    //   subset of transactions to accept is too resource-intensive.
+                    //
+                    // This error may happen if we have a different policy from our peer or we
+                    // have a conflicting transaction they didn't have.
+                    quit_early = true;
+                    individual_results_nonfinal.emplace(wtxid, single_res);
+                    package_state_quit_early.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
+                    break;
+                }
+                }
             }
         }
     }
 
-    auto submission_result = quit_early || txns_package_eval.empty() ?
+    auto submission_result = quit_early || linearized_package.FilteredTxns().empty() ?
         PackageMempoolAcceptResult(package_state_quit_early, {}) :
-        AcceptPackageWrappingSingle(txns_package_eval, args);
+        AcceptPackageWrappingSingle(linearized_package.FilteredTxns(), args);
     // Attempt to provide a result for each transaction.
     for (const auto& tx : package) {
         const auto& wtxid = tx->GetWitnessHash();
