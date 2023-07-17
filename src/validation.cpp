@@ -1463,21 +1463,19 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             results_final.emplace(wtxid, MempoolAcceptResult::MempoolTxDifferentWitness(iter.value()->GetTx().GetWitnessHash()));
             linearized_package.Skip(tx);
         } else {
-            // Transaction does not already exist in the mempool.
-            // Try submitting the transaction on its own, unless it has dependencies (then we
-            // know there will be a "missing inputs" failure).
-            const auto subpackage = linearized_package.GetAncestorSet(tx);
-            if (!subpackage || subpackage->size() > 1) continue;
-            const auto single_res = AcceptSingleTransaction(tx, single_args);
-            if (single_res.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-                // The transaction succeeded on its own and is now in the mempool. Don't include it
-                // in package validation, because its fees should only be "used" once.
-                linearized_package.Skip(tx);
-                results_final.emplace(wtxid, single_res);
+            // Transaction does not already exist in the mempool. Call PreChecks to find any obvious
+            // errors and grab the UTXOs so we can calculate fees.
+            Workspace ws(tx);
+            if (PreChecks(single_args, ws)) {
+                linearized_package.AddFeeAndVsize(tx->GetHash(), ws.m_modified_fees, ws.m_vsize);
             } else {
-                switch (single_res.m_state.GetResult()) {
+                switch (ws.m_state.GetResult()) {
                 case TxValidationResult::TX_SINGLE_FAILURE:
                 {
+                    // This error is fine, and we should continue under the assumption that the tx
+                    // will be CPFP'd. We know that the fee and vsize values are populated because
+                    // the only way to get this error is to have called CheckFeeRate() with them.
+                    linearized_package.AddFeeAndVsize(tx->GetHash(), ws.m_modified_fees, ws.m_vsize);
                     break;
                 }
                 case TxValidationResult::TX_MISSING_INPUTS: case TxValidationResult::TX_CONFLICT:
@@ -1489,9 +1487,12 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
                     // - a package parent already confirmed for us (txn-already-known),
                     // - a package parent already confirmed for our peer so they didn't include it
                     //   in the ancestor package (bad-txns-inputs-missingorspent).
+                    //
+                    // Add this failure to results_final since we won't be trying to
+                    // validate it again.
                     linearized_package.SkipWithDescendants(tx);
                     // Add to results_final because we will not try to validate this transaction again.
-                    results_final.emplace(wtxid, single_res);
+                    results_final.emplace(wtxid, MempoolAcceptResult::Failure(ws.m_state));
                     break;
                 }
                 case TxValidationResult::TX_RESULT_UNSET: case TxValidationResult::TX_UNKNOWN: case TxValidationResult::TX_NO_MEMPOOL:
@@ -1518,11 +1519,60 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
                     // have a conflicting transaction they didn't have.
                     quit_early = true;
                     // Add to results_final because we will not try to validate this transaction again.
-                    results_final.emplace(wtxid, single_res);
+                    results_final.emplace(wtxid, MempoolAcceptResult::Failure(ws.m_state));
                     package_state_quit_early.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
                     break;
                 }
                 }
+            }
+            linearized_package.AddFeeAndVsize(tx->GetHash(), ws.m_modified_fees, ws.m_vsize);
+            m_viewmempool.PackageAddTransaction(tx);
+        }
+    }
+    // Clear the temporary coins in CCoinsViewMemPool and copies in CCoinsViewCache.
+    for (const auto& outpoint : m_viewmempool.ClearPackageCoins()) {
+        m_view.Uncache(outpoint);
+    }
+
+    if (!quit_early) {
+        linearized_package.LinearizeWithFees();
+        for (const auto& tx : linearized_package.FilteredTxns()) {
+            const auto subpackage_fee_vsize = linearized_package.GetAncestorFeeAndVsize(tx);
+            // Never skip the last transaction, as we want to return a validation result for this transaction.
+            if (tx != child && subpackage_fee_vsize.has_value()) {
+                TxValidationState placeholder_state;
+                if (!CheckFeeRate(subpackage_fee_vsize->second, subpackage_fee_vsize->first, placeholder_state)) {
+                    // No need to validate if we know this subpackage won't meet feerate
+                    // requirements. If it's a CPFP'd transaction, presumably there is a subsequent
+                    // subpackage that will bump it.
+                    continue;
+                }
+            }
+            const auto subpackage = linearized_package.GetAncestorSet(tx);
+            if (!subpackage || subpackage->size() > 1) {
+                // Try submitting the transaction on its own, unless it has dependencies (in which we
+                // know there will be a "missing inputs" failure).
+                // TODO: try to submit the subpackage.
+                continue;
+            }
+            assert(!m_pool.exists(GenTxid::Txid(tx->GetHash())));
+            const auto& wtxid = tx->GetWitnessHash();
+            const auto single_res = AcceptSingleTransaction(tx, single_args);
+            if (single_res.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+                // The transaction succeeded on its own and is now in the mempool. Don't include it
+                // in package validation, because its fees should only be "used" once.
+                assert(m_pool.exists(GenTxid::Wtxid(wtxid)));
+                results_final.emplace(wtxid, single_res);
+                linearized_package.Skip(tx);
+            } else {
+                // Fee-related errors and missing inputs should not occur since we skip those.
+                // Abort if we get any other error; it's not worth the computational effort to
+                // try to validate any of the other transactions.
+                package_state_quit_early.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
+                quit_early = true;
+                // If a result already exists from the previous loop, override it.
+                Assume(individual_results_nonfinal.count(wtxid) == 0);
+                individual_results_nonfinal.emplace(wtxid, single_res);
             }
         }
     }

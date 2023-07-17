@@ -997,6 +997,16 @@ void CCoinsViewMemPool::PackageAddTransaction(const CTransactionRef& tx)
     }
 }
 
+std::vector<COutPoint> CCoinsViewMemPool::ClearPackageCoins()
+{
+    // Return a copy of m_temp_added and clear it by swapping it with the return result.
+    std::vector<COutPoint> result;
+    std::transform(m_temp_added.cbegin(), m_temp_added.cend(), std::back_inserter(result),
+        [](const auto& entry) { return entry.first; });
+    m_temp_added.clear();
+    return result;
+}
+
 size_t CTxMemPool::DynamicMemoryUsage() const {
     LOCK(cs);
     // Estimate the overhead of mapTx to be 15 pointers + an allocation, as no exact formula for boost::multi_index_contained is implemented.
