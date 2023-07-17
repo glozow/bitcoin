@@ -673,6 +673,7 @@ BOOST_FIXTURE_TEST_CASE(package_cpfp_tests, TestChain100Setup)
                                                    package_cpfp, /*test_accept=*/ false);
         BOOST_CHECK_EQUAL(submit_cpfp_deprio.m_state.GetResult(), PackageValidationResult::PCKG_TX);
         BOOST_CHECK(submit_cpfp_deprio.m_state.IsInvalid());
+        BOOST_CHECK_EQUAL(submit_cpfp_deprio.m_tx_results.size(), package_cpfp.size());
         BOOST_CHECK_EQUAL(submit_cpfp_deprio.m_tx_results.find(tx_parent->GetWitnessHash())->second.m_state.GetResult(),
                           TxValidationResult::TX_MEMPOOL_POLICY);
         BOOST_CHECK_EQUAL(submit_cpfp_deprio.m_tx_results.find(tx_child->GetWitnessHash())->second.m_state.GetResult(),
@@ -747,9 +748,14 @@ BOOST_FIXTURE_TEST_CASE(package_cpfp_tests, TestChain100Setup)
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
         const auto submit_package_too_low = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
                                                    package_still_too_low, /*test_accept=*/false);
+        BOOST_CHECK_EQUAL(submit_package_too_low.m_tx_results.size(), package_still_too_low.size());
         BOOST_CHECK_MESSAGE(submit_package_too_low.m_state.IsInvalid(), "Package validation unexpectedly succeeded");
         BOOST_CHECK_EQUAL(submit_package_too_low.m_state.GetResult(), PackageValidationResult::PCKG_POLICY);
         BOOST_CHECK_EQUAL(submit_package_too_low.m_state.GetRejectReason(), "package-fee-too-low");
+        BOOST_CHECK_EQUAL(submit_package_too_low.m_tx_results.at(tx_parent_cheap->GetWitnessHash()).m_state.GetResult(),
+                          TxValidationResult::TX_SINGLE_FAILURE);
+        BOOST_CHECK_EQUAL(submit_package_too_low.m_tx_results.at(tx_child_cheap->GetWitnessHash()).m_state.GetResult(),
+                          TxValidationResult::TX_MISSING_INPUTS);
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
     }
 

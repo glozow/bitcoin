@@ -1489,31 +1489,33 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
         }
     }
 
-    // Quit early because package validation won't change the result or the entire package has
-    // already been submitted.
-    if (quit_early || txns_package_eval.empty()) {
-        for (const auto& [wtxid, mempoolaccept_res] : individual_results_nonfinal) {
-            Assume(results_final.emplace(wtxid, mempoolaccept_res).second);
-            Assume(mempoolaccept_res.m_result_type == MempoolAcceptResult::ResultType::INVALID);
+    auto submission_result = quit_early || txns_package_eval.empty() ?
+        PackageMempoolAcceptResult(package_state_quit_early, {}) :
+        AcceptPackageWrappingSingle(txns_package_eval, args);
+    // Attempt to provide a result for each transaction.
+    for (const auto& tx : package) {
+        const auto& wtxid = tx->GetWitnessHash();
+        if (submission_result.m_tx_results.count(wtxid) > 0) {
+            // Already in submission result.
+            Assume(results_final.count(wtxid) == 0);
+            continue;
+        } else if (const auto it{results_final.find(wtxid)}; it != results_final.end()) {
+            // Already-in-mempool transaction.
+            Assume(it->second.m_result_type != MempoolAcceptResult::ResultType::INVALID);
+            Assume(individual_results_nonfinal.count(wtxid) == 0);
+            submission_result.m_tx_results.emplace(wtxid, it->second);
+        } else if (const auto it{individual_results_nonfinal.find(wtxid)}; it != individual_results_nonfinal.end()) {
+            Assume(it->second.m_result_type == MempoolAcceptResult::ResultType::INVALID);
+            // Interesting result from previous processing.
+            submission_result.m_tx_results.emplace(wtxid, it->second);
+        } else {
+            // Backfill with "unknown result."
+            TxValidationState unknown_state;
+            unknown_state.Invalid(TxValidationResult::TX_UNKNOWN, "unknown-not-validated");
+            submission_result.m_tx_results.emplace(wtxid, MempoolAcceptResult::Failure(unknown_state));
         }
-        return PackageMempoolAcceptResult(package_state_quit_early, std::move(results_final));
     }
-    // Validate the (deduplicated) transactions as a package. Note that submission_result has its
-    // own PackageValidationState; package_state_quit_early is unused past this point.
-    auto submission_result = AcceptPackageWrappingSingle(txns_package_eval, args);
-    // Include already-in-mempool transaction results in the final result.
-    for (const auto& [wtxid, mempoolaccept_res] : results_final) {
-        Assume(submission_result.m_tx_results.emplace(wtxid, mempoolaccept_res).second);
-        Assume(mempoolaccept_res.m_result_type != MempoolAcceptResult::ResultType::INVALID);
-    }
-    if (submission_result.m_state.GetResult() == PackageValidationResult::PCKG_TX) {
-        // Package validation failed because one or more transactions failed. Provide a result for
-        // each transaction; if a transaction doesn't have an entry in submission_result,
-        // include the previous individual failure reason.
-        submission_result.m_tx_results.insert(individual_results_nonfinal.cbegin(),
-                                              individual_results_nonfinal.cend());
-        Assume(submission_result.m_tx_results.size() == package.size());
-    }
+    Assume(submission_result.m_tx_results.size() == package.size());
     return submission_result;
 }
 
