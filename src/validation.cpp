@@ -1418,6 +1418,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     // Protect against bugs where we pull more inputs from disk that miss being added to
     // coins_to_uncache. The backend will be connected again when needed in PreChecks.
     m_view.SetBackend(m_dummy);
+    const auto& child_wtxid = linearized_package.Txns().back()->GetWitnessHash();
 
     LOCK(m_pool.cs);
     // Stores final results that won't change
@@ -1525,7 +1526,6 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
                 }
                 }
             }
-            linearized_package.AddFeeAndVsize(tx->GetHash(), ws.m_modified_fees, ws.m_vsize);
             m_viewmempool.PackageAddTransaction(tx);
         }
     }
@@ -1535,11 +1535,13 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     }
 
     if (!quit_early) {
+        // Use the fee information gathered in the PreChecks() loop above to refine linearization.
+        // We want to try to submit the higher-feerate subpackages and transactions first.
         linearized_package.LinearizeWithFees();
         for (const auto& tx : linearized_package.FilteredTxns()) {
             const auto subpackage_fee_vsize = linearized_package.GetAncestorFeeAndVsize(tx);
             // Never skip the last transaction, as we want to return a validation result for this transaction.
-            if (tx != child && subpackage_fee_vsize.has_value()) {
+            if (tx->GetWitnessHash() != child_wtxid && subpackage_fee_vsize.has_value()) {
                 TxValidationState placeholder_state;
                 if (!CheckFeeRate(subpackage_fee_vsize->second, subpackage_fee_vsize->first, placeholder_state)) {
                     // No need to validate if we know this subpackage won't meet feerate
@@ -1549,37 +1551,36 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
                 }
             }
             const auto subpackage = linearized_package.GetAncestorSet(tx);
-            if (!subpackage || subpackage->size() > 1) {
-                // Try submitting the transaction on its own, unless it has dependencies (in which we
-                // know there will be a "missing inputs" failure).
-                // TODO: try to submit the subpackage.
-                continue;
+            if (!subpackage) continue;
+            const auto subpackage_result = AcceptPackageWrappingSingle(subpackage.value(), args);
+            for (const auto& subpackage_tx : subpackage.value()) {
+                const auto subpackage_wtxid{subpackage_tx->GetWitnessHash()};
+                const auto subpackage_it{subpackage_result.m_tx_results.find(subpackage_wtxid)};
+                if (subpackage_it != subpackage_result.m_tx_results.end()) {
+                    // A tx would only be in results_final if we already found it (or same txid) in
+                    // the mempool in the previous loop so it should not be included in
+                    // FilteredTxns(). A tx is also never validated more than once in this loop:
+                    // - if a transaction succeeds, it is skipped in subsequent iterations
+                    // - if a transaction fails, we exit the loop immediately
+                    Assume(results_final.count(subpackage_wtxid) == 0);
+                    results_final.emplace(subpackage_wtxid, subpackage_it->second);
+                }
+                // We detect that a transaction was successful by looking for it in mempool.
+                if (m_pool.exists(GenTxid::Wtxid(subpackage_wtxid))) {
+                    linearized_package.Skip(subpackage_tx);
+                }
             }
-            assert(!m_pool.exists(GenTxid::Txid(tx->GetHash())));
-            const auto& wtxid = tx->GetWitnessHash();
-            const auto single_res = AcceptSingleTransaction(tx, single_args);
-            if (single_res.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-                // The transaction succeeded on its own and is now in the mempool. Don't include it
-                // in package validation, because its fees should only be "used" once.
-                assert(m_pool.exists(GenTxid::Wtxid(wtxid)));
-                results_final.emplace(wtxid, single_res);
-                linearized_package.Skip(tx);
-            } else {
-                // Fee-related errors and missing inputs should not occur since we skip those.
-                // Abort if we get any other error; it's not worth the computational effort to
-                // try to validate any of the other transactions.
-                package_state_quit_early.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
-                quit_early = true;
-                // If a result already exists from the previous loop, override it.
-                Assume(individual_results_nonfinal.count(wtxid) == 0);
-                individual_results_nonfinal.emplace(wtxid, single_res);
+            if (subpackage_result.m_state.IsInvalid()) {
+                // Abort if any failures are encountered. This means we may skip validation for
+                // some transactions entirely, including ones we potentially should have accepted.
+                // We expect that some other peer will announce those transactions to us.
+                package_state_quit_early = subpackage_result.m_state;
+                break;
             }
         }
     }
 
-    auto submission_result = quit_early || linearized_package.FilteredTxns().empty() ?
-        PackageMempoolAcceptResult(package_state_quit_early, {}) :
-        AcceptPackageWrappingSingle(linearized_package.FilteredTxns(), args);
+    auto submission_result = PackageMempoolAcceptResult(package_state_quit_early, {});
     // Attempt to provide a result for each transaction.
     for (const auto& tx : package) {
         const auto& wtxid = tx->GetWitnessHash();
@@ -1594,6 +1595,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             submission_result.m_tx_results.emplace(wtxid, it->second);
         } else if (const auto it{individual_results_nonfinal.find(wtxid)}; it != individual_results_nonfinal.end()) {
             Assume(it->second.m_result_type == MempoolAcceptResult::ResultType::INVALID);
+            package_state_quit_early.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
             // Interesting result from previous processing.
             submission_result.m_tx_results.emplace(wtxid, it->second);
         } else {
