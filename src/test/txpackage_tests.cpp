@@ -1280,13 +1280,14 @@ BOOST_FIXTURE_TEST_CASE(linearization_tests, TestChain100Setup)
             if (idx == 9) {
                 // The last parent had the highest feerate and was accepted.
                 BOOST_CHECK(txresult.m_state.IsValid());
-            } else if (idx == 10) {
-                // The child is skipped
-                BOOST_CHECK_EQUAL(txresult.m_state.GetResult(), TxValidationResult::TX_UNKNOWN);
-            } else {
-                // The other parents hit too-long-mempool-chain for exceeding gen1's descendant limits.
+            } else if (idx == 8) {
+                // The second-highest feerate parent hit too-long-mempool-chain for exceeding
+                // gen1_tx's descendant limit.
                 BOOST_CHECK_EQUAL(txresult.m_state.GetResult(), TxValidationResult::TX_MEMPOOL_POLICY);
                 BOOST_CHECK(txresult.m_state.GetRejectReason() == "too-long-mempool-chain");
+            } else {
+                // The rest of the parents and the child were skipped.
+                BOOST_CHECK_EQUAL(txresult.m_state.GetResult(), TxValidationResult::TX_UNKNOWN);
             }
         }
         expected_pool_size += 1;
