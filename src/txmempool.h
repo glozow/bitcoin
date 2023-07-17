@@ -848,6 +848,7 @@ public:
     /** Add the coins created by this transaction. These coins are only temporarily stored in
      * m_temp_added and cannot be flushed to the back end. Only used for package validation. */
     void PackageAddTransaction(const CTransactionRef& tx);
+    std::vector<COutPoint> ClearPackageCoins();
 };
 
 /**
