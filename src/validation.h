@@ -140,14 +140,14 @@ struct MempoolAcceptResult {
      * using prioritisetransaction (i.e. modified fees). If this transaction was submitted as a
      * package, this is the package feerate, which may also include its descendants and/or
      * ancestors (see m_wtxids_fee_calculations below).
-     * Only present when m_result_type = ResultType::VALID.
+     * Only present when m_result_type = ResultType::VALID or INVALID for fee-related reasons.
      */
     const std::optional<CFeeRate> m_effective_feerate;
     /** Contains the wtxids of the transactions used for fee-related checks. Includes this
      * transaction's wtxid and may include others if this transaction was validated as part of a
      * package. This is not necessarily equivalent to the list of transactions passed to
      * ProcessNewPackage().
-     * Only present when m_result_type = ResultType::VALID. */
+     * Only present when m_result_type = ResultType::VALID or INVALID for fee-related reasons. */
     const std::optional<std::vector<uint256>> m_wtxids_fee_calculations;
 
     // The following field is only present when m_result_type = ResultType::DIFFERENT_WITNESS
@@ -156,6 +156,12 @@ struct MempoolAcceptResult {
 
     static MempoolAcceptResult Failure(TxValidationState state) {
         return MempoolAcceptResult(state);
+    }
+
+    static MempoolAcceptResult FeeFailure(TxValidationState state,
+                                          CFeeRate effective_feerate,
+                                          const std::vector<uint256>& wtxids_fee_calculations) {
+        return MempoolAcceptResult(state, effective_feerate, wtxids_fee_calculations);
     }
 
     static MempoolAcceptResult Success(std::list<CTransactionRef>&& replaced_txns,
@@ -193,6 +199,15 @@ private:
         m_replaced_transactions(std::move(replaced_txns)),
         m_vsize{vsize},
         m_base_fees(fees),
+        m_effective_feerate(effective_feerate),
+        m_wtxids_fee_calculations(wtxids_fee_calculations) {}
+
+    /** Constructor for fee-related failure case */
+    explicit MempoolAcceptResult(TxValidationState state,
+                                 CFeeRate effective_feerate,
+                                 const std::vector<uint256>& wtxids_fee_calculations)
+        : m_result_type(ResultType::INVALID),
+        m_state(state),
         m_effective_feerate(effective_feerate),
         m_wtxids_fee_calculations(wtxids_fee_calculations) {}
 
