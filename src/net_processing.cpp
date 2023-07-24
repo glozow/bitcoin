@@ -3038,7 +3038,7 @@ bool PeerManagerImpl::ProcessInvalidTx(const CTransactionRef& tx, NodeId nodeid,
     // We can add the wtxid of this transaction to our reject filter.
     m_recent_rejects.insert(tx->GetWitnessHash());
     m_txrequest.ForgetTxHash(tx->GetWitnessHash());
-    m_orphanage.EraseTx(tx->GetHash());
+    m_orphanage.EraseTx(tx->GetWitnessHash());
 
     return false;
 }
@@ -3054,7 +3054,7 @@ void PeerManagerImpl::ProcessValidTx(const CTransactionRef& tx, NodeId nodeid, c
     // If it came from the orphanage, remove it.
     m_txrequest.ForgetTxHash(tx->GetHash());
     m_txrequest.ForgetTxHash(tx->GetWitnessHash());
-    m_orphanage.EraseTx(tx->GetHash());
+    m_orphanage.EraseTx(tx->GetWitnessHash());
     LogPrint(BCLog::MEMPOOL, "AcceptToMemoryPool: peer=%d: accepted %s (wtxid=%s) (poolsz %u txn, %u kB)\n",
              nodeid,
              tx->GetHash().ToString(),
