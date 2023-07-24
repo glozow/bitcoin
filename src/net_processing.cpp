@@ -2961,24 +2961,25 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
         const MempoolAcceptResult result = m_chainman.ProcessTransaction(porphanTx);
         const TxValidationState& state = result.m_state;
         const uint256& orphanHash = porphanTx->GetHash();
+        const uint256& orphan_wtxid = porphanTx->GetWitnessHash();
 
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-            LogPrint(BCLog::MEMPOOL, "   accepted orphan tx %s\n", orphanHash.ToString());
             LogPrint(BCLog::MEMPOOL, "AcceptToMemoryPool: peer=%d: accepted %s (poolsz %u txn, %u kB)\n",
                 peer.m_id,
                 orphanHash.ToString(),
                 m_mempool.size(), m_mempool.DynamicMemoryUsage() / 1000);
+            LogPrint(BCLog::TXPACKAGES, "   accepted orphan tx %s\n", orphan_wtxid.ToString());
             RelayTransaction(orphanHash, porphanTx->GetWitnessHash());
             m_orphanage.AddChildrenToWorkSet(*porphanTx);
-            m_orphanage.EraseTx(orphanHash);
+            m_orphanage.EraseTx(orphan_wtxid);
             for (const CTransactionRef& removedTx : result.m_replaced_transactions.value()) {
                 AddToCompactExtraTransactions(removedTx);
             }
             return true;
         } else if (state.GetResult() != TxValidationResult::TX_MISSING_INPUTS) {
             if (state.IsInvalid()) {
-                LogPrint(BCLog::MEMPOOL, "   invalid orphan tx %s from peer=%d. %s\n",
-                    orphanHash.ToString(),
+                LogPrint(BCLog::TXPACKAGES, "   invalid orphan tx %s from peer=%d. %s\n",
+                    orphan_wtxid.ToString(),
                     peer.m_id,
                     state.ToString());
                 // Maybe punish peer that gave us an invalid orphan tx
@@ -2986,7 +2987,6 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
             }
             // Has inputs but not accepted to mempool
             // Probably non-standard or insufficient fee
-            LogPrint(BCLog::MEMPOOL, "   removed orphan tx %s\n", orphanHash.ToString());
             if (state.GetResult() != TxValidationResult::TX_WITNESS_STRIPPED) {
                 // We can add the wtxid of this transaction to our reject filter.
                 // Do not add txids of witness transactions or witness-stripped
@@ -3016,7 +3016,7 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
                     m_recent_rejects.insert(porphanTx->GetHash());
                 }
             }
-            m_orphanage.EraseTx(orphanHash);
+            m_orphanage.EraseTx(orphan_wtxid);
             return true;
         }
     }
