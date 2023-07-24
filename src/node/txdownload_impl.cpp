@@ -81,7 +81,7 @@ void TxDownloadImpl::MempoolAcceptedTx(const CTransactionRef& tx)
     m_txrequest.ForgetTxHash(tx->GetHash().ToUint256());
     m_txrequest.ForgetTxHash(tx->GetWitnessHash().ToUint256());
     // If it came from the orphanage, remove it. No-op if the tx is not in txorphanage.
-    m_orphanage.EraseTx(tx->GetHash());
+    m_orphanage.EraseTx(tx->GetWitnessHash());
 }
 
 InvalidTxTask TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& tx, const TxValidationResult& result)
@@ -186,7 +186,7 @@ InvalidTxTask TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& tx, const
     m_txrequest.ForgetTxHash(tx->GetWitnessHash());
     // If it came from the orphanage, remove it (this doesn't happen if the transaction was missing
     // inputs). No-op if the tx is not in the orphanage.
-    m_orphanage.EraseTx(tx->GetHash());
+    m_orphanage.EraseTx(tx->GetWitnessHash());
 
     return task;
 }
