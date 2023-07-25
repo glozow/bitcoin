@@ -38,12 +38,6 @@ public:
     /** Erase an orphan by wtxid */
     int OrphanageEraseTx(const uint256& wtxid);
 
-    /** Erase all orphans announced by a peer (eg, after that peer disconnects) */
-    void OrphanageEraseForPeer(NodeId peer);
-
-    /** Erase all orphans included in or invalidated by a new block */
-    void OrphanageEraseForBlock(const CBlock& block);
-
     /** Limit the orphanage to the given maximum */
     void OrphanageLimitOrphans(unsigned int max_orphans);
 
@@ -56,8 +50,11 @@ public:
     /** Return how many entries exist in the orphange */
     size_t OrphanageSize();
 
-    /** Deletes all announcements for a given peer. */
-    void TxRequestDisconnectedPeer(NodeId peer);
+    /** Deletes all txrequest announcements and orphans for a given peer. */
+    void DisconnectedPeer(NodeId peer);
+
+    /** Deletes all block and conflicted transactions from txrequest and orphanage. */
+    void BlockConnected(const CBlock& block);
 
     /** Adds a new CANDIDATE announcement. */
     void TxRequestReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred,
