@@ -38,9 +38,6 @@ public:
     /** Limit the orphanage to the given maximum */
     void OrphanageLimitOrphans(unsigned int max_orphans);
 
-    /** Add any orphans that list a particular tx as a parent into the from peer's work set */
-    void OrphanageAddChildrenToWorkSet(const CTransaction& tx);
-
     /** Does this peer have any orphans to validate? */
     bool OrphanageHaveTxToReconsider(NodeId peer);
 
@@ -52,6 +49,17 @@ public:
 
     /** Deletes all block and conflicted transactions from txrequest and orphanage. */
     void BlockConnected(const CBlock& block);
+
+    /** Should be called whenever a transaction is submitted to mempool.
+     * Erases the tx from orphanage, and forgets its txid and wtxid from txrequest.
+     * Adds any orphan transactions depending on it to their respective peers' workset. */
+    void MempoolAcceptedTx(const CTransactionRef& tx);
+
+    /** Should be called whenever a transaction is rejected from mempool.
+     * May add the transaction's txid and/or wtxid to recent_rejects depending on the rejection
+     * result. Returns true if this transaction is an orphan who should be processed, false
+     * otherwise. */
+    bool MempoolRejectedTx(const CTransactionRef& tx, const TxValidationResult& result);
 
     /** Adds a new CANDIDATE announcement. */
     void TxRequestReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred,
@@ -81,6 +89,14 @@ public:
 
     /** Count how many announcements are being tracked in total across all peers and transaction hashes. */
     size_t TxRequestSize() const;
+
+    /** Returns whether this txhash should be rejected, i.e. is in recent_rejects,
+     * recent_confirmed_transactions, or orphanage. The recent_rejects filter will be reset if the
+     * blockhash does not match hashRecentRejectsChainTip. */
+    bool ShouldReject(const GenTxid& gtxid, const uint256& blockhash);
+
+    /** Should be called when block is disconnected. Resets recent_confirmed_transactions. */
+    void RecentConfirmedReset();
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H
