@@ -20,7 +20,6 @@ public:
     bool OrphanageAddTx(const CTransactionRef& tx, NodeId peer) { return m_orphanage.AddTx(tx, peer); }
     bool OrphanageHaveTx(const GenTxid& gtxid) { return m_orphanage.HaveTx(gtxid); }
     CTransactionRef OrphanageGetTxToReconsider(NodeId peer) { return m_orphanage.GetTxToReconsider(peer); }
-    int OrphanageEraseTx(const uint256& wtxid) { return m_orphanage.EraseTx(wtxid); }
     void DisconnectedPeer(NodeId peer) {
         m_orphanage.EraseForPeer(peer);
         m_txrequest.DisconnectedPeer(peer);
@@ -91,9 +90,7 @@ TxDownloadManager::TxDownloadManager() : m_impl{std::make_unique<TxDownloadManag
 TxDownloadManager::~TxDownloadManager() = default;
 
 bool TxDownloadManager::OrphanageAddTx(const CTransactionRef& tx, NodeId peer) { return m_impl->OrphanageAddTx(tx, peer); }
-bool TxDownloadManager::OrphanageHaveTx(const GenTxid& gtxid) { return m_impl->OrphanageHaveTx(gtxid); }
 CTransactionRef TxDownloadManager::OrphanageGetTxToReconsider(NodeId peer) { return m_impl->OrphanageGetTxToReconsider(peer); }
-int TxDownloadManager::OrphanageEraseTx(const uint256& txid) { return m_impl->OrphanageEraseTx(txid); }
 void TxDownloadManager::OrphanageLimitOrphans(unsigned int max_orphans) { m_impl->OrphanageLimitOrphans(max_orphans); }
 void TxDownloadManager::OrphanageAddChildrenToWorkSet(const CTransaction& tx) { m_impl->OrphanageAddChildrenToWorkSet(tx); }
 bool TxDownloadManager::OrphanageHaveTxToReconsider(NodeId peer) { return m_impl->OrphanageHaveTxToReconsider(peer); }
