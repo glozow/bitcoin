@@ -35,9 +35,6 @@ public:
      */
     CTransactionRef OrphanageGetTxToReconsider(NodeId peer);
 
-    /** Erase an orphan by wtxid */
-    int OrphanageEraseTx(const uint256& wtxid);
-
     /** Limit the orphanage to the given maximum */
     void OrphanageLimitOrphans(unsigned int max_orphans);
 
