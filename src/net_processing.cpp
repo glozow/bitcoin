@@ -1542,8 +1542,7 @@ void PeerManagerImpl::FinalizeNode(const CNode& node)
     }
     {
         LOCK(m_tx_download_mutex);
-        m_txdownloadman.OrphanageEraseForPeer(nodeid);
-        m_txdownloadman.TxRequestDisconnectedPeer(nodeid);
+        m_txdownloadman.DisconnectedPeer(nodeid);
     }
     if (m_txreconciliation) m_txreconciliation->ForgetPeer(nodeid);
     m_num_preferred_download_peers -= state->fPreferredDownload;
@@ -1870,11 +1869,7 @@ void PeerManagerImpl::BlockConnected(const std::shared_ptr<const CBlock>& pblock
     }
     {
         LOCK(m_tx_download_mutex);
-        m_txdownloadman.OrphanageEraseForBlock(*pblock);
-        for (const auto& ptx : pblock->vtx) {
-            m_txdownloadman.TxRequestForgetTxHash(ptx->GetHash());
-            m_txdownloadman.TxRequestForgetTxHash(ptx->GetWitnessHash());
-        }
+        m_txdownloadman.BlockConnected(*pblock);
     }
 
     // In case the dynamic timeout was doubled once or more, reduce it slowly back to its default value
