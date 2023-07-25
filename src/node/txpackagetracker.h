@@ -84,6 +84,13 @@ public:
 
     /** Count how many announcements are being tracked in total across all peers and transaction hashes. */
     size_t TxRequestSize() const;
+
+    void MaybeResetRecentRejects(const uint256& blockhash);
+    bool RecentRejectsContains(const uint256& hash) const;
+    void RecentRejectsInsert(const uint256& hash);
+    bool RecentConfirmedContains(const uint256& hash) const;
+    void RecentConfirmedInsert(const uint256& hash);
+    void RecentConfirmedReset();
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXPACKAGETRACKER_H
