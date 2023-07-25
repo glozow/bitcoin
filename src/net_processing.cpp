@@ -4172,6 +4172,22 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     RelayTransaction(tx.GetHash(), tx.GetWitnessHash());
                 }
             }
+            // If a tx has been detected by m_recent_rejects (or another filter
+            // queried in AlreadyHaveTx), the tx is ignored. Because we haven't
+            // submitted the tx to our mempool, we won't have computed a DoS
+            // score for it or determined exactly why we consider it invalid.
+            //
+            // This means we won't penalize any peer subsequently relaying a DoSy
+            // tx (even if we penalized the first peer who gave it to us) because
+            // we have to account for m_recent_rejects showing false positives. In
+            // other words, we shouldn't penalize a peer if we aren't *sure* they
+            // submitted a DoSy tx.
+            //
+            // Note that m_recent_rejects doesn't just record DoSy or invalid
+            // transactions, but any tx not accepted by the mempool, which may be
+            // due to node policy (vs. consensus). So we can't blanket penalize a
+            // peer simply for relaying a tx that our m_recent_rejects has caught,
+            // regardless of false positives.
             return;
         }
 
@@ -4289,29 +4305,13 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             }
         }
 
-        // If a tx has been detected by m_recent_rejects, we will have reached
-        // this point and the tx will have been ignored. Because we haven't
-        // submitted the tx to our mempool, we won't have computed a DoS
-        // score for it or determined exactly why we consider it invalid.
-        //
-        // This means we won't penalize any peer subsequently relaying a DoSy
-        // tx (even if we penalized the first peer who gave it to us) because
-        // we have to account for m_recent_rejects showing false positives. In
-        // other words, we shouldn't penalize a peer if we aren't *sure* they
-        // submitted a DoSy tx.
-        //
-        // Note that m_recent_rejects doesn't just record DoSy or invalid
-        // transactions, but any tx not accepted by the mempool, which may be
-        // due to node policy (vs. consensus). So we can't blanket penalize a
-        // peer simply for relaying a tx that our m_recent_rejects has caught,
-        // regardless of false positives.
-
         if (state.IsInvalid()) {
             LogPrint(BCLog::MEMPOOLREJ, "%s from peer=%d was not accepted: %s\n", tx.GetHash().ToString(),
                 pfrom.GetId(),
                 state.ToString());
             MaybePunishNodeForTx(pfrom.GetId(), state);
         }
+
         return;
     }
 
