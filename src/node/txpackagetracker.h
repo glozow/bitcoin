@@ -41,9 +41,6 @@ public:
     /** Limit the orphanage to the given maximum */
     void OrphanageLimitOrphans(unsigned int max_orphans);
 
-    /** Add any orphans that list a particular tx as a parent into the from peer's work set */
-    void OrphanageAddChildrenToWorkSet(const CTransaction& tx);
-
     /** Does this peer have any orphans to validate? */
     bool OrphanageHaveTxToReconsider(NodeId peer);
 
@@ -55,6 +52,11 @@ public:
 
     /** Deletes all block and conflicted transactions from txrequest and orphanage. */
     void BlockConnected(const CBlock& block);
+
+    /** Should be called whenever a transaction is submitted to mempool.
+     * Erases the tx from orphanage, and forgets its txid and wtxid from txrequest.
+     * Adds any orphan transactions depending on it to their respective peers' workset. */
+    void MempoolAcceptedTx(const CTransactionRef& tx);
 
     /** Adds a new CANDIDATE announcement. */
     void TxRequestReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred,

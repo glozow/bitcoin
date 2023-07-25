@@ -89,8 +89,14 @@ public:
             }
         }
     }
+    void MempoolAcceptedTx(const CTransactionRef& tx)
+    {
+        m_txrequest.ForgetTxHash(tx->GetHash());
+        m_txrequest.ForgetTxHash(tx->GetWitnessHash());
+        m_orphanage.AddChildrenToWorkSet(*tx);
+        m_orphanage.EraseTx(tx->GetWitnessHash());
+    }
     void OrphanageLimitOrphans(unsigned int max_orphans) { m_orphanage.LimitOrphans(max_orphans); }
-    void OrphanageAddChildrenToWorkSet(const CTransaction& tx) { m_orphanage.AddChildrenToWorkSet(tx); }
     bool OrphanageHaveTxToReconsider(NodeId peer) { return m_orphanage.HaveTxToReconsider(peer); }
     size_t OrphanageSize() { return m_orphanage.Size(); }
     void TxRequestReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred, std::chrono::microseconds reqtime)
@@ -169,13 +175,13 @@ bool TxPackageTracker::OrphanageHaveTx(const GenTxid& gtxid) { return m_impl->Or
 CTransactionRef TxPackageTracker::OrphanageGetTxToReconsider(NodeId peer) { return m_impl->OrphanageGetTxToReconsider(peer); }
 int TxPackageTracker::OrphanageEraseTx(const uint256& txid) { return m_impl->OrphanageEraseTx(txid); }
 void TxPackageTracker::OrphanageLimitOrphans(unsigned int max_orphans) { m_impl->OrphanageLimitOrphans(max_orphans); }
-void TxPackageTracker::OrphanageAddChildrenToWorkSet(const CTransaction& tx) { m_impl->OrphanageAddChildrenToWorkSet(tx); }
 bool TxPackageTracker::OrphanageHaveTxToReconsider(NodeId peer) { return m_impl->OrphanageHaveTxToReconsider(peer); }
 size_t TxPackageTracker::OrphanageSize() { return m_impl->OrphanageSize(); }
 void TxPackageTracker::TxRequestReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred, std::chrono::microseconds reqtime)
     { return m_impl->TxRequestReceivedInv(peer, gtxid, preferred, reqtime); }
 void TxPackageTracker::BlockConnected(const CBlock& block) { m_impl->BlockConnected(block); }
 void TxPackageTracker::DisconnectedPeer(NodeId peer) { m_impl->DisconnectedPeer(peer); }
+void TxPackageTracker::MempoolAcceptedTx(const CTransactionRef& tx) { m_impl->MempoolAcceptedTx(tx); }
 void TxPackageTracker::TxRequestForgetTxHash(const uint256& txhash) { m_impl->TxRequestForgetTxHash(txhash); }
 std::vector<GenTxid> TxPackageTracker::TxRequestGetRequestable(NodeId peer, std::chrono::microseconds now,
     std::vector<std::pair<NodeId, GenTxid>>* expired) { return m_impl->TxRequestGetRequestable(peer, now, expired); }

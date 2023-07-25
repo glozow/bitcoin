@@ -2888,14 +2888,8 @@ void PeerManagerImpl::ProcessValidTx(CNode& pfrom, const CTransactionRef& tx, co
 {
     AssertLockNotHeld(m_peer_mutex);
     AssertLockHeld(m_tx_download_mutex);
-    // As this version of the transaction was acceptable, we can forget about any
-    // requests for it.
-    m_txpackagetracker.TxRequestForgetTxHash(tx->GetHash());
-    m_txpackagetracker.TxRequestForgetTxHash(tx->GetWitnessHash());
+    m_txpackagetracker.MempoolAcceptedTx(tx);
     RelayTransaction(tx->GetHash(), tx->GetWitnessHash());
-    m_txpackagetracker.OrphanageAddChildrenToWorkSet(*tx);
-    // Noop if transaction is not in the orphanage.
-    m_txpackagetracker.OrphanageEraseTx(tx->GetWitnessHash());
 
     pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
 
