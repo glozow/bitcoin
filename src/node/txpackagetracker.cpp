@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <consensus/validation.h>
 #include <node/txpackagetracker.h>
 
 #include <txorphanage.h>
@@ -96,6 +97,82 @@ public:
         m_orphanage.AddChildrenToWorkSet(*tx);
         m_orphanage.EraseTx(tx->GetWitnessHash());
     }
+    bool MempoolRejectedTx(const CTransactionRef& tx, const TxValidationResult& result)
+    {
+        switch (result) {
+        case TxValidationResult::TX_RESULT_UNSET:
+        case TxValidationResult::TX_NO_MEMPOOL:
+        {
+            // This function should only be called when a transaction fails validation.
+            Assume(false);
+            return false;
+        }
+        case TxValidationResult::TX_WITNESS_STRIPPED:
+        {
+            // Do not add txids of witness transactions or witness-stripped
+            // transactions to the filter, as they can have been malleated;
+            // adding such txids to the reject filter would potentially
+            // interfere with relay of valid transactions from peers that
+            // do not support wtxid-based relay. See
+            // https://github.com/bitcoin/bitcoin/issues/8279 for details.
+            // We can remove this restriction (and always add wtxids to
+            // the filter even for witness stripped transactions) once
+            // wtxid-based relay is broadly deployed.
+            // See also comments in https://github.com/bitcoin/bitcoin/pull/18044#discussion_r443419034
+            // for concerns around weakening security of unupgraded nodes
+            // if we start doing this too early.
+            break;
+            return false;
+        }
+        case TxValidationResult::TX_MISSING_INPUTS:
+        {
+            if (std::any_of(tx->vin.cbegin(), tx->vin.cend(), [&](const auto& input)
+                { return m_recent_rejects.contains(input.prevout.hash); })) {
+                LogPrint(BCLog::MEMPOOL, "not keeping orphan with rejected parents %s\n",tx->GetHash().ToString());
+                // We will continue to reject this tx since it has rejected
+                // parents so avoid re-requesting it from other peers.
+                // Here we add both the txid and the wtxid, as we know that
+                // regardless of what witness is provided, we will not accept
+                // this, so we don't need to allow for redownload of this txid
+                // from any of our non-wtxidrelay peers.
+                m_recent_rejects.insert(tx->GetHash());
+                m_recent_rejects.insert(tx->GetWitnessHash());
+                m_txrequest.ForgetTxHash(tx->GetHash());
+                m_txrequest.ForgetTxHash(tx->GetWitnessHash());
+                return false;
+            }
+            return true;
+        }
+        case TxValidationResult::TX_INPUTS_NOT_STANDARD:
+        {
+            // If the transaction failed for TX_INPUTS_NOT_STANDARD,
+            // then we know that the witness was irrelevant to the policy
+            // failure, since this check depends only on the txid
+            // (the scriptPubKey being spent is covered by the txid).
+            // Add the txid to the reject filter to prevent repeated
+            // processing of this transaction in the event that child
+            // transactions are later received (resulting in
+            // parent-fetching by txid via the orphan-handling logic).
+            if (tx->GetWitnessHash() != tx->GetHash()) {
+                m_recent_rejects.insert(tx->GetHash());
+                m_txrequest.ForgetTxHash(tx->GetHash());
+            }
+            break;
+        }
+        case TxValidationResult::TX_CONSENSUS:
+        case TxValidationResult::TX_RECENT_CONSENSUS_CHANGE:
+        case TxValidationResult::TX_NOT_STANDARD:
+        case TxValidationResult::TX_PREMATURE_SPEND:
+        case TxValidationResult::TX_WITNESS_MUTATED:
+        case TxValidationResult::TX_CONFLICT:
+        case TxValidationResult::TX_MEMPOOL_POLICY:
+            break;
+        }
+        // We can add the wtxid of this transaction to our reject filter.
+        m_recent_rejects.insert(tx->GetWitnessHash());
+        m_txrequest.ForgetTxHash(tx->GetWitnessHash());
+        return false;
+    }
     void OrphanageLimitOrphans(unsigned int max_orphans) { m_orphanage.LimitOrphans(max_orphans); }
     bool OrphanageHaveTxToReconsider(NodeId peer) { return m_orphanage.HaveTxToReconsider(peer); }
     size_t OrphanageSize() { return m_orphanage.Size(); }
@@ -182,6 +259,7 @@ void TxPackageTracker::TxRequestReceivedInv(NodeId peer, const GenTxid& gtxid, b
 void TxPackageTracker::BlockConnected(const CBlock& block) { m_impl->BlockConnected(block); }
 void TxPackageTracker::DisconnectedPeer(NodeId peer) { m_impl->DisconnectedPeer(peer); }
 void TxPackageTracker::MempoolAcceptedTx(const CTransactionRef& tx) { m_impl->MempoolAcceptedTx(tx); }
+bool TxPackageTracker::MempoolRejectedTx(const CTransactionRef& tx, const TxValidationResult& result) { return m_impl->MempoolRejectedTx(tx, result); }
 void TxPackageTracker::TxRequestForgetTxHash(const uint256& txhash) { m_impl->TxRequestForgetTxHash(txhash); }
 std::vector<GenTxid> TxPackageTracker::TxRequestGetRequestable(NodeId peer, std::chrono::microseconds now,
     std::vector<std::pair<NodeId, GenTxid>>* expired) { return m_impl->TxRequestGetRequestable(peer, now, expired); }

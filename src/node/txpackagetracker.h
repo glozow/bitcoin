@@ -58,6 +58,8 @@ public:
      * Adds any orphan transactions depending on it to their respective peers' workset. */
     void MempoolAcceptedTx(const CTransactionRef& tx);
 
+    bool MempoolRejectedTx(const CTransactionRef& tx, const TxValidationResult& result);
+
     /** Adds a new CANDIDATE announcement. */
     void TxRequestReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred,
         std::chrono::microseconds reqtime);
