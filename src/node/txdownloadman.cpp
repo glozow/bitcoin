@@ -21,11 +21,16 @@ public:
     bool OrphanageHaveTx(const GenTxid& gtxid) { return m_orphanage.HaveTx(gtxid); }
     CTransactionRef OrphanageGetTxToReconsider(NodeId peer) { return m_orphanage.GetTxToReconsider(peer); }
     int OrphanageEraseTx(const uint256& wtxid) { return m_orphanage.EraseTx(wtxid); }
-    void OrphanageEraseForPeer(NodeId peer) {
+    void DisconnectedPeer(NodeId peer) {
         m_orphanage.EraseForPeer(peer);
+        m_txrequest.DisconnectedPeer(peer);
     }
-    void OrphanageEraseForBlock(const CBlock& block) {
+    void BlockConnected(const CBlock& block) {
         m_orphanage.EraseForBlock(block);
+        for (const auto& ptx: block.vtx) {
+            m_txrequest.ForgetTxHash(ptx->GetHash());
+            m_txrequest.ForgetTxHash(ptx->GetWitnessHash());
+        }
     }
     void OrphanageLimitOrphans(unsigned int max_orphans) { m_orphanage.LimitOrphans(max_orphans); }
     void OrphanageAddChildrenToWorkSet(const CTransaction& tx) { m_orphanage.AddChildrenToWorkSet(tx); }
@@ -34,10 +39,6 @@ public:
     void TxRequestReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred, std::chrono::microseconds reqtime)
     {
         m_txrequest.ReceivedInv(peer, gtxid, preferred, reqtime);
-    }
-    void TxRequestDisconnectedPeer(NodeId peer)
-    {
-        m_txrequest.DisconnectedPeer(peer);
     }
 
     void TxRequestForgetTxHash(const uint256& txhash)
@@ -93,15 +94,14 @@ bool TxDownloadManager::OrphanageAddTx(const CTransactionRef& tx, NodeId peer) {
 bool TxDownloadManager::OrphanageHaveTx(const GenTxid& gtxid) { return m_impl->OrphanageHaveTx(gtxid); }
 CTransactionRef TxDownloadManager::OrphanageGetTxToReconsider(NodeId peer) { return m_impl->OrphanageGetTxToReconsider(peer); }
 int TxDownloadManager::OrphanageEraseTx(const uint256& txid) { return m_impl->OrphanageEraseTx(txid); }
-void TxDownloadManager::OrphanageEraseForPeer(NodeId peer) { m_impl->OrphanageEraseForPeer(peer); }
-void TxDownloadManager::OrphanageEraseForBlock(const CBlock& block) { m_impl->OrphanageEraseForBlock(block); }
 void TxDownloadManager::OrphanageLimitOrphans(unsigned int max_orphans) { m_impl->OrphanageLimitOrphans(max_orphans); }
 void TxDownloadManager::OrphanageAddChildrenToWorkSet(const CTransaction& tx) { m_impl->OrphanageAddChildrenToWorkSet(tx); }
 bool TxDownloadManager::OrphanageHaveTxToReconsider(NodeId peer) { return m_impl->OrphanageHaveTxToReconsider(peer); }
 size_t TxDownloadManager::OrphanageSize() { return m_impl->OrphanageSize(); }
 void TxDownloadManager::TxRequestReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred, std::chrono::microseconds reqtime)
     { return m_impl->TxRequestReceivedInv(peer, gtxid, preferred, reqtime); }
-void TxDownloadManager::TxRequestDisconnectedPeer(NodeId peer) { m_impl->TxRequestDisconnectedPeer(peer); }
+void TxDownloadManager::BlockConnected(const CBlock& block) { m_impl->BlockConnected(block); }
+void TxDownloadManager::DisconnectedPeer(NodeId peer) { m_impl->DisconnectedPeer(peer); }
 void TxDownloadManager::TxRequestForgetTxHash(const uint256& txhash) { m_impl->TxRequestForgetTxHash(txhash); }
 std::vector<GenTxid> TxDownloadManager::TxRequestGetRequestable(NodeId peer, std::chrono::microseconds now,
     std::vector<std::pair<NodeId, GenTxid>>* expired) { return m_impl->TxRequestGetRequestable(peer, now, expired); }
