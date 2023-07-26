@@ -166,6 +166,12 @@ public:
 
     /** Marks a tx as ReceivedResponse in txrequest. */
     void ReceivedNotFound(NodeId nodeid, const std::vector<uint256>& txhashes);
+
+    /** Creates deduplicated list of missing parents (based on AlreadyHaveTx). Adds tx to orphanage
+     * and schedules requests for missing parents in txrequest. Returns whether the tx is new to the
+     * orphanage and staying there. */
+    std::pair<bool, std::vector<Txid>> NewOrphanTx(const CTransactionRef& tx, NodeId nodeid,
+                                                   std::chrono::microseconds current_time);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOAD_IMPL_H
