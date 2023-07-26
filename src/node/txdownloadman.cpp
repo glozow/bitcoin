@@ -12,6 +12,10 @@ namespace node {
 class TxDownloadManager::Impl {
     /** Manages unvalidated tx data (orphan transactions for which we are downloading ancestors). */
     TxOrphanage m_orphanage;
+
+    /** Global maximum number of transactions to keep in the orphanage. */
+    uint32_t m_max_orphan_txs;
+
     /** Tracks candidates for requesting and downloading transaction data. */
     TxRequestTracker m_txrequest;
 
@@ -70,7 +74,8 @@ class TxDownloadManager::Impl {
     CRollingBloomFilter m_recent_confirmed_transactions{48'000, 0.000'001};
 
 public:
-    Impl() = default;
+    Impl() = delete;
+    Impl(uint32_t max_orphan_txs) : m_max_orphan_txs{max_orphan_txs} {}
 
     bool OrphanageAddTx(const CTransactionRef& tx, NodeId peer) { return m_orphanage.AddTx(tx, peer); }
     bool OrphanageHaveTx(const GenTxid& gtxid) { return m_orphanage.HaveTx(gtxid); }
@@ -175,7 +180,6 @@ public:
         m_txrequest.ForgetTxHash(tx->GetWitnessHash());
         return false;
     }
-    void OrphanageLimitOrphans(unsigned int max_orphans) { m_orphanage.LimitOrphans(max_orphans); }
     bool OrphanageHaveTxToReconsider(NodeId peer) { return m_orphanage.HaveTxToReconsider(peer); }
     size_t OrphanageSize() { return m_orphanage.Size(); }
     void ReceivedTxInv(NodeId peer, const GenTxid& gtxid, const PeerTxRelayInfo& info, std::chrono::microseconds now)
@@ -249,14 +253,43 @@ public:
         if (m_recent_rejects.contains(gtxid.GetHash())) return true;
         return false;
     }
+    bool NewOrphanTx(const CTransactionRef& tx, const std::vector<uint256>& unique_parents, NodeId nodeid,
+                     const PeerTxRelayInfo& info, std::chrono::microseconds now)
+    {
+        const bool already_in_orphanage{m_orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()))};
+        m_orphanage.AddTx(tx, nodeid);
+
+        // Once added to the orphan pool, a tx is considered AlreadyHave, and we shouldn't request it anymore.
+        m_txrequest.ForgetTxHash(tx->GetHash());
+        m_txrequest.ForgetTxHash(tx->GetWitnessHash());
+
+        // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789).
+        // This may decide to evict the new orphan.
+        m_orphanage.LimitOrphans(m_max_orphan_txs);
+        const bool still_in_orphanage{m_orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()))};
+        if (still_in_orphanage) {
+            for (const uint256& parent_txid : unique_parents) {
+                // Here, we only have the txid (and not wtxid) of the
+                // inputs, so we only request in txid mode, even for
+                // wtxidrelay peers.
+                // Eventually we should replace this with an improved
+                // protocol for getting all unconfirmed parents.
+                const auto gtxid{GenTxid::Txid(parent_txid)};
+                if (!ShouldReject(gtxid, hashRecentRejectsChainTip)) {
+                    ReceivedTxInv(nodeid, gtxid, info, now);
+                }
+            }
+        }
+        return !already_in_orphanage && still_in_orphanage;
+    }
 };
 
-TxDownloadManager::TxDownloadManager() : m_impl{std::make_unique<TxDownloadManager::Impl>()} {}
+TxDownloadManager::TxDownloadManager(uint32_t max_orphan_txs) : m_impl{std::make_unique<TxDownloadManager::Impl>(max_orphan_txs)} {}
 TxDownloadManager::~TxDownloadManager() = default;
 
-bool TxDownloadManager::OrphanageAddTx(const CTransactionRef& tx, NodeId peer) { return m_impl->OrphanageAddTx(tx, peer); }
+bool TxDownloadManager::NewOrphanTx(const CTransactionRef& tx, const std::vector<uint256>& unique_parents, NodeId nodeid,
+    const PeerTxRelayInfo& info, std::chrono::microseconds now) { return m_impl->NewOrphanTx(tx, unique_parents, nodeid, info, now); }
 CTransactionRef TxDownloadManager::OrphanageGetTxToReconsider(NodeId peer) { return m_impl->OrphanageGetTxToReconsider(peer); }
-void TxDownloadManager::OrphanageLimitOrphans(unsigned int max_orphans) { m_impl->OrphanageLimitOrphans(max_orphans); }
 bool TxDownloadManager::OrphanageHaveTxToReconsider(NodeId peer) { return m_impl->OrphanageHaveTxToReconsider(peer); }
 size_t TxDownloadManager::OrphanageSize() { return m_impl->OrphanageSize(); }
 void TxDownloadManager::ReceivedTxInv(NodeId peer, const GenTxid& gtxid, const PeerTxRelayInfo& info, std::chrono::microseconds now)

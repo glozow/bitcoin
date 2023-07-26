@@ -1748,6 +1748,7 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
       m_banman(banman),
       m_chainman(chainman),
       m_mempool(pool),
+      m_txdownloadman(opts.max_orphan_txs),
       m_opts{opts}
 {
     // While Erlay support is incomplete, it must be enabled explicitly via -txreconciliation.
@@ -4105,28 +4106,12 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 const auto current_time{GetTime<std::chrono::microseconds>()};
 
                 for (const uint256& parent_txid : unique_parents) {
-                    // Here, we only have the txid (and not wtxid) of the
-                    // inputs, so we only request in txid mode, even for
-                    // wtxidrelay peers.
-                    // Eventually we should replace this with an improved
-                    // protocol for getting all unconfirmed parents.
-                    const auto gtxid{GenTxid::Txid(parent_txid)};
                     AddKnownTx(*peer, parent_txid);
-                    if (!AlreadyHaveTx(gtxid)) {
-                        m_txdownloadman.ReceivedTxInv(pfrom.GetId(), gtxid, GetTxAnnouncementParams(pfrom), current_time);
-                    }
                 }
-
-                if (m_txdownloadman.OrphanageAddTx(ptx, pfrom.GetId())) {
+                if (m_txdownloadman.NewOrphanTx(ptx, unique_parents, pfrom.GetId(), GetTxAnnouncementParams(pfrom), current_time)) {
                     AddToCompactExtraTransactions(ptx);
                 }
 
-                // Once added to the orphan pool, a tx is considered AlreadyHave, and we shouldn't request it anymore.
-                m_txdownloadman.TxRequestForgetTxHash(tx.GetHash());
-                m_txdownloadman.TxRequestForgetTxHash(tx.GetWitnessHash());
-
-                // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
-                m_txdownloadman.OrphanageLimitOrphans(m_opts.max_orphan_txs);
             } else if (RecursiveDynamicUsage(*ptx) < 100000) {
                 AddToCompactExtraTransactions(ptx);
             }
