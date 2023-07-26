@@ -98,6 +98,10 @@ public:
 
     /** If this tx was something we requested, record that we received a response. */
     void ReceivedTx(NodeId nodeid, const uint256& txhash);
+
+    /** Add a new orphan transaction. Returns whether this orphan is going to be processed. */
+    bool NewOrphanTx(const CTransactionRef& tx, const std::vector<uint256>& parent_txids, NodeId nodeid,
+                     std::chrono::microseconds now);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H

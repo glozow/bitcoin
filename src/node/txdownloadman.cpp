@@ -14,6 +14,7 @@ class TxDownloadManager::Impl {
 
     /** Manages unvalidated tx data (orphan transactions for which we are downloading ancestors). */
     TxOrphanage m_orphanage;
+
     /** Tracks candidates for requesting and downloading transaction data. */
     TxRequestTracker m_txrequest;
 
@@ -308,6 +309,35 @@ public:
     {
         m_txrequest.ReceivedResponse(nodeid, txhash);
     }
+    bool NewOrphanTx(const CTransactionRef& tx, const std::vector<uint256>& parent_txids, NodeId nodeid,
+                     std::chrono::microseconds now)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_confirmed_transactions_mutex)
+    {
+        const bool already_in_orphanage{m_orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()))};
+        m_orphanage.AddTx(tx, nodeid, parent_txids);
+
+        // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789).
+        // This may decide to evict the new orphan.
+        m_orphanage.LimitOrphans(m_opts.m_max_orphan_txs);
+
+        const bool still_in_orphanage{m_orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()))};
+        if (still_in_orphanage) {
+            for (const uint256& parent_txid : parent_txids) {
+                // Here, we only have the txid (and not wtxid) of the
+                // inputs, so we only request in txid mode, even for
+                // wtxidrelay peers.
+                // Eventually we should replace this with an improved
+                // protocol for getting all unconfirmed parents.
+                // These parents have already been filtered using AlreadyHaveTx, so we don't need to
+                // check m_recent_rejects and m_recent_confirmed_transactions.
+                ReceivedTxInv(nodeid, GenTxid::Txid(parent_txid), now);
+            }
+        }
+        // Once added to the orphan pool, a tx is considered AlreadyHave, and we shouldn't request it anymore.
+        m_txrequest.ForgetTxHash(tx->GetHash());
+        m_txrequest.ForgetTxHash(tx->GetWitnessHash());
+        return !already_in_orphanage && still_in_orphanage;
+    }
 };
 
 TxDownloadManager::TxDownloadManager(const TxDownloadManager::Options& opts) :
@@ -329,10 +359,13 @@ bool TxDownloadManager::MempoolRejectedTx(const CTransactionRef& tx, const TxVal
     return m_impl->MempoolRejectedTx(tx, result);
 }
 bool TxDownloadManager::AlreadyHaveTx(const GenTxid& gtxid) const { return m_impl->AlreadyHaveTx(gtxid); }
+
 void TxDownloadManager::ReceivedTxInv(NodeId peer, const GenTxid& gtxid, std::chrono::microseconds now)
     { return m_impl->ReceivedTxInv(peer, gtxid, now); }
 std::vector<GenTxid> TxDownloadManager::GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time) {
     return m_impl->GetRequestsToSend(nodeid, current_time);
 }
 void TxDownloadManager::ReceivedTx(NodeId nodeid, const uint256& txhash) { m_impl->ReceivedTx(nodeid, txhash); }
+bool TxDownloadManager::NewOrphanTx(const CTransactionRef& tx, const std::vector<uint256>& parent_txids, NodeId nodeid,
+    std::chrono::microseconds now) { return m_impl->NewOrphanTx(tx, parent_txids, nodeid, now); }
 } // namespace node
