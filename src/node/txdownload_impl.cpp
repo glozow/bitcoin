@@ -240,4 +240,55 @@ void TxDownloadImpl::ReceivedNotFound(NodeId nodeid, const std::vector<uint256>&
         m_txrequest.ReceivedResponse(nodeid, txhash);
     }
 }
+
+std::pair<bool, std::vector<uint256>> TxDownloadImpl::NewOrphanTx(const CTransactionRef& tx,
+    NodeId nodeid, std::chrono::microseconds current_time)
+    EXCLUSIVE_LOCKS_REQUIRED(!m_recent_confirmed_transactions_mutex)
+{
+    const auto& wtxid = tx->GetWitnessHash();
+    const bool already_in_orphanage{m_orphanage.HaveTx(GenTxid::Wtxid(wtxid))};
+    // Deduplicate parent txids, so that we don't have to loop over
+    // the same parent txid more than once down below.
+    std::vector<uint256> unique_parents;
+    if (already_in_orphanage) {
+        unique_parents = m_orphanage.GetParentTxids(wtxid).value_or(std::vector<uint256>{});
+    } else {
+        unique_parents.reserve(tx->vin.size());
+        for (const CTxIn& txin : tx->vin) {
+            // We start with all parents, and then remove duplicates below.
+            unique_parents.push_back(txin.prevout.hash);
+        }
+        std::sort(unique_parents.begin(), unique_parents.end());
+        unique_parents.erase(std::unique(unique_parents.begin(), unique_parents.end()), unique_parents.end());
+
+        unique_parents.erase(std::remove_if(unique_parents.begin(), unique_parents.end(),
+            [&](const auto& txid)
+            { return AlreadyHaveTx(GenTxid::Txid(txid)); }),
+            unique_parents.end());
+    }
+
+    m_orphanage.AddTx(tx, nodeid, unique_parents);
+
+    // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789).
+    // This may decide to evict the new orphan.
+    m_orphanage.LimitOrphans(m_opts.m_max_orphan_txs);
+
+    const bool still_in_orphanage{m_orphanage.HaveTx(GenTxid::Wtxid(wtxid))};
+    if (still_in_orphanage) {
+        for (const uint256& parent_txid : unique_parents) {
+            // Here, we only have the txid (and not wtxid) of the
+            // inputs, so we only request in txid mode, even for
+            // wtxidrelay peers.
+            // Eventually we should replace this with an improved
+            // protocol for getting all unconfirmed parents.
+            // These parents have already been filtered using AlreadyHaveTx, so we don't need to
+            // check m_recent_rejects and m_recent_confirmed_transactions.
+            ReceivedTxInv(nodeid, GenTxid::Txid(parent_txid), current_time);
+        }
+    }
+    // Once added to the orphan pool, a tx is considered AlreadyHave, and we shouldn't request it anymore.
+    m_txrequest.ForgetTxHash(tx->GetHash());
+    m_txrequest.ForgetTxHash(wtxid);
+    return {!already_in_orphanage && still_in_orphanage,  unique_parents};
+}
 } // namespace node
