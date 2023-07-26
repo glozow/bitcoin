@@ -4026,39 +4026,15 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         } else {
             bool should_process_orphan = ProcessInvalidTx(ptx, pfrom.GetId(), state);
             if (should_process_orphan) {
-                // Deduplicate parent txids, so that we don't have to loop over
-                // the same parent txid more than once down below.
-                std::vector<uint256> unique_parents;
-                unique_parents.reserve(tx.vin.size());
-                for (const CTxIn& txin : tx.vin) {
-                    // We start with all parents, and then remove duplicates below.
-                    unique_parents.push_back(txin.prevout.hash);
-                }
-                std::sort(unique_parents.begin(), unique_parents.end());
-                unique_parents.erase(std::unique(unique_parents.begin(), unique_parents.end()), unique_parents.end());
                 const auto current_time{GetTime<std::chrono::microseconds>()};
-
-                for (const uint256& parent_txid : unique_parents) {
-                    // Here, we only have the txid (and not wtxid) of the
-                    // inputs, so we only request in txid mode, even for
-                    // wtxidrelay peers.
-                    // Eventually we should replace this with an improved
-                    // protocol for getting all unconfirmed parents.
-                    const auto gtxid{GenTxid::Txid(parent_txid)};
-                    AddKnownTx(*peer, parent_txid);
-                    m_txdownloadman.ReceivedTxInv(pfrom.GetId(), gtxid, current_time);
-                }
-
-                if (m_txdownloadman.GetOrphanageRef().AddTx(ptx, pfrom.GetId(), unique_parents)) {
+                const auto& [will_process_orphan, unique_parents] = m_txdownloadman.NewOrphanTx(ptx, pfrom.GetId(), current_time);
+                if (will_process_orphan) {
                     AddToCompactExtraTransactions(ptx);
+                    for (const uint256& parent_txid : unique_parents) {
+                        AddKnownTx(*peer, parent_txid);
+                    }
                 }
 
-                // Once added to the orphan pool, a tx is considered AlreadyHave, and we shouldn't request it anymore.
-                m_txdownloadman.GetTxRequestRef().ForgetTxHash(tx.GetHash());
-                m_txdownloadman.GetTxRequestRef().ForgetTxHash(tx.GetWitnessHash());
-
-                // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
-                m_txdownloadman.GetOrphanageRef().LimitOrphans(m_opts.max_orphan_txs);
             } else if (RecursiveDynamicUsage(*ptx) < 100000) {
                 AddToCompactExtraTransactions(ptx);
             }

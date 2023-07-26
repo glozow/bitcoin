@@ -73,6 +73,13 @@ public:
 
     /** Should be called when a notfound for a tx has been received. */
     void ReceivedNotFound(NodeId nodeid, const std::vector<uint256>& txhashes) { m_impl->ReceivedNotFound(nodeid, txhashes); }
+
+    /** Add a potentially new orphan transaction. Returns whether this orphan is going to be processed and the
+     * list of deduplicated parent txids that we don't already have. */
+    std::pair<bool, std::vector<uint256>> NewOrphanTx(const CTransactionRef& tx, NodeId nodeid,
+                                                      std::chrono::microseconds current_time) {
+        return m_impl->NewOrphanTx(tx, nodeid, current_time);
+    }
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H
