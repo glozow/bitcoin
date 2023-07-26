@@ -83,20 +83,6 @@ static constexpr auto PING_INTERVAL{2min};
 static const unsigned int MAX_LOCATOR_SZ = 101;
 /** The maximum number of entries in an 'inv' protocol message */
 static const unsigned int MAX_INV_SZ = 50000;
-/** Maximum number of in-flight transaction requests from a peer. It is not a hard limit, but the threshold at which
- *  point the OVERLOADED_PEER_TX_DELAY kicks in. */
-static constexpr int32_t MAX_PEER_TX_REQUEST_IN_FLIGHT = 100;
-/** Maximum number of transactions to consider for requesting, per peer. It provides a reasonable DoS limit to
- *  per-peer memory usage spent on announcements, while covering peers continuously sending INVs at the maximum
- *  rate (by our own policy, see INVENTORY_BROADCAST_PER_SECOND) for several minutes, while not receiving
- *  the actual transaction (from any peer) in response to requests for them. */
-static constexpr int32_t MAX_PEER_TX_ANNOUNCEMENTS = 5000;
-/** How long to delay requesting transactions via txids, if we have wtxid-relaying peers */
-static constexpr auto TXID_RELAY_DELAY{2s};
-/** How long to delay requesting transactions from non-preferred peers */
-static constexpr auto NONPREF_PEER_TX_DELAY{2s};
-/** How long to delay requesting transactions from overloaded peers (see MAX_PEER_TX_REQUEST_IN_FLIGHT). */
-static constexpr auto OVERLOADED_PEER_TX_DELAY{2s};
 /** How long to wait before downloading a transaction from an additional peer */
 static constexpr auto GETDATA_TX_INTERVAL{60s};
 /** Limit to avoid sending big packets. Not used in processing incoming GETDATA for compatibility */
@@ -676,10 +662,8 @@ private:
 
     void SendBlockTransactions(CNode& pfrom, Peer& peer, const CBlock& block, const BlockTransactionsRequest& req);
 
-    /** Register with TxRequestTracker that an INV has been received from a
-     *  peer. The announcement parameters are decided in PeerManager and then
-     *  passed to TxRequestTracker. */
-    void AddTxAnnouncement(const CNode& node, const GenTxid& gtxid, std::chrono::microseconds current_time)
+    /** Get announcement parameters to pass to TxDownloadManager. */
+    node::TxDownloadManager::PeerTxRelayInfo GetTxAnnouncementParams(const CNode& node)
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main, m_tx_download_mutex);
 
     /** Send a version message to a peer */
@@ -1385,32 +1369,18 @@ void PeerManagerImpl::PushNodeVersion(CNode& pnode, const Peer& peer)
     }
 }
 
-void PeerManagerImpl::AddTxAnnouncement(const CNode& node, const GenTxid& gtxid, std::chrono::microseconds current_time)
+node::TxDownloadManager::PeerTxRelayInfo PeerManagerImpl::GetTxAnnouncementParams(const CNode& node)
 {
     AssertLockHeld(::cs_main); // for State
     AssertLockHeld(m_tx_download_mutex); // For m_txrequest
     NodeId nodeid = node.GetId();
-    if (!node.HasPermission(NetPermissionFlags::Relay) && m_txdownloadman.TxRequestCount(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) {
-        // Too many queued announcements from this peer
-        return;
-    }
+    // Grab params for this announcement.
     const CNodeState* state = State(nodeid);
-
-    // Decide the TxRequestTracker parameters for this announcement:
-    // - "preferred": if fPreferredDownload is set (= outbound, or NetPermissionFlags::NoBan permission)
-    // - "reqtime": current time plus delays for:
-    //   - NONPREF_PEER_TX_DELAY for announcements from non-preferred connections
-    //   - TXID_RELAY_DELAY for txid announcements while wtxid peers are available
-    //   - OVERLOADED_PEER_TX_DELAY for announcements from peers which have at least
-    //     MAX_PEER_TX_REQUEST_IN_FLIGHT requests in flight (and don't have NetPermissionFlags::Relay).
-    auto delay{0us};
-    const bool preferred = state->fPreferredDownload;
-    if (!preferred) delay += NONPREF_PEER_TX_DELAY;
-    if (!gtxid.IsWtxid() && m_wtxid_relay_peers > 0) delay += TXID_RELAY_DELAY;
-    const bool overloaded = !node.HasPermission(NetPermissionFlags::Relay) &&
-        m_txdownloadman.TxRequestCountInFlight(nodeid) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
-    if (overloaded) delay += OVERLOADED_PEER_TX_DELAY;
-    m_txdownloadman.TxRequestReceivedInv(nodeid, gtxid, preferred, current_time + delay);
+    return node::TxDownloadManager::PeerTxRelayInfo {
+        .m_preferred = state->fPreferredDownload,
+        .m_relay_permissions = node.HasPermission(NetPermissionFlags::Relay),
+        .m_wtxid_peers_exist = m_wtxid_relay_peers > 0,
+    };
 }
 
 void PeerManagerImpl::UpdateLastBlockAnnounceTime(NodeId node, int64_t time_in_seconds)
@@ -3768,7 +3738,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
                 AddKnownTx(*peer, inv.hash);
                 if (!fAlreadyHave && !m_chainman.ActiveChainstate().IsInitialBlockDownload()) {
-                    AddTxAnnouncement(pfrom, gtxid, current_time);
+                    m_txdownloadman.ReceivedTxInv(pfrom.GetId(), gtxid, GetTxAnnouncementParams(pfrom), current_time);
                 }
             } else {
                 LogPrint(BCLog::NET, "Unknown inv type \"%s\" received from peer=%d\n", inv.ToString(), pfrom.GetId());
@@ -4142,7 +4112,9 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     // protocol for getting all unconfirmed parents.
                     const auto gtxid{GenTxid::Txid(parent_txid)};
                     AddKnownTx(*peer, parent_txid);
-                    if (!AlreadyHaveTx(gtxid)) AddTxAnnouncement(pfrom, gtxid, current_time);
+                    if (!AlreadyHaveTx(gtxid)) {
+                        m_txdownloadman.ReceivedTxInv(pfrom.GetId(), gtxid, GetTxAnnouncementParams(pfrom), current_time);
+                    }
                 }
 
                 if (m_txdownloadman.OrphanageAddTx(ptx, pfrom.GetId())) {
@@ -4754,7 +4726,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
     if (msg_type == NetMsgType::NOTFOUND) {
         std::vector<CInv> vInv;
         vRecv >> vInv;
-        if (vInv.size() <= MAX_PEER_TX_ANNOUNCEMENTS + MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
+        if (vInv.size() <= node::MAX_PEER_TX_ANNOUNCEMENTS + MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
             LOCK(::cs_main);
             for (CInv &inv : vInv) {
                 if (inv.IsGenTxMsg()) {

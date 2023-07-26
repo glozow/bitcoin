@@ -178,9 +178,26 @@ public:
     void OrphanageLimitOrphans(unsigned int max_orphans) { m_orphanage.LimitOrphans(max_orphans); }
     bool OrphanageHaveTxToReconsider(NodeId peer) { return m_orphanage.HaveTxToReconsider(peer); }
     size_t OrphanageSize() { return m_orphanage.Size(); }
-    void TxRequestReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred, std::chrono::microseconds reqtime)
+    void ReceivedTxInv(NodeId peer, const GenTxid& gtxid, const PeerTxRelayInfo& info, std::chrono::microseconds now)
     {
-        m_txrequest.ReceivedInv(peer, gtxid, preferred, reqtime);
+        if (!info.m_relay_permissions && m_txrequest.Count(peer) >= MAX_PEER_TX_ANNOUNCEMENTS) {
+            // Too many queued announcements for this peer
+            return;
+        }
+        // Decide the TxRequestTracker parameters for this announcement:
+        // - "preferred": if fPreferredDownload is set (= outbound, or NetPermissionFlags::NoBan permission)
+        // - "reqtime": current time plus delays for:
+        //   - NONPREF_PEER_TX_DELAY for announcements from non-preferred connections
+        //   - TXID_RELAY_DELAY for txid announcements while wtxid peers are available
+        //   - OVERLOADED_PEER_TX_DELAY for announcements from peers which have at least
+        //     MAX_PEER_TX_REQUEST_IN_FLIGHT requests in flight (and don't have NetPermissionFlags::Relay).
+        auto delay{0us};
+        if (!info.m_preferred) delay += NONPREF_PEER_TX_DELAY;
+        if (!gtxid.IsWtxid() && info.m_wtxid_peers_exist) delay += TXID_RELAY_DELAY;
+        const bool overloaded = !info.m_relay_permissions && m_txrequest.CountInFlight(peer) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
+        if (overloaded) delay += OVERLOADED_PEER_TX_DELAY;
+
+        m_txrequest.ReceivedInv(peer, gtxid, info.m_preferred, now + delay);
     }
 
     void TxRequestForgetTxHash(const uint256& txhash)
@@ -202,18 +219,6 @@ public:
     void TxRequestReceivedResponse(NodeId peer, const uint256& txhash)
     {
         m_txrequest.ReceivedResponse(peer, txhash);
-    }
-
-    /** Count how many REQUESTED announcements a peer has. */
-    size_t TxRequestCountInFlight(NodeId peer) const
-    {
-        return m_txrequest.CountInFlight(peer);
-    }
-
-    /** Count how many CANDIDATE announcements a peer has. */
-    size_t TxRequestCountCandidates(NodeId peer) const
-    {
-        return m_txrequest.CountCandidates(peer);
     }
 
     /** Count how many announcements a peer has (REQUESTED, CANDIDATE, and COMPLETED combined). */
@@ -254,8 +259,8 @@ CTransactionRef TxDownloadManager::OrphanageGetTxToReconsider(NodeId peer) { ret
 void TxDownloadManager::OrphanageLimitOrphans(unsigned int max_orphans) { m_impl->OrphanageLimitOrphans(max_orphans); }
 bool TxDownloadManager::OrphanageHaveTxToReconsider(NodeId peer) { return m_impl->OrphanageHaveTxToReconsider(peer); }
 size_t TxDownloadManager::OrphanageSize() { return m_impl->OrphanageSize(); }
-void TxDownloadManager::TxRequestReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred, std::chrono::microseconds reqtime)
-    { return m_impl->TxRequestReceivedInv(peer, gtxid, preferred, reqtime); }
+void TxDownloadManager::ReceivedTxInv(NodeId peer, const GenTxid& gtxid, const PeerTxRelayInfo& info, std::chrono::microseconds now)
+    { return m_impl->ReceivedTxInv(peer, gtxid, info, now); }
 void TxDownloadManager::BlockConnected(const CBlock& block) { m_impl->BlockConnected(block); }
 void TxDownloadManager::DisconnectedPeer(NodeId peer) { m_impl->DisconnectedPeer(peer); }
 void TxDownloadManager::MempoolAcceptedTx(const CTransactionRef& tx) { m_impl->MempoolAcceptedTx(tx); }
@@ -266,8 +271,6 @@ std::vector<GenTxid> TxDownloadManager::TxRequestGetRequestable(NodeId peer, std
 void TxDownloadManager::TxRequestRequestedTx(NodeId peer, const uint256& txhash, std::chrono::microseconds expiry)
     { m_impl->TxRequestRequestedTx(peer, txhash, expiry); }
 void TxDownloadManager::TxRequestReceivedResponse(NodeId peer, const uint256& txhash) { m_impl->TxRequestReceivedResponse(peer, txhash); }
-size_t TxDownloadManager::TxRequestCountInFlight(NodeId peer) const { return m_impl->TxRequestCountInFlight(peer); }
-size_t TxDownloadManager::TxRequestCountCandidates(NodeId peer) const { return m_impl->TxRequestCountCandidates(peer); }
 size_t TxDownloadManager::TxRequestCount(NodeId peer) const { return m_impl->TxRequestCount(peer); }
 size_t TxDownloadManager::TxRequestSize() const { return m_impl->TxRequestSize(); }
 void TxDownloadManager::RecentConfirmedReset() { m_impl->RecentConfirmedReset(); }

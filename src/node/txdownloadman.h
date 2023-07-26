@@ -14,6 +14,20 @@
 class TxOrphanage;
 class TxRequestTracker;
 namespace node {
+/** Maximum number of in-flight transaction requests from a peer. It is not a hard limit, but the threshold at which
+ *  point the OVERLOADED_PEER_TX_DELAY kicks in. */
+static constexpr int32_t MAX_PEER_TX_REQUEST_IN_FLIGHT = 100;
+/** Maximum number of transactions to consider for requesting, per peer. It provides a reasonable DoS limit to
+ *  per-peer memory usage spent on announcements, while covering peers continuously sending INVs at the maximum
+ *  rate (by our own policy, see INVENTORY_BROADCAST_PER_SECOND) for several minutes, while not receiving
+ *  the actual transaction (from any peer) in response to requests for them. */
+static constexpr int32_t MAX_PEER_TX_ANNOUNCEMENTS = 5000;
+/** How long to delay requesting transactions via txids, if we have wtxid-relaying peers */
+static constexpr auto TXID_RELAY_DELAY{2s};
+/** How long to delay requesting transactions from non-preferred peers */
+static constexpr auto NONPREF_PEER_TX_DELAY{2s};
+/** How long to delay requesting transactions from overloaded peers (see MAX_PEER_TX_REQUEST_IN_FLIGHT). */
+static constexpr auto OVERLOADED_PEER_TX_DELAY{2s};
 
 class TxDownloadManager {
     class Impl;
@@ -22,6 +36,16 @@ class TxDownloadManager {
 public:
     explicit TxDownloadManager();
     ~TxDownloadManager();
+
+    /** Information about a peer which is relevant to transaction announcements. To be provided by peerman. */
+    struct PeerTxRelayInfo {
+        /** Whether this peer is preferred for transaction download. */
+        const bool m_preferred;
+        /** Whether this peer has Relay permissions. */
+        const bool m_relay_permissions;
+        /** Whether we have at least 1 wtxid relay peer. */
+        const bool m_wtxid_peers_exist;
+    };
 
     bool OrphanageAddTx(const CTransactionRef& tx, NodeId peer);
 
@@ -62,8 +86,7 @@ public:
     bool MempoolRejectedTx(const CTransactionRef& tx, const TxValidationResult& result);
 
     /** Adds a new CANDIDATE announcement. */
-    void TxRequestReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred,
-        std::chrono::microseconds reqtime);
+    void ReceivedTxInv(NodeId peer, const GenTxid& gtxid, const PeerTxRelayInfo& info, std::chrono::microseconds now);
 
     /** Deletes all announcements for a given txhash (both txid and wtxid ones). */
     void TxRequestForgetTxHash(const uint256& txhash);
@@ -77,12 +100,6 @@ public:
 
     /** Converts a CANDIDATE or REQUESTED announcement to a COMPLETED one. */
     void TxRequestReceivedResponse(NodeId peer, const uint256& txhash);
-
-    /** Count how many REQUESTED announcements a peer has. */
-    size_t TxRequestCountInFlight(NodeId peer) const;
-
-    /** Count how many CANDIDATE announcements a peer has. */
-    size_t TxRequestCountCandidates(NodeId peer) const;
 
     /** Count how many announcements a peer has (REQUESTED, CANDIDATE, and COMPLETED combined). */
     size_t TxRequestCount(NodeId peer) const;
