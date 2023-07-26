@@ -35,13 +35,13 @@ class TxDownloadManager {
     const std::unique_ptr<Impl> m_impl;
 
 public:
-    explicit TxDownloadManager();
+    TxDownloadManager() = delete;
+    TxDownloadManager(uint32_t max_orphan_txs);
     ~TxDownloadManager();
 
-    bool OrphanageAddTx(const CTransactionRef& tx, NodeId peer, const std::vector<uint256>& parent_txids);
-
-    /** Check if we already have an orphan transaction (by txid or wtxid) */
-    bool OrphanageHaveTx(const GenTxid& gtxid);
+    /** Add a new orphan transaction. Returns whether this orphan is going to be processed. */
+    bool NewOrphanTx(const CTransactionRef& tx, const std::vector<uint256>& parent_txids, NodeId nodeid,
+                     std::chrono::microseconds now);
 
     /** Extract a transaction from a peer's work set
      *  Returns nullptr if there are no transactions to work on.
@@ -49,9 +49,6 @@ public:
      *  it from the work set.
      */
     CTransactionRef OrphanageGetTxToReconsider(NodeId peer);
-
-    /** Limit the orphanage to the given maximum */
-    void OrphanageLimitOrphans(unsigned int max_orphans);
 
     /** Does this peer have any orphans to validate? */
     bool OrphanageHaveTxToReconsider(NodeId peer);
