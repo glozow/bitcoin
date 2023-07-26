@@ -577,6 +577,10 @@ private:
      */
     bool MaybeDiscourageAndDisconnect(CNode& pnode, Peer& peer);
 
+    /** Handle a transaction whose result was MempoolAcceptResult::ResultType::VALID. */
+    void ProcessValidTx(const CTransactionRef& tx, NodeId nodeid)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex, m_tx_download_mutex);
+
     /**
      * Reconsider orphan transactions after a parent has been accepted to the mempool.
      *
@@ -2949,10 +2953,29 @@ void PeerManagerImpl::ProcessHeadersMessage(CNode& pfrom, Peer& peer,
     return;
 }
 
+void PeerManagerImpl::ProcessValidTx(const CTransactionRef& tx, NodeId nodeid)
+{
+    AssertLockNotHeld(m_peer_mutex);
+    AssertLockHeld(g_msgproc_mutex);
+    AssertLockHeld(m_tx_download_mutex);
+    m_txdownloadman.OrphanageAddChildrenToWorkSet(*tx);
+    // These are noops when transaction/hash is not present. As this version of
+    // the transaction was acceptable, we can forget about any requests for it.
+    // If it came from the orphanage, remove it.
+    m_txdownloadman.TxRequestForgetTxHash(tx->GetHash());
+    m_txdownloadman.TxRequestForgetTxHash(tx->GetWitnessHash());
+    m_txdownloadman.OrphanageEraseTx(tx->GetWitnessHash());
+    LogPrint(BCLog::MEMPOOL, "AcceptToMemoryPool: peer=%d: accepted %s (poolsz %u txn, %u kB)\n",
+             nodeid,
+             tx->GetHash().ToString(),
+             m_mempool.size(), m_mempool.DynamicMemoryUsage() / 1000);
+}
+
 bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
 {
-    AssertLockHeld(g_msgproc_mutex);
+    AssertLockNotHeld(m_peer_mutex);
     LOCK2(::cs_main, m_tx_download_mutex);
+    AssertLockHeld(g_msgproc_mutex);
 
     CTransactionRef porphanTx = nullptr;
 
@@ -2963,14 +2986,10 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
         const uint256& orphan_wtxid = porphanTx->GetWitnessHash();
 
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-            LogPrint(BCLog::MEMPOOL, "AcceptToMemoryPool: peer=%d: accepted %s (poolsz %u txn, %u kB)\n",
-                peer.m_id,
-                orphanHash.ToString(),
-                m_mempool.size(), m_mempool.DynamicMemoryUsage() / 1000);
             LogPrint(BCLog::TXPACKAGES, "   accepted orphan tx %s\n", orphan_wtxid.ToString());
+
             RelayTransaction(orphanHash, porphanTx->GetWitnessHash());
-            m_txdownloadman.OrphanageAddChildrenToWorkSet(*porphanTx);
-            m_txdownloadman.OrphanageEraseTx(orphan_wtxid);
+            ProcessValidTx(porphanTx, peer.m_id);
             for (const CTransactionRef& removedTx : result.m_replaced_transactions.value()) {
                 AddToCompactExtraTransactions(removedTx);
             }
@@ -4197,19 +4216,10 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         const TxValidationState& state = result.m_state;
 
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-            // As this version of the transaction was acceptable, we can forget about any
-            // requests for it.
-            m_txdownloadman.TxRequestForgetTxHash(tx.GetHash());
-            m_txdownloadman.TxRequestForgetTxHash(tx.GetWitnessHash());
             RelayTransaction(tx.GetHash(), tx.GetWitnessHash());
-            m_txdownloadman.OrphanageAddChildrenToWorkSet(tx);
 
+            ProcessValidTx(ptx, pfrom.GetId());
             pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
-
-            LogPrint(BCLog::MEMPOOL, "AcceptToMemoryPool: peer=%d: accepted %s (poolsz %u txn, %u kB)\n",
-                pfrom.GetId(),
-                tx.GetHash().ToString(),
-                m_mempool.size(), m_mempool.DynamicMemoryUsage() / 1000);
 
             for (const CTransactionRef& removedTx : result.m_replaced_transactions.value()) {
                 AddToCompactExtraTransactions(removedTx);
