@@ -13,6 +13,11 @@ class TxDownloadManager::Impl {
     /** Manages unvalidated tx data (orphan transactions for which we are downloading ancestors). */
     TxOrphanage m_orphanage;
 
+    /** Tracks orphans we are trying to resolve. All hashes stored are wtxids, i.e., the wtxid of
+     * the orphan. Used to schedule resolution with peers, which means requesting the missing
+     * parents by txid. */
+    TxRequestTracker m_orphan_resolution_tracker;
+
     /** Global maximum number of transactions to keep in the orphanage. */
     uint32_t m_max_orphan_txs;
 
@@ -105,27 +110,43 @@ class TxDownloadManager::Impl {
          * This is also what m_packages_downloading is indexed by. */
         const uint256 m_rep_wtxid;
 
+        enum RequestStatus : uint8_t {
+            WANTED,         //!> We know this tx is in the package but haven't done anything about it yet.
+            SCHEDULED,      //!> We scheduled this tx in m_txrequest.
+            REQUESTED,      //!> We have requested this tx.
+        };
+
         /** PackageTxRequestId for each getdata sent. Used to delete entries from m_expected_responses. */
-        std::map<PackageTxRequestId, bool> m_requests;
+        std::map<PackageTxRequestId, RequestStatus> m_requests;
 
         /** An orphan transaction in which we only know parent txids. */
-        PackageToDownload(NodeId peer, const uint256& rep_wtxid) :
+        PackageToDownload(NodeId peer, const uint256& rep_wtxid, const std::vector<uint256> parent_txids) :
             m_peer{peer},
             m_rep_wtxid{rep_wtxid}
-        {}
+        {
+            for (const auto& txhash : parent_txids) {
+                m_requests.emplace(txhash, RequestStatus::WANTED);
+            }
+        }
 
         /** Record a getdata we have scheduled for this package, i.e. entered into TxRequestTracker.
          * It won't necessarily be requested - there is usually a delay and, during that time, the
          * transaction could confirm or we could give up trying to download this package. */
         void RequestScheduled(const PackageTxRequestId& request_id) {
-            m_requests.emplace(request_id, false);
+            if (!Assume(m_requests.count(request_id) > 0)) {
+                m_requests.emplace(request_id, RequestStatus::SCHEDULED);
+            } else {
+                Assume(m_requests.at(request_id) == RequestStatus::WANTED);
+                m_requests.at(request_id) = RequestStatus::SCHEDULED;
+            }
         }
         /** Record a getdata we actually sent for this package. */
         void RequestSent(const PackageTxRequestId& request_id) {
             if (!Assume(m_requests.count(request_id) > 0)) {
-                m_requests.emplace(request_id, true);
+                m_requests.emplace(request_id, RequestStatus::REQUESTED);
             } else {
-                m_requests.at(request_id) = true;
+                Assume(m_requests.at(request_id) == RequestStatus::SCHEDULED);
+                m_requests.at(request_id) = RequestStatus::REQUESTED;
             }
         }
     };
@@ -172,6 +193,9 @@ public:
             AbandonPackageToDownload(wtxid, peer);
         }
         m_txrequest.DisconnectedPeer(peer);
+
+        m_orphan_resolution_tracker.DisconnectedPeer(peer);
+
         if (m_peer_info.count(peer) == 0) return;
         if (m_peer_info.at(peer).m_connection_info.m_wtxid_relay) {
             if (Assume(m_num_wtxid_peers > 0)) m_num_wtxid_peers -= 1;
@@ -185,6 +209,8 @@ public:
         for (const auto& ptx: block.vtx) {
             m_txrequest.ForgetTxHash(ptx->GetHash());
             m_txrequest.ForgetTxHash(ptx->GetWitnessHash());
+            // All hashes in orphan request tracker are wtxid.
+            m_orphan_resolution_tracker.ForgetTxHash(ptx->GetWitnessHash());
             m_recent_confirmed_transactions.insert(ptx->GetWitnessHash());
             if (ptx->GetHash() != ptx->GetWitnessHash()) {
                 m_recent_confirmed_transactions.insert(ptx->GetHash());
@@ -199,6 +225,8 @@ public:
         // If it came from the orphanage, remove it.
         m_txrequest.ForgetTxHash(tx->GetHash());
         m_txrequest.ForgetTxHash(tx->GetWitnessHash());
+        // All hashes in orphan request tracker are wtxid.
+        m_orphan_resolution_tracker.ForgetTxHash(tx->GetWitnessHash());
         m_orphanage.EraseTx(tx->GetWitnessHash());
         AbandonPackageToDownload(tx->GetWitnessHash(), /*nodeid=*/std::nullopt);
     }
@@ -277,6 +305,7 @@ public:
         m_txrequest.ForgetTxHash(tx->GetWitnessHash());
         m_orphanage.EraseTx(tx->GetWitnessHash());
         AbandonPackageToDownload(tx->GetWitnessHash(), /*nodeid=*/std::nullopt);
+        m_orphan_resolution_tracker.ForgetTxHash(tx->GetWitnessHash());
         return false;
     }
     bool OrphanageHaveTxToReconsider(NodeId peer) { return m_orphanage.HaveTxToReconsider(peer); }
@@ -313,6 +342,42 @@ public:
     std::vector<GenTxid> TxRequestGetRequestable(NodeId peer, std::chrono::microseconds now,
         std::vector<std::pair<NodeId, GenTxid>>* expired)
     {
+        // Orphan Resolution Tracker
+        std::vector<std::pair<NodeId, GenTxid>> expired_orphan_resolution;
+        const auto orphans_ready_to_request = m_orphan_resolution_tracker.GetRequestable(peer, now, &expired_orphan_resolution);
+        // Expire orphan resolution attempts
+        for (const auto& [nodeid, orphan_gtxid] : expired_orphan_resolution) {
+            // All txhashes in m_orphan_resolution_tracker are wtxids.
+            Assume(orphan_gtxid.IsWtxid());
+            AbandonPackageToDownload(orphan_gtxid.GetHash(), nodeid);
+            m_orphanage.EraseOrphanOfPeer(orphan_gtxid.GetHash(), nodeid);
+        }
+        for (const auto& orphan_gtxid : orphans_ready_to_request) {
+            Assume(orphan_gtxid.IsWtxid());
+            const bool still_in_orphanage{m_orphanage.HaveTx(GenTxid::Wtxid(orphan_gtxid.GetHash()))};
+            if (still_in_orphanage) {
+                // Get PackageToDownload. If it doesn't exist, skip.
+                if (m_packages_downloading.count(orphan_gtxid.GetHash()) == 0) break;
+                auto iter = m_packages_downloading.find(orphan_gtxid.GetHash());
+
+                for (const auto& [txid, status]: iter->second.m_requests) {
+                    // Here, we only have the txid (and not wtxid) of the
+                    // inputs, so we only request in txid mode, even for
+                    // wtxidrelay peers.
+                    // Eventually we should replace this with an improved
+                    // protocol for getting all unconfirmed parents.
+                    // These parents have already been filtered using AlreadyHaveTx, so we don't need to
+                    // check m_recent_rejects and m_recent_confirmed_transactions. Schedule this
+                    // request with no delay; it should immediately show up in GetRequestable below
+                    // unless there is already a request out for this transaction.
+                    ReceivedTxInv(peer, GenTxid::Txid(txid), now);
+                    const auto request_id{GetTxRequestId(peer, txid)};
+                    package.RequestScheduled(request_id);
+                    m_package_download_requests.emplace(request_id, iter);
+                }
+            }
+        
+        }
         return m_txrequest.GetRequestable(peer, now, expired);
     }
 
@@ -329,7 +394,7 @@ public:
         m_txrequest.RequestedTx(peer, txhash, expiry);
     }
 
-    void TxRequestReceivedResponse(NodeId peer, const uint256& txhash)
+    void ReceivedResponse(NodeId peer, const uint256& txhash, bool notfound)
     {
         // Check if this request pertains to a package.
         const auto orphan_parent_request_id{GetTxRequestId(peer, txhash)};
@@ -338,8 +403,15 @@ public:
             // The PackageToDownload should have record fo this scheduled request.
             Assume(iter->second.m_requests.count(orphan_parent_request_id) > 0);
             Assume(m_orphanage.HaveTx(GenTxid::Wtxid(iter->second.m_rep_wtxid)));
-            // TODO: if this was a notfound, give up. delete the PackageToDownload, EraseForPeer
-            // this orphan, remove from orphan request tracker, etc.
+            if (notfound) {
+                const auto& orphan_wtxid = iter->second.m_rep_wtxid;
+                // Abandon trying to resolve this orphan with this peer.
+                AbandonPackageToDownload(orphan_wtxid, peer);
+                m_orphanage.EraseOrphanOfPeer(orphan_wtxid, peer);
+                // Record the notfound to make progress resolving this orphan. We know this
+                // peer can't help us get the parent(s), so we can move on to other peers.
+                m_orphan_resolution_tracker.ReceivedResponse(peer, orphan_wtxid);
+            }
         }
         m_txrequest.ReceivedResponse(peer, txhash);
     }
@@ -376,7 +448,6 @@ public:
                      std::chrono::microseconds now)
     {
         const bool already_in_orphanage{m_orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()))};
-        m_orphanage.AddTx(tx, nodeid);
 
         // Once added to the orphan pool, a tx is considered AlreadyHave, and we shouldn't request it anymore.
         m_txrequest.ForgetTxHash(tx->GetHash());
@@ -389,26 +460,14 @@ public:
 
         const bool still_in_orphanage{m_orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()))};
         if (still_in_orphanage) {
-            const auto [iter, success] = m_packages_downloading.emplace(tx->GetWitnessHash(),
-                PackageToDownload{nodeid, tx->GetWitnessHash()});
-            if (!Assume(success)) {
-                // For some reason, we are already trying to download a package for this tx.
-                return !already_in_orphanage && still_in_orphanage;
-            }
-            for (const uint256& parent_txid : parent_txids) {
-                // Here, we only have the txid (and not wtxid) of the
-                // inputs, so we only request in txid mode, even for
-                // wtxidrelay peers.
-                // Eventually we should replace this with an improved
-                // protocol for getting all unconfirmed parents.
-                // These parents have already been filtered using AlreadyHaveTx, so we don't need to
-                // check m_recent_rejects and m_recent_confirmed_transactions.
-                ReceivedTxInv(nodeid, GenTxid::Txid(parent_txid), now);
-                const auto request_id{GetTxRequestId(nodeid, parent_txid)};
-                iter->second.RequestScheduled(request_id);
-                // False because we have not actually sent the request yet. We'll set it to true in
-                // TxRequestRequestedTx().
-                m_package_download_requests.emplace(request_id, iter);
+            const auto [_, success] = m_packages_downloading.emplace(tx->GetWitnessHash(),
+                PackageToDownload{nodeid, tx->GetWitnessHash(), parent_txids});
+            // if success=false, somehow we are already trying to download a package for this tx.
+            if (Assume(success)) {
+                // Add these requests to m_package_download_requests
+                for (const uint256& parent_txid : parent_txids) {
+                    const auto request_id{GetTxRequestId(nodeid, parent_txid)};
+                }
             }
         }
         return !already_in_orphanage && still_in_orphanage;
@@ -435,7 +494,7 @@ std::vector<GenTxid> TxDownloadManager::TxRequestGetRequestable(NodeId peer, std
     std::vector<std::pair<NodeId, GenTxid>>* expired) { return m_impl->TxRequestGetRequestable(peer, now, expired); }
 void TxDownloadManager::TxRequestRequestedTx(NodeId peer, const uint256& txhash, std::chrono::microseconds expiry)
     { m_impl->TxRequestRequestedTx(peer, txhash, expiry); }
-void TxDownloadManager::TxRequestReceivedResponse(NodeId peer, const uint256& txhash) { m_impl->TxRequestReceivedResponse(peer, txhash); }
+void TxDownloadManager::ReceivedResponse(NodeId peer, const uint256& txhash, bool notfound) { m_impl->ReceivedResponse(peer, txhash, notfound); }
 size_t TxDownloadManager::TxRequestCount(NodeId peer) const { return m_impl->TxRequestCount(peer); }
 size_t TxDownloadManager::TxRequestSize() const { return m_impl->TxRequestSize(); }
 void TxDownloadManager::RecentConfirmedReset() { m_impl->RecentConfirmedReset(); }
