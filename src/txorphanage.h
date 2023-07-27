@@ -22,8 +22,10 @@
  */
 class TxOrphanage {
 public:
-    /** Add a new orphan transaction */
-    bool AddTx(const CTransactionRef& tx, NodeId peer);
+    /** Add a new orphan transaction.
+     * parent_txids should contain a (de-duplicated) list of txids of this transaction's missing parents.
+      @returns true if the transaction was added as a new orphan. */
+    bool AddTx(const CTransactionRef& tx, NodeId peer, const std::vector<Txid>& parent_txids);
 
     /** Check if we already have an orphan transaction (by wtxid only) */
     bool HaveTx(const Wtxid& wtxid) const;
@@ -67,12 +69,17 @@ public:
         return m_orphans.size();
     }
 
+    /** Get an orphan's parent_txids, or std::nullopt if the orphan is not present. */
+    std::optional<std::vector<Txid>> GetParentTxids(const Wtxid& wtxid);
+
 protected:
     struct OrphanTx {
         CTransactionRef tx;
         NodeId fromPeer;
         NodeSeconds nTimeExpire;
         size_t list_pos;
+        /** Txids of the missing parents to request. Determined by peerman. */
+        std::vector<Txid> parent_txids;
     };
 
     /** Map from wtxid to orphan transaction record. Limited by

@@ -18,7 +18,7 @@ static constexpr auto ORPHAN_TX_EXPIRE_TIME{20min};
 static constexpr auto ORPHAN_TX_EXPIRE_INTERVAL{5min};
 
 
-bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
+bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer, const std::vector<Txid>& parent_txids)
 {
     const Txid& hash = tx->GetHash();
     const Wtxid& wtxid = tx->GetWitnessHash();
@@ -39,7 +39,7 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
         return false;
     }
 
-    auto ret = m_orphans.emplace(wtxid, OrphanTx{tx, peer, Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME, m_orphan_list.size()});
+    auto ret = m_orphans.emplace(wtxid, OrphanTx{tx, peer, Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME, m_orphan_list.size(), parent_txids});
     assert(ret.second);
     m_orphan_list.push_back(ret.first);
     for (const CTxIn& txin : tx->vin) {
@@ -282,4 +282,11 @@ std::vector<std::pair<CTransactionRef, NodeId>> TxOrphanage::GetChildrenFromDiff
         children_found.emplace_back(child_iter->second.tx, child_iter->second.fromPeer);
     }
     return children_found;
+}
+
+std::optional<std::vector<Txid>> TxOrphanage::GetParentTxids(const Wtxid& wtxid)
+{
+    const auto it = m_orphans.find(wtxid);
+    if (it != m_orphans.end()) return it->second.parent_txids;
+    return std::nullopt;
 }

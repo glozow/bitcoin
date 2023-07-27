@@ -124,7 +124,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
         tx.vout[0].nValue = 1*CENT;
         tx.vout[0].scriptPubKey = GetScriptForDestination(PKHash(key.GetPubKey()));
 
-        orphanage.AddTx(MakeTransactionRef(tx), i);
+        orphanage.AddTx(MakeTransactionRef(tx), i, {});
     }
 
     // ... and 50 that depend on other orphans:
@@ -142,7 +142,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
         SignatureData empty;
         BOOST_CHECK(SignSignature(keystore, *txPrev, tx, 0, SIGHASH_ALL, empty));
 
-        orphanage.AddTx(MakeTransactionRef(tx), i);
+        orphanage.AddTx(MakeTransactionRef(tx), i, {});
     }
 
     // This really-big orphan should be ignored:
@@ -167,7 +167,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
         for (unsigned int j = 1; j < tx.vin.size(); j++)
             tx.vin[j].scriptSig = tx.vin[0].scriptSig;
 
-        BOOST_CHECK(!orphanage.AddTx(MakeTransactionRef(tx), i));
+        BOOST_CHECK(!orphanage.AddTx(MakeTransactionRef(tx), i, {}));
     }
 
     // Test EraseOrphansFor:
@@ -205,14 +205,14 @@ BOOST_AUTO_TEST_CASE(same_txid_diff_witness)
     const auto& mutated_wtxid = child_mutated->GetWitnessHash();
     BOOST_CHECK(normal_wtxid != mutated_wtxid);
 
-    BOOST_CHECK(orphanage.AddTx(child_normal, peer));
+    BOOST_CHECK(orphanage.AddTx(child_normal, peer, {parent->GetHash()}));
     // EraseTx fails as transaction by this wtxid doesn't exist.
     BOOST_CHECK_EQUAL(orphanage.EraseTx(mutated_wtxid), 0);
     BOOST_CHECK(orphanage.HaveTx(normal_wtxid));
     BOOST_CHECK(!orphanage.HaveTx(mutated_wtxid));
 
     // Must succeed. Both transactions should be present in orphanage.
-    BOOST_CHECK(orphanage.AddTx(child_mutated, peer));
+    BOOST_CHECK(orphanage.AddTx(child_mutated, peer, {parent->GetHash()}));
     BOOST_CHECK(orphanage.HaveTx(normal_wtxid));
     BOOST_CHECK(orphanage.HaveTx(mutated_wtxid));
 
@@ -258,10 +258,10 @@ BOOST_AUTO_TEST_CASE(get_children)
     // All orphans provided by node1
     {
         TxOrphanage orphanage;
-        BOOST_CHECK(orphanage.AddTx(child_p1n0, node1));
-        BOOST_CHECK(orphanage.AddTx(child_p2n1, node1));
-        BOOST_CHECK(orphanage.AddTx(child_p1n0_p1n1, node1));
-        BOOST_CHECK(orphanage.AddTx(child_p1n0_p2n0, node1));
+        BOOST_CHECK(orphanage.AddTx(child_p1n0, node1, {parent1->GetHash()}));
+        BOOST_CHECK(orphanage.AddTx(child_p2n1, node1, {parent2->GetHash()}));
+        BOOST_CHECK(orphanage.AddTx(child_p1n0_p1n1, node1, {parent1->GetHash()}));
+        BOOST_CHECK(orphanage.AddTx(child_p1n0_p2n0, node1, {parent1->GetHash(), parent2->GetHash()}));
 
         std::set<CTransactionRef> expected_parent1_children{child_p1n0, child_p1n0_p2n0, child_p1n0_p1n1};
         std::set<CTransactionRef> expected_parent2_children{child_p2n1, child_p1n0_p2n0};
@@ -286,10 +286,10 @@ BOOST_AUTO_TEST_CASE(get_children)
     // Orphans provided by node1 and node2
     {
         TxOrphanage orphanage;
-        BOOST_CHECK(orphanage.AddTx(child_p1n0, node1));
-        BOOST_CHECK(orphanage.AddTx(child_p2n1, node1));
-        BOOST_CHECK(orphanage.AddTx(child_p1n0_p1n1, node2));
-        BOOST_CHECK(orphanage.AddTx(child_p1n0_p2n0, node2));
+        BOOST_CHECK(orphanage.AddTx(child_p1n0, node1, {parent1->GetHash()}));
+        BOOST_CHECK(orphanage.AddTx(child_p2n1, node1, {parent2->GetHash()}));
+        BOOST_CHECK(orphanage.AddTx(child_p1n0_p1n1, node2, {parent1->GetHash()}));
+        BOOST_CHECK(orphanage.AddTx(child_p1n0_p2n0, node2, {parent1->GetHash(), parent2->GetHash()}));
 
         // +----------------+---------------+----------------------------------+
         // |                | sender=node1  |           sender=node2           |
