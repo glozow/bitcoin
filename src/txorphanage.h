@@ -21,8 +21,9 @@
 class TxOrphanage {
 public:
     /** Add a new orphan transaction. If the tx already exists, add this peer to its list of announcers.
+     * parent_txids should contain a (de-duplicated) list of txids of this transaction's missing parents.
       @returns true if the transaction was added as a new orphan. */
-    bool AddTx(const CTransactionRef& tx, NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    bool AddTx(const CTransactionRef& tx, NodeId peer, const std::vector<Txid>& parent_txids) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Add an additional announcer to an orphan if it exists. Otherwise, do nothing.
      * @returns true it peer is an announcer of wtxid after this call (including if it was already
@@ -54,7 +55,7 @@ public:
     /** Erase all orphans included in or invalidated by a new block */
     void EraseForBlock(const CBlock& block) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
-    /** Limit the orphanage to the given maximum */
+    /** Limit the orphanage to the given maximum. Returns all expired entries. */
     void LimitOrphans(unsigned int max_orphans) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Add any orphans that list a particular tx as a parent into the from peer's work set */
@@ -90,6 +91,9 @@ public:
         return peer_bytes_it == m_peer_bytes_used.end() ? 0 : peer_bytes_it->second;
     }
 
+    /** Get an orphan's parent_txids, or std::nullopt if the orphan is not present. */
+    std::optional<std::vector<Txid>> GetParentTxids(const Wtxid& wtxid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
 protected:
     /** Total bytes of all transactions. */
     unsigned int m_total_orphan_bytes{0};
@@ -102,6 +106,8 @@ protected:
         int64_t nTimeExpire;
         size_t list_pos;
         std::set<NodeId> announcers;
+        /** Txids of the missing parents to request. Determined by peerman. */
+        std::vector<Txid> parent_txids;
     };
 
     /** Map from txid to orphan transaction record. Limited by

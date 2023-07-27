@@ -4273,16 +4273,16 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
             // Deduplicate parent txids, so that we don't have to loop over
             // the same parent txid more than once down below.
-            std::vector<uint256> unique_parents;
+            std::vector<Txid> unique_parents;
             unique_parents.reserve(tx.vin.size());
             for (const CTxIn& txin : tx.vin) {
                 // We start with all parents, and then remove duplicates below.
-                unique_parents.push_back(txin.prevout.hash);
+                unique_parents.push_back(Txid::FromUint256(txin.prevout.hash));
             }
             std::sort(unique_parents.begin(), unique_parents.end());
             unique_parents.erase(std::unique(unique_parents.begin(), unique_parents.end()), unique_parents.end());
-            for (const uint256& parent_txid : unique_parents) {
-                if (m_recent_rejects.contains(parent_txid)) {
+            for (const Txid& parent_txid : unique_parents) {
+                if (m_recent_rejects.contains(parent_txid.ToUint256())) {
                     fRejectedParents = true;
                     break;
                 }
@@ -4290,7 +4290,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             if (!fRejectedParents) {
                 const auto current_time{GetTime<std::chrono::microseconds>()};
 
-                for (const uint256& parent_txid : unique_parents) {
+                for (const Txid& parent_txid : unique_parents) {
                     // Here, we only have the txid (and not wtxid) of the
                     // inputs, so we only request in txid mode, even for
                     // wtxidrelay peers.
@@ -4301,7 +4301,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     if (!AlreadyHaveTx(gtxid)) AddTxAnnouncement(pfrom, gtxid, current_time);
                 }
 
-                if (m_orphanage.AddTx(ptx, pfrom.GetId())) {
+                if (m_orphanage.AddTx(ptx, pfrom.GetId(), unique_parents)) {
                     AddToCompactExtraTransactions(ptx);
                 }
 
