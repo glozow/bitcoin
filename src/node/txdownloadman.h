@@ -101,7 +101,7 @@ public:
     void TxRequestRequestedTx(NodeId peer, const uint256& txhash, std::chrono::microseconds expiry);
 
     /** Converts a CANDIDATE or REQUESTED announcement to a COMPLETED one. */
-    void TxRequestReceivedResponse(NodeId peer, const uint256& txhash);
+    void ReceivedResponse(NodeId peer, const uint256& txhash, bool notfound);
 
     /** Count how many announcements a peer has (REQUESTED, CANDIDATE, and COMPLETED combined). */
     size_t TxRequestCount(NodeId peer) const;

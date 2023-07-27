@@ -4023,8 +4023,8 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
         LOCK2(cs_main, m_tx_download_mutex);
 
-        m_txdownloadman.TxRequestReceivedResponse(pfrom.GetId(), txid);
-        if (tx.HasWitness()) m_txdownloadman.TxRequestReceivedResponse(pfrom.GetId(), wtxid);
+        m_txdownloadman.ReceivedResponse(pfrom.GetId(), txid, /*notfound=*/false);
+        if (tx.HasWitness()) m_txdownloadman.ReceivedResponse(pfrom.GetId(), wtxid, /*notfound=*/false);
 
         // We do the AlreadyHaveTx() check using wtxid, rather than txid - in the
         // absence of witness malleation, this is strictly better, because the
@@ -4715,7 +4715,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     LOCK(m_tx_download_mutex);
                     // If we receive a NOTFOUND message for a tx we requested, mark the announcement for it as
                     // completed in TxRequestTracker.
-                    m_txdownloadman.TxRequestReceivedResponse(pfrom.GetId(), inv.hash);
+                    m_txdownloadman.ReceivedResponse(pfrom.GetId(), inv.hash, /*notfound=*/true);
                 }
             }
         }
