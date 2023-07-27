@@ -283,3 +283,24 @@ std::vector<uint256> TxOrphanage::EraseForBlock(const CBlock& block)
     }
     return vOrphanErase;
 }
+void TxOrphanage::EraseOrphanOfPeer(const uint256& wtxid, NodeId peer)
+{
+    AssertLockNotHeld(m_mutex);
+    LOCK(m_mutex);
+    // Nothing to do if this peer isn't storing any orphans.
+    if (m_peer_bytes_used.count(peer) == 0) return;
+
+    // Nothing to do if this tx doesn't exist.
+    const auto wtxid_it = m_wtxid_to_orphan_it.find(wtxid);
+    if (wtxid_it == m_wtxid_to_orphan_it.end()) return;
+
+    if (wtxid_it->second->second.announcers.count(peer) > 0) {
+        if (wtxid_it->second->second.announcers.size() == 1) {
+            EraseTxNoLock(wtxid);
+        } else {
+            // Don't erase this orphan. Another peer has also announced it, so it may still be useful.
+            wtxid_it->second->second.announcers.erase(peer);
+            SubtractOrphanBytes(wtxid_it->second->second.tx->GetTotalSize(), peer);
+        }
+    }
+}
