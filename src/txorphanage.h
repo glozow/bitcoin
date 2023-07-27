@@ -42,13 +42,13 @@ public:
 
     /** Maybe erase all orphans announced by a peer (eg, after that peer disconnects). If an orphan
      * has been announced by another peer, don't erase, just remove this peer from the list of announcers. */
-    void EraseForPeer(NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    std::vector<uint256> EraseForPeer(NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Erase all orphans included in or invalidated by a new block. Returns wtxids of erased txns. */
     std::vector<uint256> EraseForBlock(const CBlock& block) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
-    /** Limit the orphanage to the given maximum */
-    void LimitOrphans(unsigned int max_orphans) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    /** Limit the orphanage to the given maximum. Returns all expired entries. */
+    std::vector<uint256> LimitOrphans(unsigned int max_orphans) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Add any orphans that list a particular tx as a parent into the from peer's work set */
     void AddChildrenToWorkSet(const CTransaction& tx) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);;
