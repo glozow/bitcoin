@@ -18,6 +18,22 @@ class TxOrphanage;
 class TxRequestTracker;
 enum class TxValidationResult;
 namespace node {
+/** Maximum number of in-flight transaction requests from a peer. It is not a hard limit, but the threshold at which
+ *  point the OVERLOADED_PEER_TX_DELAY kicks in. */
+static constexpr int32_t MAX_PEER_TX_REQUEST_IN_FLIGHT = 100;
+/** Maximum number of transactions to consider for requesting, per peer. It provides a reasonable DoS limit to
+ *  per-peer memory usage spent on announcements, while covering peers continuously sending INVs at the maximum
+ *  rate (by our own policy, see INVENTORY_BROADCAST_PER_SECOND) for several minutes, while not receiving
+ *  the actual transaction (from any peer) in response to requests for them. */
+static constexpr int32_t MAX_PEER_TX_ANNOUNCEMENTS = 5000;
+/** How long to delay requesting transactions via txids, if we have wtxid-relaying peers */
+static constexpr auto TXID_RELAY_DELAY{2s};
+/** How long to delay requesting transactions from non-preferred peers */
+static constexpr auto NONPREF_PEER_TX_DELAY{2s};
+/** How long to delay requesting transactions from overloaded peers (see MAX_PEER_TX_REQUEST_IN_FLIGHT). */
+static constexpr auto OVERLOADED_PEER_TX_DELAY{2s};
+/** How long to wait before downloading a transaction from an additional peer */
+static constexpr auto GETDATA_TX_INTERVAL{60s};
 
 class TxDownloadManager {
     class Impl;
@@ -49,7 +65,7 @@ public:
         const bool m_wtxid_relay;
     };
     /** New peer successfully completed handshake. */
-    void ConnectedPeer(NodeId peer, const ConnectionInfo& info);
+    void ConnectedPeer(NodeId nodeid, const ConnectionInfo& info);
 
     /** Deletes all txrequest announcements and orphans for a given peer. */
     void DisconnectedPeer(NodeId nodeid);
@@ -73,6 +89,15 @@ public:
 
     /** Whether this transaction is found in orphanage, recently confirmed, or recently rejected transactions. */
     bool AlreadyHaveTx(const GenTxid& gtxid) const;
+
+    /** New inv has been received. May be added as a candidate to txrequest. */
+    void ReceivedTxInv(NodeId peer, const GenTxid& gtxid, std::chrono::microseconds now);
+
+    /** Get getdata requests to send. */
+    std::vector<GenTxid> GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time);
+
+    /** If this tx was something we requested, record that we received a response. */
+    void ReceivedTx(NodeId nodeid, const uint256& txhash);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H

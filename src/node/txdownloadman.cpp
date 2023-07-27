@@ -72,6 +72,20 @@ class TxDownloadManager::Impl {
     mutable Mutex m_recent_confirmed_transactions_mutex;
     CRollingBloomFilter m_recent_confirmed_transactions GUARDED_BY(m_recent_confirmed_transactions_mutex){48'000, 0.000'001};
 
+    struct PeerInfo {
+        /** Information relevant to scheduling tx requests. */
+        const ConnectionInfo m_connection_info;
+
+        PeerInfo(const ConnectionInfo& info) : m_connection_info{info} {}
+    };
+
+    /** Information for all of the peers we may download transactions from. This is not necessarily
+     * all peers we are connected to (no block-relay-only and temporary connections). */
+    std::map<NodeId, PeerInfo> m_peer_info;
+
+    /** Number of wtxid relay peers we have. */
+    uint32_t m_num_wtxid_peers{0};
+
 public:
     Impl(const Options& opts) : m_opts{opts} {}
 
@@ -79,10 +93,22 @@ public:
 
     TxRequestTracker& GetTxRequestRef() { return m_txrequest; }
 
+    void ConnectedPeer(NodeId nodeid, const ConnectionInfo& info)
+    {
+        Assume(m_peer_info.count(nodeid) == 0);
+        m_peer_info.emplace(nodeid, PeerInfo(info));
+        if (info.m_wtxid_relay) m_num_wtxid_peers += 1;
+    }
+
     void DisconnectedPeer(NodeId nodeid)
     {
         m_orphanage.EraseForPeer(nodeid);
         m_txrequest.DisconnectedPeer(nodeid);
+        if (m_peer_info.count(nodeid) == 0) return;
+        if (m_peer_info.at(nodeid).m_connection_info.m_wtxid_relay) {
+            if (Assume(m_num_wtxid_peers > 0)) m_num_wtxid_peers -= 1;
+        }
+        m_peer_info.erase(nodeid);
     }
 
     void BlockConnected(const CBlock& block, const uint256& tiphash)
@@ -226,6 +252,62 @@ public:
 
         return m_recent_rejects.contains(hash) || m_opts.m_mempool_ref.exists(gtxid);
     }
+
+    void ReceivedTxInv(NodeId peer, const GenTxid& gtxid, std::chrono::microseconds now)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_confirmed_transactions_mutex)
+    {
+        if (!Assume(m_peer_info.count(peer) > 0)) return;
+        if (AlreadyHaveTx(gtxid)) return;
+        const auto& info = m_peer_info.at(peer).m_connection_info;
+        if (!info.m_relay_permissions && m_txrequest.Count(peer) >= MAX_PEER_TX_ANNOUNCEMENTS) {
+            // Too many queued announcements for this peer
+            return;
+        }
+        // Decide the TxRequestTracker parameters for this announcement:
+        // - "preferred": if fPreferredDownload is set (= outbound, or NetPermissionFlags::NoBan permission)
+        // - "reqtime": current time plus delays for:
+        //   - NONPREF_PEER_TX_DELAY for announcements from non-preferred connections
+        //   - TXID_RELAY_DELAY for txid announcements while wtxid peers are available
+        //   - OVERLOADED_PEER_TX_DELAY for announcements from peers which have at least
+        //     MAX_PEER_TX_REQUEST_IN_FLIGHT requests in flight (and don't have NetPermissionFlags::Relay).
+        auto delay{0us};
+        if (!info.m_preferred) delay += NONPREF_PEER_TX_DELAY;
+        if (!gtxid.IsWtxid() && m_num_wtxid_peers > 0) delay += TXID_RELAY_DELAY;
+        const bool overloaded = !info.m_relay_permissions && m_txrequest.CountInFlight(peer) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
+        if (overloaded) delay += OVERLOADED_PEER_TX_DELAY;
+
+        m_txrequest.ReceivedInv(peer, gtxid, info.m_preferred, now + delay);
+    }
+
+    std::vector<GenTxid> GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_recent_confirmed_transactions_mutex)
+    {
+        std::vector<GenTxid> requests;
+        std::vector<std::pair<NodeId, GenTxid>> expired;
+        auto requestable = m_txrequest.GetRequestable(nodeid, current_time, &expired);
+        for (const auto& entry : expired) {
+            LogPrint(BCLog::NET, "timeout of inflight %s %s from peer=%d\n", entry.second.IsWtxid() ? "wtx" : "tx",
+                entry.second.GetHash().ToString(), entry.first);
+        }
+        for (const GenTxid& gtxid : requestable) {
+            if (!AlreadyHaveTx(gtxid)) {
+                LogPrint(BCLog::NET, "Requesting %s %s peer=%d\n", gtxid.IsWtxid() ? "wtx" : "tx",
+                    gtxid.GetHash().ToString(), nodeid);
+                requests.emplace_back(gtxid);
+                m_txrequest.RequestedTx(nodeid, gtxid.GetHash(), current_time + GETDATA_TX_INTERVAL);
+            } else {
+                // We have already seen this transaction, no need to download. This is just a belt-and-suspenders, as
+                // this should already be called whenever a transaction becomes AlreadyHaveTx().
+                m_txrequest.ForgetTxHash(gtxid.GetHash());
+            }
+        }
+        return requests;
+    }
+
+    void ReceivedTx(NodeId nodeid, const uint256& txhash)
+    {
+        m_txrequest.ReceivedResponse(nodeid, txhash);
+    }
 };
 
 TxDownloadManager::TxDownloadManager(const TxDownloadManager::Options& opts) :
@@ -235,6 +317,7 @@ TxDownloadManager::~TxDownloadManager() = default;
 TxOrphanage& TxDownloadManager::GetOrphanageRef() { return m_impl->GetOrphanageRef(); }
 TxRequestTracker& TxDownloadManager::GetTxRequestRef() { return m_impl->GetTxRequestRef(); }
 
+void TxDownloadManager::ConnectedPeer(NodeId nodeid, const ConnectionInfo& info) { m_impl->ConnectedPeer(nodeid, info); }
 void TxDownloadManager::DisconnectedPeer(NodeId nodeid) { m_impl->DisconnectedPeer(nodeid); }
 
 void TxDownloadManager::BlockConnected(const CBlock& block, const uint256& tiphash) {
@@ -246,4 +329,10 @@ bool TxDownloadManager::MempoolRejectedTx(const CTransactionRef& tx, const TxVal
     return m_impl->MempoolRejectedTx(tx, result);
 }
 bool TxDownloadManager::AlreadyHaveTx(const GenTxid& gtxid) const { return m_impl->AlreadyHaveTx(gtxid); }
+void TxDownloadManager::ReceivedTxInv(NodeId peer, const GenTxid& gtxid, std::chrono::microseconds now)
+    { return m_impl->ReceivedTxInv(peer, gtxid, now); }
+std::vector<GenTxid> TxDownloadManager::GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time) {
+    return m_impl->GetRequestsToSend(nodeid, current_time);
+}
+void TxDownloadManager::ReceivedTx(NodeId nodeid, const uint256& txhash) { m_impl->ReceivedTx(nodeid, txhash); }
 } // namespace node
