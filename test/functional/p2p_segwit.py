@@ -2008,6 +2008,8 @@ class SegWitTest(BitcoinTestFramework):
     @subtest
     def test_wtxid_relay(self):
         # Use brand new nodes to avoid contamination from earlier tests
+        # Make this node outbound so that it is preferred for orphan parent requests over the
+        # inbound peer.
         self.wtx_node = self.nodes[0].add_p2p_connection(TestP2PConn(wtxidrelay=True), services=P2P_SERVICES)
         self.tx_node = self.nodes[0].add_p2p_connection(TestP2PConn(wtxidrelay=False), services=P2P_SERVICES)
 
@@ -2047,6 +2049,12 @@ class SegWitTest(BitcoinTestFramework):
         with p2p_lock:
             lgd = self.tx_node.lastgetdata[:]
         assert_equal(lgd, [CInv(MSG_TX|MSG_WITNESS_FLAG, tx2.sha256)])
+
+        # Both wtx_node and tx_node are possible candidates for orphan resolution since they both
+        # announced tx2. Normally, wtx_node is preferred (less delayed) than tx_node because it is
+        # wtxidrelay, but it doesn't apply here since this is a request by txid. Disconnect tx_node
+        # now so the node doesn't try to request tx2's parent from it.
+        self.tx_node.peer_disconnect()
 
         # Send tx2 through; it's an orphan so won't be accepted
         with p2p_lock:

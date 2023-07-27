@@ -56,6 +56,11 @@ public:
     /** Tracks candidates for requesting and downloading transaction data. */
     TxRequestTracker m_txrequest GUARDED_BY(m_tx_download_mutex);
 
+    /** Tracks orphans we are trying to resolve. All hashes stored are wtxids, i.e., the wtxid of
+     * the orphan. Used to schedule resolution with peers, which means requesting the missing
+     * parents by txid. */
+    TxRequestTracker m_orphan_resolution_tracker GUARDED_BY(m_tx_download_mutex);
+
     /**
      * Filter for transactions that were recently rejected by the mempool.
      * These are not rerequested until the chain tip changes, at which point
@@ -131,6 +136,10 @@ private:
 
     /** Internal AlreadyHaveTx. */
     bool AlreadyHaveTxLocked(const GenTxid& gtxid) const EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex);
+
+    /** Add another announcer of an orphan who is a potential candidate for resolution. */
+    void AddOrphanAnnouncer(NodeId nodeid, const uint256& orphan_wtxid, std::chrono::microseconds now)
+        EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex);
 
 public:
     TxDownloadImpl(const TxDownloadOptions& options) : m_opts{options} {}
