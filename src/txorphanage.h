@@ -22,7 +22,7 @@ class TxOrphanage {
 public:
     /** Add a new orphan transaction. If the tx already exists, add this peer to its list of announcers.
       @returns true if the transaction was added as a new orphan. */
-    bool AddTx(const CTransactionRef& tx, NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    bool AddTx(const CTransactionRef& tx, NodeId peer, const std::vector<uint256>& parent_txids) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Get orphan transaction by wtxid. Returns nullptr if we don't have it anymore. */
     CTransactionRef GetTx(const uint256& wtxid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
@@ -42,13 +42,13 @@ public:
 
     /** Maybe erase all orphans announced by a peer (eg, after that peer disconnects). If an orphan
      * has been announced by another peer, don't erase, just remove this peer from the list of announcers. */
-    void EraseForPeer(NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    std::vector<uint256> EraseForPeer(NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Erase all orphans included in or invalidated by a new block. Returns wtxids of erased txns. */
     std::vector<uint256> EraseForBlock(const CBlock& block) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
-    /** Limit the orphanage to the given maximum */
-    void LimitOrphans(unsigned int max_orphans) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    /** Limit the orphanage to the given maximum. Returns all expired entries. */
+    std::vector<uint256> LimitOrphans(unsigned int max_orphans) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Add any orphans that list a particular tx as a parent into the from peer's work set */
     void AddChildrenToWorkSet(const CTransaction& tx) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);;
@@ -86,6 +86,9 @@ public:
      * remove this peer's entry from the map. */
     void SubtractOrphanBytes(unsigned int size, NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
 
+    /** Get an orphan's parent_txids, or std::nullopt if the orphan is not present. */
+    std::optional<std::vector<uint256>> GetParentTxids(const uint256& wtxid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
 protected:
     unsigned int m_total_orphan_bytes{0};
 
@@ -97,6 +100,8 @@ protected:
         int64_t nTimeExpire;
         size_t list_pos;
         std::set<NodeId> announcers;
+        /** Txids of the missing parents to request. Determined by peerman. */
+        std::vector<uint256> parent_txids;
     };
 
     /** Map from txid to orphan transaction record. Limited by

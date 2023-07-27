@@ -26,7 +26,7 @@ void TxOrphanage::SubtractOrphanBytes(unsigned int size, NodeId peer)
     }
 }
 
-bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
+bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer, const std::vector<uint256>& parent_txids)
 {
     LOCK(m_mutex);
 
@@ -55,7 +55,7 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
         return false;
     }
 
-    auto ret = m_orphans.emplace(hash, OrphanTx{tx, GetTime() + ORPHAN_TX_EXPIRE_TIME, m_orphan_list.size(), {peer}});
+    auto ret = m_orphans.emplace(hash, OrphanTx{tx, GetTime() + ORPHAN_TX_EXPIRE_TIME, m_orphan_list.size(), {peer}, parent_txids});
     assert(ret.second);
     m_orphan_list.push_back(ret.first);
     // Allow for lookups in the orphan pool by wtxid, as well as txid
@@ -122,11 +122,12 @@ int TxOrphanage::EraseTxNoLock(const uint256& wtxid)
     return 1;
 }
 
-void TxOrphanage::EraseForPeer(NodeId peer)
+std::vector<uint256> TxOrphanage::EraseForPeer(NodeId peer)
 {
     LOCK(m_mutex);
 
     m_peer_work_set.erase(peer);
+    std::vector<uint256> wtxids;
 
     int nErased = 0;
     std::map<uint256, OrphanTx>::iterator iter = m_orphans.begin();
@@ -134,6 +135,7 @@ void TxOrphanage::EraseForPeer(NodeId peer)
     {
         std::map<uint256, OrphanTx>::iterator maybeErase = iter++; // increment to avoid iterator becoming invalid
         if (maybeErase->second.announcers.count(peer) > 0) {
+            wtxids.push_back(maybeErase->second.tx->GetWitnessHash());
             if (maybeErase->second.announcers.size() == 1) {
                 nErased += EraseTxNoLock(maybeErase->second.tx->GetWitnessHash());
             } else {
@@ -146,12 +148,14 @@ void TxOrphanage::EraseForPeer(NodeId peer)
     if (nErased > 0) LogPrint(BCLog::TXPACKAGES, "Erased %d orphan tx from peer=%d\n", nErased, peer);
     Assume(m_peer_bytes_used.count(peer) == 0);
     m_peer_bytes_used.erase(peer);
+    return wtxids;
 }
 
-void TxOrphanage::LimitOrphans(unsigned int max_orphans)
+std::vector<uint256> TxOrphanage::LimitOrphans(unsigned int max_orphans)
 {
     LOCK(m_mutex);
 
+    std::vector<uint256> expired;
     unsigned int nEvicted = 0;
     static int64_t nNextSweep;
     int64_t nNow = GetTime();
@@ -164,6 +168,7 @@ void TxOrphanage::LimitOrphans(unsigned int max_orphans)
         {
             std::map<uint256, OrphanTx>::iterator maybeErase = iter++;
             if (maybeErase->second.nTimeExpire <= nNow) {
+                expired.emplace_back(maybeErase->second.tx->GetWitnessHash());
                 nErased += EraseTxNoLock(maybeErase->second.tx->GetWitnessHash());
             } else {
                 nMinExpTime = std::min(maybeErase->second.nTimeExpire, nMinExpTime);
@@ -182,6 +187,7 @@ void TxOrphanage::LimitOrphans(unsigned int max_orphans)
         ++nEvicted;
     }
     if (nEvicted > 0) LogPrint(BCLog::TXPACKAGES, "orphanage overflow, removed %u tx\n", nEvicted);
+    return expired;
 }
 
 void TxOrphanage::AddChildrenToWorkSet(const CTransaction& tx)
@@ -303,4 +309,13 @@ void TxOrphanage::EraseOrphanOfPeer(const uint256& wtxid, NodeId peer)
             SubtractOrphanBytes(wtxid_it->second->second.tx->GetTotalSize(), peer);
         }
     }
+}
+
+std::optional<std::vector<uint256>> TxOrphanage::GetParentTxids(const uint256& wtxid)
+{
+    AssertLockNotHeld(m_mutex);
+    LOCK(m_mutex);
+    const auto it = m_wtxid_to_orphan_it.find(wtxid);
+    if (it != m_wtxid_to_orphan_it.end()) return it->second->second.parent_txids;
+    return std::nullopt;
 }
