@@ -29,6 +29,9 @@ public:
     /** Get reference to txrequest tracker. */
     TxRequestTracker& GetTxRequestRef() { return m_impl->GetTxRequestRef(); }
 
+    /** Should be called when a peer completes version handshake. */
+    void ConnectedPeer(NodeId nodeid, const TxDownloadConnectionInfo& info) { m_impl->ConnectedPeer(nodeid, info); }
+
     /** Deletes all txrequest announcements and orphans for a given peer. */
     void DisconnectedPeer(NodeId nodeid) { m_impl->DisconnectedPeer(nodeid); }
 
@@ -55,6 +58,21 @@ public:
 
     /** Whether this transaction is found in orphanage, recently confirmed, or recently rejected transactions. */
     bool AlreadyHaveTx(const GenTxid& gtxid) const { return m_impl->AlreadyHaveTx(gtxid); }
+
+    /** New inv has been received. May be added as a candidate to txrequest. */
+    void ReceivedTxInv(NodeId peer, const GenTxid& gtxid, std::chrono::microseconds now)
+        { return m_impl->ReceivedTxInv(peer, gtxid, now); }
+
+    /** Get getdata requests to send. */
+    std::vector<GenTxid> GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time) {
+        return m_impl->GetRequestsToSend(nodeid, current_time);
+    }
+
+    /** Record in txrequest that we received a tx. Returns whether we already have tx. */
+    bool ReceivedTx(NodeId nodeid, const CTransactionRef& ptx) { return m_impl->ReceivedTx(nodeid, ptx); }
+
+    /** Should be called when a notfound for a tx has been received. */
+    void ReceivedNotFound(NodeId nodeid, const std::vector<uint256>& txhashes) { m_impl->ReceivedNotFound(nodeid, txhashes); }
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H
