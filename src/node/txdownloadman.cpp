@@ -312,7 +312,7 @@ public:
     }
 
     void RecentConfirmedReset() { m_recent_confirmed_transactions.reset(); }
-    bool ShouldReject(const GenTxid& gtxid, const uint256& blockhash)
+    bool ShouldReject(const GenTxid& gtxid, const uint256& blockhash, bool include_orphanage)
     {
         if (blockhash != hashRecentRejectsChainTip) {
             // If the chain tip has changed previously rejected transactions
@@ -322,7 +322,7 @@ public:
             hashRecentRejectsChainTip = blockhash;
             m_recent_rejects.reset();
         }
-        if (m_orphanage.HaveTx(gtxid)) return true;
+        if (include_orphanage && m_orphanage.HaveTx(gtxid)) return true;
         if (m_recent_confirmed_transactions.contains(gtxid.GetHash())) return true;
         if (m_recent_rejects.contains(gtxid.GetHash())) return true;
         return false;
@@ -413,5 +413,5 @@ void TxDownloadManager::ReceivedResponse(NodeId peer, const uint256& txhash, boo
 size_t TxDownloadManager::TxRequestCount(NodeId peer) const { return m_impl->TxRequestCount(peer); }
 size_t TxDownloadManager::TxRequestSize() const { return m_impl->TxRequestSize(); }
 void TxDownloadManager::RecentConfirmedReset() { m_impl->RecentConfirmedReset(); }
-bool TxDownloadManager::ShouldReject(const GenTxid& gtxid, const uint256& blockhash) { return m_impl->ShouldReject(gtxid, blockhash); }
+bool TxDownloadManager::ShouldReject(const GenTxid& gtxid, const uint256& blockhash, bool include_orphanage) { return m_impl->ShouldReject(gtxid, blockhash, include_orphanage); }
 } // namespace node

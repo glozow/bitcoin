@@ -109,7 +109,7 @@ public:
     /** Returns whether this txhash should be rejected, i.e. is in recent_rejects,
      * recent_confirmed_transactions, or orphanage. The recent_rejects filter will be reset if the
      * blockhash does not match hashRecentRejectsChainTip. */
-    bool ShouldReject(const GenTxid& gtxid, const uint256& blockhash);
+    bool ShouldReject(const GenTxid& gtxid, const uint256& blockhash, bool include_orphanage);
 
     /** Should be called when block is disconnected. Resets recent_confirmed_transactions. */
     void RecentConfirmedReset();

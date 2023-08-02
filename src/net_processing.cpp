@@ -765,7 +765,7 @@ private:
     /** Stalling timeout for blocks in IBD */
     std::atomic<std::chrono::seconds> m_block_stalling_timeout{BLOCK_STALLING_TIMEOUT_DEFAULT};
 
-    bool AlreadyHaveTx(const GenTxid& gtxid)
+    bool AlreadyHaveTx(const GenTxid& gtxid, bool include_orphanage=true)
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main, m_tx_download_mutex);
 
     /**
@@ -1931,11 +1931,11 @@ void PeerManagerImpl::BlockChecked(const CBlock& block, const BlockValidationSta
 //
 
 
-bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid)
+bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid, bool include_orphanage)
 {
     AssertLockHeld(::cs_main);
     AssertLockHeld(m_tx_download_mutex);
-    if (m_txdownloadman.ShouldReject(gtxid, m_chainman.ActiveChain().Tip()->GetBlockHash())) return true;
+    if (m_txdownloadman.ShouldReject(gtxid, m_chainman.ActiveChain().Tip()->GetBlockHash(), include_orphanage)) return true;
     return m_mempool.exists(gtxid);
 }
 
@@ -3725,7 +3725,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     return;
                 }
                 const GenTxid gtxid = ToGenTxid(inv);
-                const bool fAlreadyHave = AlreadyHaveTx(gtxid);
+                const bool fAlreadyHave = AlreadyHaveTx(gtxid, /*include_orphanage=*/false);
                 LogPrint(BCLog::NET, "got inv: %s  %s peer=%d\n", inv.ToString(), fAlreadyHave ? "have" : "new", pfrom.GetId());
 
                 AddKnownTx(*peer, inv.hash);
