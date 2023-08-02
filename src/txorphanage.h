@@ -24,6 +24,9 @@ public:
       @returns true if the transaction was added as a new orphan. */
     bool AddTx(const CTransactionRef& tx, NodeId peer, const std::vector<uint256>& parent_txids) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
+    /** Add an additional announcer to an orphan if it exists. Otherwise, do nothing. */
+    void AddAnnouncer(const uint256& wtxid, NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
     /** Get orphan transaction by wtxid. Returns nullptr if we don't have it anymore. */
     CTransactionRef GetTx(const uint256& wtxid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
@@ -87,7 +90,7 @@ public:
     void SubtractOrphanBytes(unsigned int size, NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
 
     /** Get an orphan's parent_txids, or std::nullopt if the orphan is not present. */
-    std::optional<std::vector<uint256>> GetParentTxids(const uint256& wtxid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    std::optional<std::vector<uint256>> GetParentTxids(const uint256& wtxid) const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
 protected:
     unsigned int m_total_orphan_bytes{0};

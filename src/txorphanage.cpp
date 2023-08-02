@@ -71,6 +71,20 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer, const std::vecto
              m_orphans.size(), m_outpoint_to_orphan_it.size());
     return true;
 }
+void TxOrphanage::AddAnnouncer(const uint256& wtxid, NodeId peer)
+{
+    LOCK(m_mutex);
+    const auto it = m_wtxid_to_orphan_it.find(wtxid);
+    if (it != m_wtxid_to_orphan_it.end()) {
+        Assume(!it->second->second.announcers.empty());
+        const auto ret = it->second->second.announcers.insert(peer);
+        if (ret.second) {
+            LogPrint(BCLog::TXPACKAGES, "added peer=%d as announcer of orphan tx %s\n", peer, wtxid.ToString());
+            m_peer_bytes_used.try_emplace(peer, 0);
+            m_peer_bytes_used.at(peer) += it->second->second.tx->GetTotalSize();
+        }
+    }
+}
 
 CTransactionRef TxOrphanage::GetTx(const uint256& wtxid)
 {
@@ -311,7 +325,7 @@ void TxOrphanage::EraseOrphanOfPeer(const uint256& wtxid, NodeId peer)
     }
 }
 
-std::optional<std::vector<uint256>> TxOrphanage::GetParentTxids(const uint256& wtxid)
+std::optional<std::vector<uint256>> TxOrphanage::GetParentTxids(const uint256& wtxid) const
 {
     AssertLockNotHeld(m_mutex);
     LOCK(m_mutex);
