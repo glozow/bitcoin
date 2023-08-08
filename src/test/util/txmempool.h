@@ -5,12 +5,14 @@
 #ifndef BITCOIN_TEST_UTIL_TXMEMPOOL_H
 #define BITCOIN_TEST_UTIL_TXMEMPOOL_H
 
+#include <policy/packages.h>
 #include <txmempool.h>
 #include <util/time.h>
 
 namespace node {
 struct NodeContext;
 }
+struct PackageMempoolAcceptResult;
 
 CTxMemPool::Options MemPoolOptionsForTest(const node::NodeContext& node);
 
@@ -36,4 +38,11 @@ struct TestMemPoolEntryHelper {
     TestMemPoolEntryHelper& SigOpsCost(unsigned int _sigopsCost) { sigOpCost = _sigopsCost; return *this; }
 };
 
+/** Check expected properties for every PackageMempoolAcceptResult, regardless of value. Returns
+ * false if an error occurs, true otherwise.  String s will be populated with an error message if
+ * the return value is false.  If mempool is provided, checks that the expected transactions are in
+ * mempool (this should be set to nullptr for a test_accept).
+*/
+bool CheckPackageMempoolAcceptResult(const Package& txns, const PackageMempoolAcceptResult& result, bool expect_valid,
+                                            const CTxMemPool* mempool, std::string& s);
 #endif // BITCOIN_TEST_UTIL_TXMEMPOOL_H
