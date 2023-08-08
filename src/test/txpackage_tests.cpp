@@ -87,6 +87,58 @@ bool PackageSorted(const Package& package_to_check, const Package& sorted)
     return true;
 }
 
+// Check expected properties for every PackageMempoolAcceptResult, regardless of value:
+// If mempool is provided, checks that the expected transactions are in mempool (set to nullptr for
+// a test_accept).
+void CheckPackageMempoolAcceptResult(const Package& txns, const PackageMempoolAcceptResult& result, bool expect_valid, const CTxMemPool* mempool)
+{
+    if (expect_valid) {
+        BOOST_CHECK_MESSAGE(result.m_state.IsValid(), "Package validation unexpectedly failed: " << result.m_state.GetRejectReason());
+    } else {
+        BOOST_CHECK_MESSAGE(result.m_state.IsInvalid(), "Package validation unexpectedly succeeded.");
+    }
+    BOOST_CHECK_EQUAL(txns.size(), result.m_tx_results.size());
+    for (const auto& tx : txns) {
+        const auto& wtxid = tx->GetWitnessHash();
+        BOOST_CHECK_MESSAGE(result.m_tx_results.count(wtxid) > 0, "result not found for tx " << wtxid);
+        const auto& atmp_result = result.m_tx_results.at(wtxid);
+
+        const bool valid{atmp_result.m_result_type == MempoolAcceptResult::ResultType::VALID};
+        if (valid) {
+            BOOST_CHECK_MESSAGE(atmp_result.m_state.IsValid(),
+                "Transaction " << tx->GetWitnessHash().ToString() << " unexpectedly failed: " << atmp_result.m_state.GetRejectReason());
+        }
+        //m_replaced_transactions should exist iff the result was VALID
+        BOOST_CHECK_EQUAL(atmp_result.m_replaced_transactions.has_value(), valid);
+
+        // m_vsize and m_base_fees should exist iff the result was VALID or MEMPOOL_ENTRY
+        const bool mempool_entry{atmp_result.m_result_type == MempoolAcceptResult::ResultType::MEMPOOL_ENTRY};
+        BOOST_CHECK_EQUAL(atmp_result.m_base_fees.has_value(), valid || mempool_entry);
+        BOOST_CHECK_EQUAL(atmp_result.m_vsize.has_value(), valid || mempool_entry);
+
+        // m_other_wtxid should exist iff the result was DIFFERENT_WITNESS
+        BOOST_CHECK_EQUAL(atmp_result.m_other_wtxid.has_value(),
+            atmp_result.m_result_type == MempoolAcceptResult::ResultType::DIFFERENT_WITNESS);
+
+        // m_effective_feerate and m_wtxids_fee_calculations should exist iff the result was valid or
+        // the failure was TX_SINGLE_FAILURE
+        const bool valid_or_single_failure{atmp_result.m_result_type == MempoolAcceptResult::ResultType::VALID ||
+            atmp_result.m_state.GetResult() == TxValidationResult::TX_SINGLE_FAILURE};
+        BOOST_CHECK_EQUAL(atmp_result.m_effective_feerate.has_value(), valid_or_single_failure);
+        BOOST_CHECK_EQUAL(atmp_result.m_wtxids_fee_calculations.has_value(), valid_or_single_failure);
+
+        if (mempool) {
+            // The tx by txid should be in the mempool iff the result was not INVALID.
+            const bool txid_in_mempool{atmp_result.m_result_type != MempoolAcceptResult::ResultType::INVALID};
+            BOOST_CHECK_EQUAL(mempool->exists(GenTxid::Txid(tx->GetHash())), txid_in_mempool);
+            // Additionally, if the result was DIFFERENT_WITNESS, we shouldn't be able to find the tx in mempool by wtxid.
+            if (tx->HasWitness() && atmp_result.m_result_type == MempoolAcceptResult::ResultType::DIFFERENT_WITNESS) {
+                BOOST_CHECK(!mempool->exists(GenTxid::Wtxid(wtxid)));
+            }
+        }
+    }
+}
+
 BOOST_FIXTURE_TEST_CASE(package_sanitization_tests, TestChain100Setup)
 {
     // Packages can't have more than 25 transactions.
