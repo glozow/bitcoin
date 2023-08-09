@@ -126,11 +126,17 @@ std::optional<std::string> CheckEphemeralSpends(const CTransactionRef& ptx,
     return std::nullopt;
 }
 
-bool CheckValidEphemeralTx(const CTransaction& tx, TxValidationState& state, const CCoinsViewCache& inputs, CAmount& txfee)
+bool CheckValidEphemeralTx(const CTransaction& tx, TxValidationState& state, const CCoinsViewCache& inputs, CAmount& txfee, bool package_context)
 {
     // No anchor; it's ok
     if (!HasPayToAnchor(tx)) {
         return true;
+    }
+
+    /* Only allow in package feerate context */
+    if (!package_context) {
+        /* Allows re-evaluation in package context */
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "missing-ephemeral-spends");
     }
 
     if (tx.nVersion != 3) {

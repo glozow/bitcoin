@@ -833,8 +833,8 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     }
 
     // We check for ephemeral tx properties now that we have access to ws.m_base_fees.
-    if (!CheckValidEphemeralTx(tx, state, m_view, ws.m_base_fees)) {
-        return false; // state filled in by IsValidEphemeralTx
+    if (!CheckValidEphemeralTx(tx, state, m_view, ws.m_base_fees, args.m_package_submission)) {
+        return false; // state filled in by CheckValidEphemeralTx
     }
 
     if (m_pool.m_require_standard && !AreInputsStandard(tx, m_view)) {

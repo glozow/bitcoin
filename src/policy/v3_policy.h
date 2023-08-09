@@ -53,7 +53,8 @@ std::optional<std::string> CheckEphemeralSpends(const CTransactionRef& ptx,
 bool CheckValidEphemeralTx(const CTransaction& tx,
                            TxValidationState& state,
                            const CCoinsViewCache& inputs,
-                           CAmount& txfee);
+                           CAmount& txfee,
+                           bool package_context);
 
 /** The following rules apply to V3 transactions:
  * 1. Tx with all of its ancestors (including non-nVersion=3) must be within V3_ANCESTOR_SIZE_LIMIT_KVB.
