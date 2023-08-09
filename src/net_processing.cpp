@@ -2960,7 +2960,8 @@ bool PeerManagerImpl::ProcessInvalidTx(const CTransactionRef& tx, NodeId nodeid,
 {
     AssertLockHeld(cs_main);
     AssertLockNotHeld(m_peer_mutex);
-    LogPrint(BCLog::MEMPOOLREJ, "%s from peer=%d was not accepted: %s\n", tx->GetHash().ToString(), nodeid, state.ToString());
+    LogPrint(BCLog::MEMPOOLREJ, "%s (wtxid=%s) from peer=%d was not accepted: %s\n",
+             tx->GetHash().ToString(), tx->GetWitnessHash().ToString(), nodeid, state.ToString());
     // Maybe punish peer that gave us an tx
     MaybePunishNodeForTx(nodeid, state);
 
@@ -2993,7 +2994,8 @@ bool PeerManagerImpl::ProcessInvalidTx(const CTransactionRef& tx, NodeId nodeid,
         if (std::any_of(tx->vin.cbegin(), tx->vin.cend(),
             [&](const auto& input) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
             { return m_recent_rejects.contains(input.prevout.hash); })) {
-            LogPrint(BCLog::MEMPOOL, "not keeping orphan with rejected parents %s\n",tx->GetHash().ToString());
+            LogPrint(BCLog::MEMPOOL, "not keeping orphan with rejected parents %s (wtxid=%s)\n",
+                     tx->GetHash().ToString(), tx->GetWitnessHash().ToString());
             // We will continue to reject this tx since it has rejected
             // parents so avoid re-requesting it from other peers.
             // Here we add both the txid and the wtxid, as we know that
@@ -3053,9 +3055,10 @@ void PeerManagerImpl::ProcessValidTx(const CTransactionRef& tx, NodeId nodeid, c
     m_txrequest.ForgetTxHash(tx->GetHash());
     m_txrequest.ForgetTxHash(tx->GetWitnessHash());
     m_orphanage.EraseTx(tx->GetHash());
-    LogPrint(BCLog::MEMPOOL, "AcceptToMemoryPool: peer=%d: accepted %s (poolsz %u txn, %u kB)\n",
+    LogPrint(BCLog::MEMPOOL, "AcceptToMemoryPool: peer=%d: accepted %s (wtxid=%s) (poolsz %u txn, %u kB)\n",
              nodeid,
              tx->GetHash().ToString(),
+             tx->GetWitnessHash().ToString(),
              m_mempool.size(), m_mempool.DynamicMemoryUsage() / 1000);
 
     RelayTransaction(tx->GetHash(), tx->GetWitnessHash());
@@ -3076,14 +3079,16 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
         const MempoolAcceptResult result = m_chainman.ProcessTransaction(porphanTx);
         const TxValidationState& state = result.m_state;
         const uint256& orphanHash = porphanTx->GetHash();
+        const uint256& orphan_wtxid = porphanTx->GetWitnessHash();
 
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-            LogPrint(BCLog::MEMPOOL, "   accepted orphan tx %s\n", orphanHash.ToString());
+            LogPrint(BCLog::MEMPOOL, "   accepted orphan tx %s (wtxid=%s)\n", orphanHash.ToString(), orphan_wtxid.ToString());
             ProcessValidTx(porphanTx, peer.m_id, result.m_replaced_transactions.value());
             return true;
         } else {
-            LogPrint(BCLog::MEMPOOL, "   invalid orphan tx %s from peer=%d. %s\n",
+            LogPrint(BCLog::MEMPOOL, "   invalid orphan tx %s (wtxid=%s) from peer=%d. %s\n",
                 orphanHash.ToString(),
+                orphan_wtxid.ToString(),
                 peer.m_id,
                 state.ToString());
             // Ignoring the return value. Within orphan processing, we do not make
@@ -4241,9 +4246,11 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 // permission, even if they were already in the mempool, allowing
                 // the node to function as a gateway for nodes hidden behind it.
                 if (!m_mempool.exists(GenTxid::Txid(tx.GetHash()))) {
-                    LogPrintf("Not relaying non-mempool transaction %s from forcerelay peer=%d\n", tx.GetHash().ToString(), pfrom.GetId());
+                    LogPrintf("Not relaying non-mempool transaction %s (wtxid=%s) from forcerelay peer=%d\n",
+                              tx.GetHash().ToString(), tx.GetWitnessHash().ToString(), pfrom.GetId());
                 } else {
-                    LogPrintf("Force relaying tx %s from peer=%d\n", tx.GetHash().ToString(), pfrom.GetId());
+                    LogPrintf("Force relaying tx %s (wtxid=%s) from peer=%d\n",
+                              tx.GetHash().ToString(), tx.GetWitnessHash().ToString(), pfrom.GetId());
                     RelayTransaction(tx.GetHash(), tx.GetWitnessHash());
                 }
             }
