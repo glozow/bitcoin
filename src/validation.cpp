@@ -529,7 +529,7 @@ public:
                             /* m_coins_to_uncache */ package_args.m_coins_to_uncache,
                             /* m_test_accept */ package_args.m_test_accept,
                             /* m_allow_replacement */ true,
-                            /* m_package_submission */ false,
+                            /* m_package_submission */ package_args.m_package_submission,
                             /* m_package_feerates */ false, // only 1 transaction
                             /* m_allow_carveouts */ false,
             };
@@ -649,7 +649,7 @@ private:
     // The package may end up partially-submitted after size limiting; returns true if all
     // transactions are successfully added to the mempool, false otherwise.
     bool SubmitPackage(const ATMPArgs& args, std::vector<Workspace>& workspaces, PackageValidationState& package_state,
-                       std::map<const uint256, const MempoolAcceptResult>& results)
+                       std::map<uint256, MempoolAcceptResult>& results)
          EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Compare a package's feerate against minimum allowed.
@@ -1257,7 +1257,7 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
 
 bool MemPoolAccept::SubmitPackage(const ATMPArgs& args, std::vector<Workspace>& workspaces,
                                   PackageValidationState& package_state,
-                                  std::map<const uint256, const MempoolAcceptResult>& results)
+                                  std::map<uint256, MempoolAcceptResult>& results)
 {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
@@ -1312,10 +1312,6 @@ bool MemPoolAccept::SubmitPackage(const ATMPArgs& args, std::vector<Workspace>& 
         }
     }
 
-    // It may or may not be the case that all the transactions made it into the mempool. Regardless,
-    // make sure we haven't exceeded max mempool size.
-    LimitMempoolSize(m_pool, m_active_chainstate.CoinsTip());
-
     std::vector<uint256> all_package_wtxids;
     all_package_wtxids.reserve(workspaces.size());
     std::transform(workspaces.cbegin(), workspaces.cend(), std::back_inserter(all_package_wtxids),
@@ -1327,17 +1323,9 @@ bool MemPoolAccept::SubmitPackage(const ATMPArgs& args, std::vector<Workspace>& 
             CFeeRate{ws.m_modified_fees, static_cast<uint32_t>(ws.m_vsize)};
         const auto effective_feerate_wtxids = args.m_package_feerates ? all_package_wtxids :
             std::vector<uint256>({ws.m_ptx->GetWitnessHash()});
-        if (m_pool.exists(GenTxid::Wtxid(ws.m_ptx->GetWitnessHash()))) {
-            results.emplace(ws.m_ptx->GetWitnessHash(),
-                MempoolAcceptResult::Success(std::move(m_replaced_transactions), ws.m_vsize,
-                                             ws.m_base_fees, effective_feerate, effective_feerate_wtxids));
-            GetMainSignals().TransactionAddedToMempool(ws.m_ptx, m_pool.GetAndIncrementSequence());
-        } else {
-            all_submitted = false;
-            ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "mempool full");
-            package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
-            results.emplace(ws.m_ptx->GetWitnessHash(), MempoolAcceptResult::Failure(ws.m_state));
-        }
+        results.emplace(ws.m_ptx->GetWitnessHash(),
+            MempoolAcceptResult::Success(std::move(m_replaced_transactions), ws.m_vsize,
+                                         ws.m_base_fees, effective_feerate, effective_feerate_wtxids));
     }
     return all_submitted;
 }
@@ -1387,7 +1375,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     workspaces.reserve(txns.size());
     std::transform(txns.cbegin(), txns.cend(), std::back_inserter(workspaces),
                    [](const auto& tx) { return Workspace(tx); });
-    std::map<const uint256, const MempoolAcceptResult> results;
+    std::map<uint256, MempoolAcceptResult> results;
 
     if (const auto v3_violation{CheckV3Inheritance(txns)}) {
         const auto [parent_wtxid, child_wtxid, child_v3] = v3_violation.value();
@@ -1481,10 +1469,10 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
 
     if (!SubmitPackage(args, workspaces, package_state, results)) {
         // PackageValidationState filled in by SubmitPackage().
-        return PackageMempoolAcceptResult(package_state, std::move(results));
+        return PackageMempoolAcceptResult(package_state, results);
     }
 
-    return PackageMempoolAcceptResult(package_state, std::move(results));
+    return PackageMempoolAcceptResult(package_state, results);
 }
 
 PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, ATMPArgs& args)
@@ -1543,8 +1531,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     m_view.SetBackend(m_dummy);
 
     LOCK(m_pool.cs);
-    // Stores final results that won't change
-    std::map<const uint256, const MempoolAcceptResult> results_final;
+    // Stores results for in-mempool transactions, i.e. they were already in mempool or we submitted them.
+    std::map<uint256, MempoolAcceptResult> results_final;
     // Node operators are free to set their mempool policies however they please, nodes may receive
     // transactions in different orders, and malicious counterparties may try to take advantage of
     // policy differences to pin or delay propagation of transactions. As such, it's possible for
@@ -1630,31 +1618,44 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
         }
     }
 
-    // Quit early because package validation won't change the result or the entire package has
-    // already been submitted.
-    if (quit_early || txns_package_eval.empty()) {
-        for (const auto& [wtxid, mempoolaccept_res] : individual_results_nonfinal) {
-            Assume(results_final.emplace(wtxid, mempoolaccept_res).second);
-            Assume(mempoolaccept_res.m_result_type == MempoolAcceptResult::ResultType::INVALID);
+    auto submission_result = quit_early || txns_package_eval.empty() ?
+        PackageMempoolAcceptResult(package_state_quit_early, {}) :
+        AcceptPackageWrappingSingle(txns_package_eval);
+
+	// Ensure we don't exceed mempool limits.
+	LimitMempoolSize(m_pool, m_active_chainstate.CoinsTip());
+
+    // Attempt to provide a result for each transaction.
+    for (const auto& tx : package) {
+        const auto& wtxid = tx->GetWitnessHash();
+        if (submission_result.m_tx_results.count(wtxid) > 0) {
+            // We should not have tried to submit this transaction if it was in mempool.
+            Assume(results_final.count(wtxid) == 0);
+            // Change result if the transaction was submitted and then evicted.
+            if (submission_result.m_tx_results.at(wtxid).m_result_type == MempoolAcceptResult::ResultType::VALID &&
+                !m_pool.exists(GenTxid::Wtxid(wtxid))) {
+                TxValidationState mempool_full_state;
+                mempool_full_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "mempool full");
+                submission_result.m_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
+                submission_result.m_tx_results.erase(wtxid);
+                submission_result.m_tx_results.emplace(wtxid, MempoolAcceptResult::Failure(mempool_full_state));
+            }
+        } else if (const auto it{results_final.find(wtxid)}; it != results_final.end()) {
+            // Transaction was in mempool. Check if it's still there.
+            Assume(it->second.m_result_type != MempoolAcceptResult::ResultType::INVALID);
+            Assume(individual_results_nonfinal.count(wtxid) == 0);
+            if (!m_pool.exists(GenTxid::Wtxid(wtxid))) {
+                TxValidationState mempool_full_state;
+                mempool_full_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "mempool full");
+                submission_result.m_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
+                submission_result.m_tx_results.erase(wtxid);
+                submission_result.m_tx_results.emplace(wtxid, MempoolAcceptResult::Failure(mempool_full_state));
+            }
+        } else if (const auto it{individual_results_nonfinal.find(wtxid)}; it != individual_results_nonfinal.end()) {
+            Assume(it->second.m_result_type == MempoolAcceptResult::ResultType::INVALID);
+            // Interesting result from previous processing.
+            results_final.emplace(wtxid, it->second);
         }
-        return PackageMempoolAcceptResult(package_state_quit_early, std::move(results_final));
-    }
-    // Validate the (deduplicated) transactions as a package. Note that submission_result has its
-    // own PackageValidationState; package_state_quit_early is unused past this point.
-    auto submission_result = AcceptPackageWrappingSingle(txns_package_eval);
-    // Include already-in-mempool transaction results in the final result.
-    for (const auto& [wtxid, mempoolaccept_res] : results_final) {
-        Assume(submission_result.m_tx_results.emplace(wtxid, mempoolaccept_res).second);
-        Assume(mempoolaccept_res.m_result_type != MempoolAcceptResult::ResultType::INVALID ||
-               mempoolaccept_res.m_state.GetResult() == TxValidationResult::TX_MISSING_INPUTS);
-    }
-    if (submission_result.m_state.GetResult() == PackageValidationResult::PCKG_TX) {
-        // Package validation failed because one or more transactions failed. Provide a result for
-        // each transaction; if a transaction doesn't have an entry in submission_result,
-        // include the previous individual failure reason.
-        submission_result.m_tx_results.insert(individual_results_nonfinal.cbegin(),
-                                              individual_results_nonfinal.cend());
-        Assume(submission_result.m_tx_results.size() == package.size());
     }
     return submission_result;
 }

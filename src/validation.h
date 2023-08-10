@@ -211,22 +211,22 @@ private:
 */
 struct PackageMempoolAcceptResult
 {
-    const PackageValidationState m_state;
+    PackageValidationState m_state;
     /**
     * Map from wtxid to finished MempoolAcceptResults. The client is responsible
     * for keeping track of the transaction objects themselves. If a result is not
     * present, it means validation was unfinished for that transaction. If there
     * was a package-wide error (see result in m_state), m_tx_results will be empty.
     */
-    std::map<const uint256, const MempoolAcceptResult> m_tx_results;
+    std::map<uint256, MempoolAcceptResult> m_tx_results;
 
     explicit PackageMempoolAcceptResult(PackageValidationState state,
-                                        std::map<const uint256, const MempoolAcceptResult>&& results)
-        : m_state{state}, m_tx_results(std::move(results)) {}
+                                        const std::map<uint256, MempoolAcceptResult>& results)
+        : m_state{state}, m_tx_results(results) {}
 
     explicit PackageMempoolAcceptResult(PackageValidationState state, CFeeRate feerate,
-                                        std::map<const uint256, const MempoolAcceptResult>&& results)
-        : m_state{state}, m_tx_results(std::move(results)) {}
+                                        const std::map<uint256, MempoolAcceptResult>& results)
+        : m_state{state}, m_tx_results(results) {}
 
     /** Constructor to create a PackageMempoolAcceptResult from a single MempoolAcceptResult */
     explicit PackageMempoolAcceptResult(const uint256& wtxid, const MempoolAcceptResult& result)
