@@ -289,4 +289,30 @@ std::pair<bool, std::vector<uint256>> TxDownloadImpl::NewOrphanTx(const CTransac
     m_txrequest.ForgetTxHash(wtxid);
     return {!already_in_orphanage && still_in_orphanage,  unique_parents};
 }
+
+bool TxDownloadImpl::HaveMoreWork(NodeId nodeid) const
+{
+    return m_orphanage.HaveTxToReconsider(nodeid);
+}
+
+CTransactionRef TxDownloadImpl::GetTxToReconsider(NodeId nodeid)
+{
+    return m_orphanage.GetTxToReconsider(nodeid);
+}
+
+void TxDownloadImpl::CheckIsEmpty() const
+{
+    assert(m_orphanage.Size() == 0);
+    Assume(m_orphanage.TotalOrphanBytes() == 0);
+    assert(m_txrequest.Size() == 0);
+    Assume(m_peer_info.empty());
+    Assume(m_num_wtxid_peers == 0);
+}
+
+void TxDownloadImpl::CheckIsEmpty(NodeId nodeid) const
+{
+    Assume(m_orphanage.BytesFromPeer(nodeid) == 0);
+    assert(m_txrequest.Count(nodeid) == 0);
+    Assume(m_peer_info.count(nodeid) == 0);
+}
 } // namespace node

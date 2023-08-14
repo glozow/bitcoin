@@ -24,11 +24,6 @@ public:
     explicit TxDownloadManager(const TxDownloadOptions& options) : m_impl{std::make_unique<TxDownloadImpl>(options)} {}
     ~TxDownloadManager() = default;
 
-    /** Get reference to orphanage. */
-    TxOrphanage& GetOrphanageRef() { return m_impl->GetOrphanageRef(); }
-    /** Get reference to txrequest tracker. */
-    TxRequestTracker& GetTxRequestRef() { return m_impl->GetTxRequestRef(); }
-
     /** Should be called when a peer completes version handshake. */
     void ConnectedPeer(NodeId nodeid, const TxDownloadConnectionInfo& info) { m_impl->ConnectedPeer(nodeid, info); }
 
@@ -80,6 +75,19 @@ public:
                                                       std::chrono::microseconds current_time) {
         return m_impl->NewOrphanTx(tx, nodeid, current_time);
     }
+
+    /** Whether there are any orphans to reconsider for this peer. */
+    bool HaveMoreWork(NodeId nodeid) const { return m_impl->HaveMoreWork(nodeid); }
+
+    /** Returns the next orphan to reconsider, or nullptr if there isn't one. */
+    CTransactionRef GetTxToReconsider(NodeId nodeid) { return m_impl->GetTxToReconsider(nodeid); }
+
+    /** Should be called when we are not connected to any peers. Checks that all data strutures are empty. */
+    void CheckIsEmpty() const { m_impl->CheckIsEmpty(); }
+
+    /** Should be called when a node is being finalized. Checks that data structures are no longer
+     * keeping data for this peer. */
+    void CheckIsEmpty(NodeId nodeid) const { m_impl->CheckIsEmpty(nodeid); }
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H
