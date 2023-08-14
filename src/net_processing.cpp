@@ -781,7 +781,7 @@ private:
     std::atomic<std::chrono::seconds> m_block_stalling_timeout{BLOCK_STALLING_TIMEOUT_DEFAULT};
 
     bool AlreadyHaveTx(const GenTxid& gtxid)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main, m_tx_download_mutex, !m_recent_confirmed_transactions_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex, !m_recent_confirmed_transactions_mutex);
 
     /**
      * Filter for transactions that were recently rejected by the mempool.
@@ -1882,6 +1882,15 @@ void PeerManagerImpl::BlockConnected(const std::shared_ptr<const CBlock>& pblock
         }
     }
 
+    if (m_chainman.ActiveChain().Tip()->GetBlockHash() != hashRecentRejectsChainTip) {
+        // If the chain tip has changed previously rejected transactions
+        // might be now valid, e.g. due to a nLockTime'd tx becoming valid,
+        // or a double-spend. Reset the rejects filter and give those
+        // txs a second chance.
+        hashRecentRejectsChainTip = m_chainman.ActiveChain().Tip()->GetBlockHash();
+        m_recent_rejects.reset();
+    }
+
     // In case the dynamic timeout was doubled once or more, reduce it slowly back to its default value
     auto stalling_timeout = m_block_stalling_timeout.load();
     Assume(stalling_timeout >= BLOCK_STALLING_TIMEOUT_DEFAULT);
@@ -2045,16 +2054,6 @@ void PeerManagerImpl::BlockChecked(const CBlock& block, const BlockValidationSta
 
 bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid)
 {
-    AssertLockHeld(::cs_main);
-    if (m_chainman.ActiveChain().Tip()->GetBlockHash() != hashRecentRejectsChainTip) {
-        // If the chain tip has changed previously rejected transactions
-        // might be now valid, e.g. due to a nLockTime'd tx becoming valid,
-        // or a double-spend. Reset the rejects filter and give those
-        // txs a second chance.
-        hashRecentRejectsChainTip = m_chainman.ActiveChain().Tip()->GetBlockHash();
-        m_recent_rejects.reset();
-    }
-
     const uint256& hash = gtxid.GetHash();
 
     if (m_txdownloadman.GetOrphanageRef().HaveTx(gtxid)) return true;
