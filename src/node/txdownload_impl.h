@@ -172,6 +172,18 @@ public:
      * orphanage and staying there. */
     std::pair<bool, std::vector<Txid>> NewOrphanTx(const CTransactionRef& tx, NodeId nodeid,
                                                    std::chrono::microseconds current_time);
+
+    /** Whether there are any orphans in this peer's work set. */
+    bool HaveMoreWork(NodeId nodeid) const;
+
+    /** Get orphan transaction from this peer's workset. */
+    CTransactionRef GetTxToReconsider(NodeId nodeid);
+
+    /** Size() of orphanage, txrequest, and orphan request tracker are equal to 0. */
+    void CheckIsEmpty() const;
+
+    /** Count(nodeid) of orphanage, txrequest, and orphan request tracker are equal to 0. */
+    void CheckIsEmpty(NodeId nodeid) const;
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOAD_IMPL_H

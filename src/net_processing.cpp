@@ -1443,8 +1443,7 @@ void PeerManagerImpl::InitializeNode(CNode& node, ServiceFlags our_services)
     {
         LOCK(cs_main); // For m_node_states
         m_node_states.emplace_hint(m_node_states.end(), std::piecewise_construct, std::forward_as_tuple(nodeid), std::forward_as_tuple(node.IsInboundConn()));
-        LOCK(m_tx_download_mutex);
-        assert(m_txdownloadman.GetTxRequestRef().Count(nodeid) == 0);
+        WITH_LOCK(m_tx_download_mutex, return m_txdownloadman.CheckIsEmpty(nodeid););
     }
     PeerRef peer = std::make_shared<Peer>(nodeid, our_services);
     {
@@ -1531,9 +1530,7 @@ void PeerManagerImpl::FinalizeNode(const CNode& node)
         assert(m_peers_downloading_from == 0);
         assert(m_outbound_peers_with_protect_from_disconnect == 0);
         assert(m_wtxid_relay_peers == 0);
-        LOCK(m_tx_download_mutex);
-        assert(m_txdownloadman.GetTxRequestRef().Size() == 0);
-        assert(m_txdownloadman.GetOrphanageRef().Size() == 0);
+        WITH_LOCK(m_tx_download_mutex, return m_txdownloadman.CheckIsEmpty(););
     }
     } // cs_main
     if (node.fSuccessfullyConnected && misbehavior == 0 &&
@@ -2906,7 +2903,7 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
 
     CTransactionRef porphanTx = nullptr;
 
-    while (CTransactionRef porphanTx = m_txdownloadman.GetOrphanageRef().GetTxToReconsider(peer.m_id)) {
+    while (CTransactionRef porphanTx = m_txdownloadman.GetTxToReconsider(peer.m_id)) {
         const MempoolAcceptResult result = m_chainman.ProcessTransaction(porphanTx);
         const TxValidationState& state = result.m_state;
         const Txid& orphanHash = porphanTx->GetHash();
@@ -4121,8 +4118,8 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                 const auto& [will_process_orphan, unique_parents] = m_txdownloadman.NewOrphanTx(ptx, pfrom.GetId(), current_time);
                 if (will_process_orphan) {
                     AddToCompactExtraTransactions(ptx);
-                    for (const uint256& parent_txid : unique_parents) {
-                        AddKnownTx(*peer, parent_txid);
+                    for (const Txid& parent_txid : unique_parents) {
+                        AddKnownTx(*peer, parent_txid.ToUint256());
                     }
                 }
 
@@ -4844,7 +4841,7 @@ bool PeerManagerImpl::ProcessMessages(CNode* pfrom, std::atomic<bool>& interrupt
         //  the extra work may not be noticed, possibly resulting in an
         //  unnecessary 100ms delay)
         LOCK(m_tx_download_mutex);
-        if (m_txdownloadman.GetOrphanageRef().HaveTxToReconsider(peer->m_id)) fMoreWork = true;
+        if (m_txdownloadman.HaveMoreWork(peer->m_id)) fMoreWork = true;
     } catch (const std::exception& e) {
         LogPrint(BCLog::NET, "%s(%s, %u bytes): Exception '%s' (%s) caught\n", __func__, SanitizeString(msg.m_type), msg.m_message_size, e.what(), typeid(e).name());
     } catch (...) {
