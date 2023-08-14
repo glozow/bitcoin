@@ -9,6 +9,7 @@ from decimal import Decimal
 from test_framework.blocktools import COINBASE_MATURITY
 from test_framework.p2p import P2PTxInvStore
 from test_framework.test_framework import BitcoinTestFramework
+from test_framework.test_node import TestNode
 from test_framework.util import (
     assert_equal,
     assert_fee_amount,
@@ -70,9 +71,10 @@ class MempoolLimitTest(BitcoinTestFramework):
         base_fee = relayfee * 130
 
         self.log.info("Fill up the mempool with txs with higher fee rate")
-        for batch_of_txid in range(num_of_batches):
-            fee = (batch_of_txid + 1) * base_fee
-            create_lots_of_big_transactions(miniwallet, node, fee, tx_batch_size, txouts)
+        with node.assert_debug_log(["rolling minimum fee bumped"]):
+            for batch_of_txid in range(num_of_batches):
+                fee = (batch_of_txid + 1) * base_fee
+                create_lots_of_big_transactions(miniwallet, node, fee, tx_batch_size, txouts)
 
         self.log.info('The tx should be evicted by now')
         # The number of transactions created should be greater than the ones present in the mempool
@@ -84,13 +86,86 @@ class MempoolLimitTest(BitcoinTestFramework):
         assert_equal(node.getmempoolinfo()['minrelaytxfee'], Decimal('0.00001000'))
         assert_greater_than(node.getmempoolinfo()['mempoolminfee'], Decimal('0.00001000'))
 
+    def test_mid_package_eviction(self):
+        node = self.nodes[0]
+        self.log.info("Check a package where each parent passes the current mempoolminfee but would cause eviction")
+        current_info = node.getmempoolinfo()
+        mempoolmin_feerate = current_info["mempoolminfee"]
+        # Package with 8 big parents (ascending feerates, the lowest becomes a transaction to be
+        # evicted mid-package evaluation) and 1 below-mempoolminfee parent to be CPFP'd by the child.
+        parent_weight = 50000
+        num_big_parents = 8
+
+        # 1 tx is not enough to trigger eviction, but 8 is
+        assert_greater_than(current_info["maxmempool"] - current_info["bytes"], parent_weight)
+        assert_greater_than(parent_weight * num_big_parents, current_info["maxmempool"] - current_info["bytes"])
+
+        # The parents don't need CPFP and would be submitted individually. Each one's feerate meets
+        # the mempool min feerate but is worse than the lowest descendant feerate package.
+        parent_base_fee = (mempoolmin_feerate / 1000) * (parent_weight // 4) + Decimal('0.000001')
+        # However, when eviction is triggered, these transactions should be at the bottom.
+        # This assertion assumes parent and child are the same size.
+        self.wallet.rescan_utxos()
+
+        package_hex = []
+        parent_utxos = []
+        package_txids = []
+        for i in range(num_big_parents):
+            # Each parent transaction pays 1sat/vB more than the last one
+            fee = parent_base_fee + (i * Decimal('0.00001000') * (parent_weight // 4))
+            parent = self.wallet.create_self_transfer(fee=fee, target_weight=parent_weight, confirmed_only=True)
+            parent_utxos.append(parent["new_utxo"])
+            package_hex.append(parent["hex"])
+            package_txids.append(parent["txid"])
+            # There is room for each of these transactions independently
+            assert node.testmempoolaccept([parent["hex"]])[0]["allowed"]
+            if i == 0:
+                # Submit first transaction.
+                node.sendrawtransaction(parent["hex"])
+                # Mempool minimum feerate should not have changed
+                assert_equal(node.getmempoolinfo()["mempoolminfee"], mempoolmin_feerate)
+                assert parent["txid"] in node.getrawmempool()
+
+        # Now create the below-mempoolminfee parent
+        cpfp_parent = self.wallet.create_self_transfer(fee_rate=mempoolmin_feerate - Decimal('0.00001'), confirmed_only=True)
+        package_hex.append(cpfp_parent["hex"])
+        parent_utxos.append(cpfp_parent["new_utxo"])
+        package_txids.append(cpfp_parent["txid"])
+        assert_equal(node.testmempoolaccept([cpfp_parent["hex"]])[0]["reject-reason"], "mempool min fee not met")
+
+        # Create a CPFPing child. We approximate that the child won't be more than 3x the size of the
+        # parent. Overestimation is ok as we want to be a little bit above the mempoolmin_feerate.
+        cpfp_fee = (mempoolmin_feerate / 1000) * (cpfp_parent["tx"].get_vsize() * 4) - cpfp_parent["fee"]
+        cpfp_satoshis = int(cpfp_fee * COIN)
+        child = self.wallet.create_self_transfer_multi(utxos_to_spend=parent_utxos, fee_per_output=cpfp_satoshis)
+        package_hex.append(child["hex"])
+        package_txids.append(child["txid"])
+
+        # Package should be submitted, temporarily exceeding maxmempool, and then evicted.
+        with node.assert_debug_log(expected_msgs=["rolling minimum fee bumped"]):
+            assert_raises_rpc_error(-26, "mempool full", node.submitpackage, package_hex)
+
+        # Maximum size must never be exceeded.
+        assert_greater_than(node.getmempoolinfo()["maxmempool"], node.getmempoolinfo()["bytes"])
+
+        resulting_mempool_txids = node.getrawmempool()
+        for i, txid in enumerate(package_txids):
+            if i in [0, 8, 9]:
+                # The first big parent should have been evicted as it had the lowest feerate, even
+                # though it was already in mempool when submitpackage was called. The CPFP'd parent
+                # and child were also barely above the minimum feerate and would have been evicted.
+                assert txid not in resulting_mempool_txids
+            else:
+                assert txid in resulting_mempool_txids
+
+
     def run_test(self):
         node = self.nodes[0]
         self.wallet = MiniWallet(node)
         miniwallet = self.wallet
 
         # Generate coins needed to create transactions in the subtests (excluding coins used in fill_mempool).
-        self.generate(miniwallet, 10)
+        self.generate(miniwallet, 50)
 
         relayfee = node.getnetworkinfo()['relayfee']
         self.log.info('Check that mempoolminfee is minrelaytxfee')
@@ -161,9 +236,18 @@ class MempoolLimitTest(BitcoinTestFramework):
         assert_greater_than((parent_fee + child_fee) / (tx_parent_just_below["tx"].get_vsize() + tx_child_just_above["tx"].get_vsize()), mempoolmin_feerate / 1000)
         assert_raises_rpc_error(-26, "mempool full", node.submitpackage, [tx_parent_just_below["hex"], tx_child_just_above["hex"]])
 
+
         self.log.info('Test passing a value below the minimum (5 MB) to -maxmempool throws an error')
         self.stop_node(0)
         self.nodes[0].assert_start_raises_init_error(["-maxmempool=4"], "Error: -maxmempool must be at least 5 MB")
+
+        self.restart_node(0, extra_args=self.extra_args[0])
+        # Restarting the node resets mempool minimum feerate
+        assert_equal(node.getmempoolinfo()['minrelaytxfee'], Decimal('0.00001000'))
+        assert_equal(node.getmempoolinfo()['mempoolminfee'], Decimal('0.00001000'))
+
+        self.fill_mempool()
+        self.test_mid_package_eviction()
 
 
 if __name__ == '__main__':
