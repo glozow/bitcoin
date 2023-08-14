@@ -39,6 +39,12 @@ class TxDownloadManager {
     class Impl;
     const std::unique_ptr<Impl> m_impl;
 
+protected:
+    /** Get reference to orphanage. */
+    TxOrphanage& GetOrphanageRef();
+    /** Get reference to txrequest tracker. */
+    TxRequestTracker& GetTxRequestRef();
+
 public:
     struct Options {
         /** Global maximum number of orphan transactions to keep. Enforced with LimitOrphans. */
@@ -49,12 +55,6 @@ public:
 
     explicit TxDownloadManager(const Options& options);
     ~TxDownloadManager();
-
-    /** Get reference to orphanage. */
-    TxOrphanage& GetOrphanageRef();
-
-    /** Get reference to txrequest tracker. */
-    TxRequestTracker& GetTxRequestRef();
 
     struct ConnectionInfo {
         /** Whether this peer is preferred for transaction download. */
@@ -102,6 +102,17 @@ public:
     /** Add a new orphan transaction. Returns whether this orphan is going to be processed. */
     bool NewOrphanTx(const CTransactionRef& tx, const std::vector<uint256>& parent_txids, NodeId nodeid,
                      std::chrono::microseconds now);
+
+    /** Whether there are any orphans in this peer's work set. */
+    bool HaveMoreWork(NodeId nodeid) const;
+
+    /** Get transaction to validate again. */
+    CTransactionRef GetTxToReconsider(NodeId nodeid);
+
+    /** Size() of orphanage, txrequest, and orphan request tracker are equal to 0. */
+    void CheckIsEmpty() const;
+    /** Count(nodeid) of orphanage, txrequest, and orphan request tracker are equal to 0. */
+    void CheckIsEmpty(NodeId nodeid) const;
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H

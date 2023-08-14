@@ -91,7 +91,6 @@ public:
     Impl(const Options& opts) : m_opts{opts} {}
 
     TxOrphanage& GetOrphanageRef() { return m_orphanage; }
-
     TxRequestTracker& GetTxRequestRef() { return m_txrequest; }
 
     void ConnectedPeer(NodeId nodeid, const ConnectionInfo& info)
@@ -338,6 +337,22 @@ public:
         m_txrequest.ForgetTxHash(tx->GetWitnessHash());
         return !already_in_orphanage && still_in_orphanage;
     }
+
+    bool HaveMoreWork(NodeId nodeid) const { return m_orphanage.HaveTxToReconsider(nodeid); }
+    CTransactionRef GetTxToReconsider(NodeId nodeid) { return m_orphanage.GetTxToReconsider(nodeid); }
+
+    void CheckIsEmpty() const
+    {
+        assert(m_orphanage.Size() == 0);
+        Assume(m_orphanage.TotalOrphanBytes() == 0);
+        assert(m_txrequest.Size() == 0);
+    }
+
+    void CheckIsEmpty(NodeId nodeid) const
+    {
+        Assume(m_orphanage.BytesFromPeer(nodeid) == 0);
+        assert(m_txrequest.Count(nodeid) == 0);
+    }
 };
 
 TxDownloadManager::TxDownloadManager(const TxDownloadManager::Options& opts) :
@@ -368,4 +383,8 @@ std::vector<GenTxid> TxDownloadManager::GetRequestsToSend(NodeId nodeid, std::ch
 void TxDownloadManager::ReceivedTx(NodeId nodeid, const uint256& txhash) { m_impl->ReceivedTx(nodeid, txhash); }
 bool TxDownloadManager::NewOrphanTx(const CTransactionRef& tx, const std::vector<uint256>& parent_txids, NodeId nodeid,
     std::chrono::microseconds now) { return m_impl->NewOrphanTx(tx, parent_txids, nodeid, now); }
+bool TxDownloadManager::HaveMoreWork(NodeId nodeid) const { return m_impl->HaveMoreWork(nodeid); }
+CTransactionRef TxDownloadManager::GetTxToReconsider(NodeId nodeid) { return m_impl->GetTxToReconsider(nodeid); }
+void TxDownloadManager::CheckIsEmpty() const { m_impl->CheckIsEmpty(); }
+void TxDownloadManager::CheckIsEmpty(NodeId nodeid) const { m_impl->CheckIsEmpty(nodeid); }
 } // namespace node

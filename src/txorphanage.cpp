@@ -262,7 +262,7 @@ CTransactionRef TxOrphanage::GetTxToReconsider(NodeId peer)
     return nullptr;
 }
 
-bool TxOrphanage::HaveTxToReconsider(NodeId peer)
+bool TxOrphanage::HaveTxToReconsider(NodeId peer) const
 {
     LOCK(m_mutex);
 
