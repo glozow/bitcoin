@@ -147,7 +147,7 @@ public:
     void DisconnectedPeer(NodeId nodeid) EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
 
     /** Resets m_recent_rejects. */
-    void BlockConnectedSync();
+    void BlockConnectedSync() EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
 
     /** Deletes all block and conflicted transactions from txrequest and orphanage. */
     void BlockConnected(const CBlock& block, const uint256& tiphash)

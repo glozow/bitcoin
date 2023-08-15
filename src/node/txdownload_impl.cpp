@@ -30,8 +30,9 @@ void TxDownloadImpl::DisconnectedPeer(NodeId nodeid)
         m_peer_info.erase(nodeid);
     }
 }
-void TxDownloadImpl::BlockConnectedSync()
+void TxDownloadImpl::BlockConnectedSync() EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)
 {
+    LOCK(m_tx_download_mutex);
     // If the chain tip has changed previously rejected transactions
     // might be now valid, e.g. due to a nLockTime'd tx becoming valid,
     // or a double-spend. Reset the rejects filter and give those
