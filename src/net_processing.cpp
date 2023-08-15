@@ -3631,7 +3631,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
         const bool reject_tx_invs{RejectIncomingTxs(pfrom)};
 
-        LOCK2(cs_main, m_tx_download_mutex);
+        LOCK(cs_main);
 
         const auto current_time{GetTime<std::chrono::microseconds>()};
         uint256* best_block{nullptr};
@@ -3669,11 +3669,12 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     return;
                 }
                 const GenTxid gtxid = ToGenTxid(inv);
-                const bool fAlreadyHave = m_txdownloadman.AlreadyHaveTx(gtxid);
+                const bool fAlreadyHave = WITH_LOCK(m_tx_download_mutex, return m_txdownloadman.AlreadyHaveTx(gtxid));
                 LogPrint(BCLog::NET, "got inv: %s  %s peer=%d\n", inv.ToString(), fAlreadyHave ? "have" : "new", pfrom.GetId());
 
                 AddKnownTx(*peer, inv.hash);
                 if (!m_chainman.IsInitialBlockDownload()) {
+                    LOCK(m_tx_download_mutex);
                     m_txdownloadman.ReceivedTxInv(pfrom.GetId(), gtxid, current_time);
                 }
             } else {
@@ -3957,7 +3958,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         const uint256& hash = peer->m_wtxid_relay ? wtxid : txid;
         AddKnownTx(*peer, hash);
 
-        LOCK2(cs_main, m_tx_download_mutex);
+        LOCK(cs_main);
 
         // We do the AlreadyHaveTx() check using wtxid, rather than txid - in the
         // absence of witness malleation, this is strictly better, because the
@@ -3971,7 +3972,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         // already; and an adversary can already relay us old transactions
         // (older than our recency filter) if trying to DoS us, without any need
         // for witness malleation.
-        if (m_txdownloadman.ReceivedTx(pfrom.GetId(), ptx)) {
+        if (WITH_LOCK(m_tx_download_mutex, return m_txdownloadman.ReceivedTx(pfrom.GetId(), ptx))) {
             if (pfrom.HasPermission(NetPermissionFlags::ForceRelay)) {
                 // Always relay transactions received from peers with forcerelay
                 // permission, even if they were already in the mempool, allowing
@@ -4007,12 +4008,16 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         const TxValidationState& state = result.m_state;
 
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+            {
+            LOCK(m_tx_download_mutex);
             ProcessValidTx(ptx, pfrom.GetId(), result.m_replaced_transactions.value());
+            } // release m_tx_download_mutex
             pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
             for (const CTransactionRef& removedTx : result.m_replaced_transactions.value()) {
                 AddToCompactExtraTransactions(removedTx);
             }
         } else {
+            LOCK(m_tx_download_mutex);
             bool should_process_orphan = ProcessInvalidTx(ptx, pfrom.GetId(), state);
             if (should_process_orphan) {
                 const auto current_time{GetTime<std::chrono::microseconds>()};
