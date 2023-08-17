@@ -13,7 +13,8 @@
 #include <optional>
 #include <vector>
 
-using MemPoolMultiIndex::setEntries;
+using MemPoolMultiIndex::raw_setEntries;
+using MemPoolMultiIndex::raw_txiter;
 
 BOOST_FIXTURE_TEST_SUITE(miniminer_tests, TestingSetup)
 
@@ -437,7 +438,7 @@ BOOST_FIXTURE_TEST_CASE(calculate_cluster, TestChain100Setup)
     }
     const auto cluster_500tx = pool.GatherClusters({lasttx->GetHash()});
     Assert(cluster_500tx);
-    setEntries cluster_500tx_set;
+    raw_setEntries cluster_500tx_set;
     for (const auto& uptr : *cluster_500tx) {
         cluster_500tx_set.insert(uptr.impl);
     }
@@ -475,7 +476,7 @@ BOOST_FIXTURE_TEST_CASE(calculate_cluster, TestChain100Setup)
         const auto cluster = pool.GatherClusters({zigzag_txids[index]});
         Assert(cluster);
         BOOST_CHECK_EQUAL(cluster->size(), zigzag_txids.size());
-        setEntries clusterset;
+        raw_setEntries clusterset;
         for (const auto& uptr : *cluster) {
             clusterset.insert(uptr.impl);
         }

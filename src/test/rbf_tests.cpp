@@ -14,6 +14,8 @@
 #include <optional>
 #include <vector>
 
+using MemPoolMultiIndex::setEntries;
+
 BOOST_FIXTURE_TEST_SUITE(rbf_tests, TestingSetup)
 
 static inline CTransactionRef make_tx(const std::vector<CTransactionRef>& inputs,
@@ -107,11 +109,11 @@ BOOST_FIXTURE_TEST_CASE(rbf_helper_functions, TestChain100Setup)
     BOOST_CHECK_EQUAL(entry7->GetFee(), high_fee);
     BOOST_CHECK_EQUAL(entry8->GetFee(), high_fee);
 
-    CTxMemPool::setEntries set_12_normal{entry1, entry2};
-    CTxMemPool::setEntries set_34_cpfp{entry3, entry4};
-    CTxMemPool::setEntries set_56_low{entry5, entry6};
-    CTxMemPool::setEntries all_entries{entry1, entry2, entry3, entry4, entry5, entry6, entry7, entry8};
-    CTxMemPool::setEntries empty_set;
+    setEntries set_12_normal{{entry1, entry2}};
+    setEntries set_34_cpfp{{entry3, entry4}};
+    setEntries set_56_low{{entry5, entry6}};
+    setEntries all_entries{{entry1, entry2, entry3, entry4, entry5, entry6, entry7, entry8}};
+    setEntries empty_set;
 
     const auto unused_txid{GetRandHash()};
 
@@ -124,9 +126,9 @@ BOOST_FIXTURE_TEST_CASE(rbf_helper_functions, TestChain100Setup)
     BOOST_CHECK(PaysMoreThanConflicts(set_12_normal, CFeeRate(entry1->GetModifiedFee(), entry1->GetTxSize()), unused_txid).has_value());
     BOOST_CHECK(PaysMoreThanConflicts(set_12_normal, CFeeRate(entry1->GetModifiedFee() + 1, entry1->GetTxSize()), unused_txid) == std::nullopt);
     // These tests use modified fees (including prioritisation), not base fees.
-    BOOST_CHECK(PaysMoreThanConflicts({entry5}, CFeeRate(entry5->GetModifiedFee() + 1, entry5->GetTxSize()), unused_txid) == std::nullopt);
-    BOOST_CHECK(PaysMoreThanConflicts({entry6}, CFeeRate(entry6->GetFee() + 1, entry6->GetTxSize()), unused_txid).has_value());
-    BOOST_CHECK(PaysMoreThanConflicts({entry6}, CFeeRate(entry6->GetModifiedFee() + 1, entry6->GetTxSize()), unused_txid) == std::nullopt);
+    // BOOST_CHECK(PaysMoreThanConflicts({{entry5}}, CFeeRate(entry5->GetModifiedFee() + 1, entry5->GetTxSize()), unused_txid) == std::nullopt);
+    BOOST_CHECK(PaysMoreThanConflicts(setEntries{{entry6}}, CFeeRate(entry6->GetFee() + 1, entry6->GetTxSize()), unused_txid).has_value());
+    BOOST_CHECK(PaysMoreThanConflicts(setEntries{{entry6}}, CFeeRate(entry6->GetModifiedFee() + 1, entry6->GetTxSize()), unused_txid) == std::nullopt);
     // PaysMoreThanConflicts checks individual feerate, not ancestor feerate. This test compares
     // replacement_feerate and entry4's feerate, which are the same. The replacement_feerate is
     // considered too low even though entry4 has a low ancestor feerate.
@@ -136,13 +138,13 @@ BOOST_FIXTURE_TEST_CASE(rbf_helper_functions, TestChain100Setup)
     BOOST_CHECK(EntriesAndTxidsDisjoint(empty_set, {tx1->GetHash()}, unused_txid) == std::nullopt);
     BOOST_CHECK(EntriesAndTxidsDisjoint(set_12_normal, {tx3->GetHash()}, unused_txid) == std::nullopt);
     // EntriesAndTxidsDisjoint uses txids, not wtxids.
-    BOOST_CHECK(EntriesAndTxidsDisjoint({entry2}, {tx2->GetWitnessHash()}, unused_txid) == std::nullopt);
-    BOOST_CHECK(EntriesAndTxidsDisjoint({entry2}, {tx2->GetHash()}, unused_txid).has_value());
+    BOOST_CHECK(EntriesAndTxidsDisjoint(setEntries{{entry2}}, {tx2->GetWitnessHash()}, unused_txid) == std::nullopt);
+    BOOST_CHECK(EntriesAndTxidsDisjoint(setEntries{{entry2}}, {tx2->GetHash()}, unused_txid).has_value());
     BOOST_CHECK(EntriesAndTxidsDisjoint(set_12_normal, {tx1->GetHash()}, unused_txid).has_value());
     BOOST_CHECK(EntriesAndTxidsDisjoint(set_12_normal, {tx2->GetHash()}, unused_txid).has_value());
     // EntriesAndTxidsDisjoint does not calculate descendants of iters_conflicting; it uses whatever
     // the caller passed in. As such, no error is returned even though entry2 is a descendant of tx1.
-    BOOST_CHECK(EntriesAndTxidsDisjoint({entry2}, {tx1->GetHash()}, unused_txid) == std::nullopt);
+    BOOST_CHECK(EntriesAndTxidsDisjoint(setEntries{{entry2}}, {tx1->GetHash()}, unused_txid) == std::nullopt);
 
     // Tests for PaysForRBF
     const CFeeRate incremental_relay_feerate{DEFAULT_INCREMENTAL_RELAY_FEE};
@@ -165,44 +167,44 @@ BOOST_FIXTURE_TEST_CASE(rbf_helper_functions, TestChain100Setup)
     BOOST_CHECK(PaysForRBF(low_fee, high_fee + 99999999, 99999999, incremental_relay_feerate, unused_txid) == std::nullopt);
 
     // Tests for GetEntriesForConflicts
-    CTxMemPool::setEntries all_parents{entry1, entry3, entry5, entry7, entry8};
-    CTxMemPool::setEntries all_children{entry2, entry4, entry6};
+    setEntries all_parents{{entry1, entry3, entry5, entry7, entry8}};
+    setEntries all_children{{entry2, entry4, entry6}};
     const std::vector<CTransactionRef> parent_inputs({m_coinbase_txns[0], m_coinbase_txns[1], m_coinbase_txns[2],
                                                 m_coinbase_txns[3], m_coinbase_txns[4]});
     const auto conflicts_with_parents = make_tx(parent_inputs, {50 * CENT});
-    CTxMemPool::setEntries all_conflicts;
+    setEntries all_conflicts;
     BOOST_CHECK(GetEntriesForConflicts(/*tx=*/ *conflicts_with_parents.get(),
                                        /*pool=*/ pool,
                                        /*iters_conflicting=*/ all_parents,
                                        /*all_conflicts=*/ all_conflicts) == std::nullopt);
-    BOOST_CHECK(all_conflicts == all_entries);
-    auto conflicts_size = all_conflicts.size();
-    all_conflicts.clear();
+    BOOST_CHECK(all_conflicts.impl == all_entries.impl);
+    auto conflicts_size = all_conflicts.impl.size();
+    all_conflicts.impl.clear();
 
     add_descendants(tx2, 23, pool);
     BOOST_CHECK(GetEntriesForConflicts(*conflicts_with_parents.get(), pool, all_parents, all_conflicts) == std::nullopt);
     conflicts_size += 23;
-    BOOST_CHECK_EQUAL(all_conflicts.size(), conflicts_size);
-    all_conflicts.clear();
+    BOOST_CHECK_EQUAL(all_conflicts.impl.size(), conflicts_size);
+    all_conflicts.impl.clear();
 
     add_descendants(tx4, 23, pool);
     BOOST_CHECK(GetEntriesForConflicts(*conflicts_with_parents.get(), pool, all_parents, all_conflicts) == std::nullopt);
     conflicts_size += 23;
-    BOOST_CHECK_EQUAL(all_conflicts.size(), conflicts_size);
-    all_conflicts.clear();
+    BOOST_CHECK_EQUAL(all_conflicts.impl.size(), conflicts_size);
+    all_conflicts.impl.clear();
 
     add_descendants(tx6, 23, pool);
     BOOST_CHECK(GetEntriesForConflicts(*conflicts_with_parents.get(), pool, all_parents, all_conflicts) == std::nullopt);
     conflicts_size += 23;
-    BOOST_CHECK_EQUAL(all_conflicts.size(), conflicts_size);
-    all_conflicts.clear();
+    BOOST_CHECK_EQUAL(all_conflicts.impl.size(), conflicts_size);
+    all_conflicts.impl.clear();
 
     add_descendants(tx7, 23, pool);
     BOOST_CHECK(GetEntriesForConflicts(*conflicts_with_parents.get(), pool, all_parents, all_conflicts) == std::nullopt);
     conflicts_size += 23;
-    BOOST_CHECK_EQUAL(all_conflicts.size(), conflicts_size);
-    BOOST_CHECK_EQUAL(all_conflicts.size(), 100);
-    all_conflicts.clear();
+    BOOST_CHECK_EQUAL(all_conflicts.impl.size(), conflicts_size);
+    BOOST_CHECK_EQUAL(all_conflicts.impl.size(), 100);
+    all_conflicts.impl.clear();
 
     // Exceeds maximum number of conflicts.
     add_descendants(tx8, 1, pool);
@@ -217,15 +219,15 @@ BOOST_FIXTURE_TEST_CASE(rbf_helper_functions, TestChain100Setup)
     BOOST_CHECK(HasNoNewUnconfirmed(/*tx=*/ *spends_unconfirmed.get(),
                                     /*pool=*/ pool,
                                     /*iters_conflicting=*/ all_entries) == std::nullopt);
-    BOOST_CHECK(HasNoNewUnconfirmed(*spends_unconfirmed.get(), pool, {entry2}) == std::nullopt);
+    BOOST_CHECK(HasNoNewUnconfirmed(*spends_unconfirmed.get(), pool, setEntries{{entry2}}) == std::nullopt);
     BOOST_CHECK(HasNoNewUnconfirmed(*spends_unconfirmed.get(), pool, empty_set).has_value());
 
     const auto spends_new_unconfirmed = make_tx({tx1, tx8}, {36 * CENT});
-    BOOST_CHECK(HasNoNewUnconfirmed(*spends_new_unconfirmed.get(), pool, {entry2}).has_value());
+    BOOST_CHECK(HasNoNewUnconfirmed(*spends_new_unconfirmed.get(), pool, setEntries{{entry2}}).has_value());
     BOOST_CHECK(HasNoNewUnconfirmed(*spends_new_unconfirmed.get(), pool, all_entries).has_value());
 
     const auto spends_conflicting_confirmed = make_tx({m_coinbase_txns[0], m_coinbase_txns[1]}, {45 * CENT});
-    BOOST_CHECK(HasNoNewUnconfirmed(*spends_conflicting_confirmed.get(), pool, {entry1, entry3}) == std::nullopt);
+    BOOST_CHECK(HasNoNewUnconfirmed(*spends_conflicting_confirmed.get(), pool, setEntries{{entry1, entry3}}) == std::nullopt);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

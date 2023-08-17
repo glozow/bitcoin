@@ -73,7 +73,9 @@ using kernel::Notifications;
 
 using fsbridge::FopenFn;
 using MemPoolMultiIndex::insertion_order;
+using MemPoolMultiIndex::raw_setEntries;
 using MemPoolMultiIndex::raw_txiter;
+using MemPoolMultiIndex::setEntries;
 using MemPoolMultiIndex::txiter;
 using node::BlockManager;
 using node::BlockMap;
@@ -569,12 +571,12 @@ private:
         /** Txids of mempool transactions that this transaction directly conflicts with. */
         std::set<uint256> m_conflicts;
         /** Iterators to mempool entries that this transaction directly conflicts with. */
-        CTxMemPool::setEntries m_iters_conflicting;
+        setEntries m_iters_conflicting;
         /** Iterators to all mempool entries that would be replaced by this transaction, including
          * those it directly conflicts with and their descendants. */
-        CTxMemPool::setEntries m_all_conflicting;
+        setEntries m_all_conflicting;
         /** All mempool ancestors of this transaction. */
-        CTxMemPool::setEntries m_ancestors;
+        setEntries m_ancestors;
         /** Mempool entry constructed for this transaction. Constructed in PreChecks() but not
          * inserted into the mempool until Finalize(). */
         std::unique_ptr<CTxMemPoolEntry> m_entry;
@@ -860,7 +862,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     // feerate later.
     if (!bypass_limits && !args.m_package_feerates && !CheckFeeRate(ws.m_vsize, ws.m_modified_fees, state)) return false;
 
-    ws.m_iters_conflicting = m_pool.GetIterSet(ws.m_conflicts);
+    ws.m_iters_conflicting.impl = Assert(m_pool.GetIterSet(ws.m_conflicts))->impl;
     // Calculate in-mempool ancestors, up to a limit.
     if (ws.m_conflicts.size() == 1) {
         // In general, when we receive an RBF transaction with mempool conflicts, we want to know whether we
@@ -890,8 +892,8 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
         // the ancestor limits should be the same for both our new transaction and any conflicts).
         // We don't bother incrementing m_limit_descendants by the full removal count as that limit never comes
         // into force here (as we're only adding a single transaction).
-        assert(ws.m_iters_conflicting.size() == 1);
-        raw_txiter conflict = *ws.m_iters_conflicting.begin();
+        assert(ws.m_iters_conflicting.impl.size() == 1);
+        raw_txiter conflict = *ws.m_iters_conflicting.impl.begin();
 
         m_limits.descendant_count += 1;
         m_limits.descendant_size_vbytes += conflict->GetSizeWithDescendants();
@@ -925,7 +927,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
         if (!ancestors) return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-long-mempool-chain", error_message);
     }
 
-    ws.m_ancestors = *ancestors;
+    ws.m_ancestors.impl = (*ancestors)->impl;
 
     // A transaction that spends outputs that would be replaced by it is invalid. Now
     // that we have the set of all ancestors we can detect this
@@ -976,7 +978,7 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
     }
     // Check if it's economically rational to mine this transaction rather than the ones it
     // replaces and pays for its own relay fees. Enforce Rules #3 and #4.
-    for (raw_txiter it : ws.m_all_conflicting) {
+    for (raw_txiter it : ws.m_all_conflicting.impl) {
         ws.m_conflicting_fees += it->GetModifiedFee();
         ws.m_conflicting_size += it->GetTxSize();
     }
@@ -1078,7 +1080,7 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
     std::unique_ptr<CTxMemPoolEntry>& entry = ws.m_entry;
 
     // Remove conflicting transactions from the mempool
-    for (raw_txiter it : ws.m_all_conflicting)
+    for (raw_txiter it : ws.m_all_conflicting.impl)
     {
         LogPrint(BCLog::MEMPOOL, "replacing tx %s with %s for %s additional fees, %d delta bytes\n",
                 it->GetTx().GetHash().ToString(),
@@ -1161,7 +1163,9 @@ bool MemPoolAccept::SubmitPackage(const ATMPArgs& args, std::vector<Workspace>& 
                                     strprintf("BUG! Mempool ancestors or descendants were underestimated: %s",
                                                 ws.m_ptx->GetHash().ToString()));
             }
-            ws.m_ancestors = std::move(ancestors).value_or(ws.m_ancestors);
+            if (ancestors) {
+                ws.m_ancestors.impl = ancestors.value()->impl;
+            }
         }
         // If we call LimitMempoolSize() for each individual Finalize(), the mempool will not take
         // the transaction's descendant feerate into account because it hasn't seen them yet. Also,

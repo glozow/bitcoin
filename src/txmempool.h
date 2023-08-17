@@ -233,7 +233,7 @@ private:
      *
      * @return all in-mempool ancestors, or an error if any ancestor or descendant limits were hit
      */
-    util::Result<setEntries> CalculateAncestorsAndCheckLimits(int64_t entry_size,
+    util::Result<std::unique_ptr<setEntries>> CalculateAncestorsAndCheckLimits(int64_t entry_size,
                                                               size_t entry_count,
                                                               CTxMemPoolEntry::Parents &staged_ancestors,
                                                               const Limits& limits
@@ -332,7 +332,7 @@ public:
     /** Translate a set of hashes into a set of pool iterators to avoid repeated lookups.
      * Does not require that all of the hashes correspond to actual transactions in the mempool,
      * only returns the ones that exist. */
-    setEntries GetIterSet(const std::set<uint256>& hashes) const EXCLUSIVE_LOCKS_REQUIRED(cs);
+    std::unique_ptr<setEntries> GetIterSet(const std::set<uint256>& hashes) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     /** Translate a list of hashes into a list of mempool iterators to avoid repeated lookups.
      * The nth element in txids becomes the nth element in the returned vector. If any of the txids
@@ -375,7 +375,7 @@ public:
      *
      * @return all in-mempool ancestors, or an error if any ancestor or descendant limits were hit
      */
-    util::Result<setEntries> CalculateMemPoolAncestors(const CTxMemPoolEntry& entry,
+    util::Result<std::unique_ptr<setEntries>> CalculateMemPoolAncestors(const CTxMemPoolEntry& entry,
                                    const Limits& limits,
                                    bool fSearchForParents = true) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 
@@ -393,7 +393,7 @@ public:
      *
      * @see CTXMemPool::CalculateMemPoolAncestors()
      */
-    setEntries AssumeCalculateMemPoolAncestors(
+    std::unique_ptr<setEntries> AssumeCalculateMemPoolAncestors(
         std::string_view calling_fn_name,
         const CTxMemPoolEntry &entry,
         const Limits& limits,

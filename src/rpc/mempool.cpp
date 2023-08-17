@@ -32,6 +32,7 @@ using node::MempoolPath;
 using node::NodeContext;
 
 using MemPoolMultiIndex::raw_txiter;
+using MemPoolMultiIndex::setEntries;
 using MemPoolMultiIndex::txiter;
 
 static RPCHelpMan sendrawtransaction()
@@ -470,16 +471,17 @@ static RPCHelpMan getmempoolancestors()
     }
 
     auto ancestors{mempool.AssumeCalculateMemPoolAncestors(__func__, *it->impl, CTxMemPool::Limits::NoLimits(), /*fSearchForParents=*/false)};
+    CHECK_NONFATAL(ancestors);
 
     if (!fVerbose) {
         UniValue o(UniValue::VARR);
-        for (raw_txiter ancestorIt : ancestors) {
+        for (raw_txiter ancestorIt : ancestors->impl) {
             o.push_back(ancestorIt->GetTx().GetHash().ToString());
         }
         return o;
     } else {
         UniValue o(UniValue::VOBJ);
-        for (raw_txiter ancestorIt : ancestors) {
+        for (raw_txiter ancestorIt : ancestors->impl) {
             const CTxMemPoolEntry &e = *ancestorIt;
             const uint256& _hash = e.GetTx().GetHash();
             UniValue info(UniValue::VOBJ);
@@ -530,21 +532,21 @@ static RPCHelpMan getmempooldescendants()
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Transaction not in mempool");
     }
 
-    CTxMemPool::setEntries setDescendants;
+    setEntries setDescendants;
     mempool.CalculateDescendants(*it, setDescendants);
     // CTxMemPool::CalculateDescendants will include the given tx
-    setDescendants.erase(it->impl);
+    setDescendants.impl.erase(it->impl);
 
     if (!fVerbose) {
         UniValue o(UniValue::VARR);
-        for (raw_txiter descendantIt : setDescendants) {
+        for (raw_txiter descendantIt : setDescendants.impl) {
             o.push_back(descendantIt->GetTx().GetHash().ToString());
         }
 
         return o;
     } else {
         UniValue o(UniValue::VOBJ);
-        for (raw_txiter descendantIt : setDescendants) {
+        for (raw_txiter descendantIt : setDescendants.impl) {
             const CTxMemPoolEntry &e = *descendantIt;
             const uint256& _hash = e.GetTx().GetHash();
             UniValue info(UniValue::VOBJ);
