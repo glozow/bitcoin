@@ -73,6 +73,8 @@ using kernel::Notifications;
 
 using fsbridge::FopenFn;
 using MemPoolMultiIndex::insertion_order;
+using MemPoolMultiIndex::raw_txiter;
+using MemPoolMultiIndex::txiter;
 using node::BlockManager;
 using node::BlockMap;
 using node::CBlockIndexHeightOnlyComparator;
@@ -330,16 +332,16 @@ void Chainstate::MaybeUpdateMempoolForReorg(
     // Also updates valid entries' cached LockPoints if needed.
     // If false, the tx is still valid and its lockpoints are updated.
     // If true, the tx would be invalid in the next block; remove this entry and all of its descendants.
-    const auto filter_final_and_mature = [this](CTxMemPool::txiter it)
+    const auto filter_final_and_mature = [this](txiter& it)
         EXCLUSIVE_LOCKS_REQUIRED(m_mempool->cs, ::cs_main) {
         AssertLockHeld(m_mempool->cs);
         AssertLockHeld(::cs_main);
-        const CTransaction& tx = it->GetTx();
+        const CTransaction& tx = it.impl->GetTx();
 
         // The transaction must be final.
         if (!CheckFinalTxAtTip(*Assert(m_chain.Tip()), tx)) return true;
 
-        const LockPoints& lp = it->GetLockPoints();
+        const LockPoints& lp = it.impl->GetLockPoints();
         // CheckSequenceLocksAtTip checks if the transaction will be final in the next block to be
         // created on top of the new chain.
         if (TestLockPointValidity(m_chain, lp)) {
@@ -351,14 +353,14 @@ void Chainstate::MaybeUpdateMempoolForReorg(
             const std::optional<LockPoints> new_lock_points{CalculateLockPointsAtTip(m_chain.Tip(), view_mempool, tx)};
             if (new_lock_points.has_value() && CheckSequenceLocksAtTip(m_chain.Tip(), *new_lock_points)) {
                 // Now update the mempool entry lockpoints as well.
-                it->UpdateLockPoints(*new_lock_points);
+                it.impl->UpdateLockPoints(*new_lock_points);
             } else {
                 return true;
             }
         }
 
         // If the transaction spends any coinbase outputs, it must be mature.
-        if (it->GetSpendsCoinbase()) {
+        if (it.impl->GetSpendsCoinbase()) {
             for (const CTxIn& txin : tx.vin) {
                 if (m_mempool->exists(GenTxid::Txid(txin.prevout.hash))) continue;
                 const Coin& coin{CoinsTip().AccessCoin(txin.prevout)};
@@ -889,7 +891,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
         // We don't bother incrementing m_limit_descendants by the full removal count as that limit never comes
         // into force here (as we're only adding a single transaction).
         assert(ws.m_iters_conflicting.size() == 1);
-        CTxMemPool::txiter conflict = *ws.m_iters_conflicting.begin();
+        raw_txiter conflict = *ws.m_iters_conflicting.begin();
 
         m_limits.descendant_count += 1;
         m_limits.descendant_size_vbytes += conflict->GetSizeWithDescendants();
@@ -974,7 +976,7 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
     }
     // Check if it's economically rational to mine this transaction rather than the ones it
     // replaces and pays for its own relay fees. Enforce Rules #3 and #4.
-    for (CTxMemPool::txiter it : ws.m_all_conflicting) {
+    for (raw_txiter it : ws.m_all_conflicting) {
         ws.m_conflicting_fees += it->GetModifiedFee();
         ws.m_conflicting_size += it->GetTxSize();
     }
@@ -1076,7 +1078,7 @@ bool MemPoolAccept::Finalize(const ATMPArgs& args, Workspace& ws)
     std::unique_ptr<CTxMemPoolEntry>& entry = ws.m_entry;
 
     // Remove conflicting transactions from the mempool
-    for (CTxMemPool::txiter it : ws.m_all_conflicting)
+    for (raw_txiter it : ws.m_all_conflicting)
     {
         LogPrint(BCLog::MEMPOOL, "replacing tx %s with %s for %s additional fees, %d delta bytes\n",
                 it->GetTx().GetHash().ToString(),
@@ -1411,8 +1413,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
         if (m_pool.exists(GenTxid::Wtxid(wtxid))) {
             // Exact transaction already exists in the mempool.
             auto iter = m_pool.GetIter(txid);
-            assert(iter != std::nullopt);
-            results_final.emplace(wtxid, MempoolAcceptResult::MempoolTx(iter.value()->GetTxSize(), iter.value()->GetFee()));
+            assert(iter);
+            results_final.emplace(wtxid, MempoolAcceptResult::MempoolTx(iter->impl->GetTxSize(), iter->impl->GetFee()));
         } else if (m_pool.exists(GenTxid::Txid(txid))) {
             // Transaction with the same non-witness data but different witness (same txid,
             // different wtxid) already exists in the mempool.
@@ -1422,9 +1424,9 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             // package transaction passed in.
             // TODO: allow witness replacement in packages.
             auto iter = m_pool.GetIter(txid);
-            assert(iter != std::nullopt);
+            assert(iter);
             // Provide the wtxid of the mempool tx so that the caller can look it up in the mempool.
-            results_final.emplace(wtxid, MempoolAcceptResult::MempoolTxDifferentWitness(iter.value()->GetTx().GetWitnessHash()));
+            results_final.emplace(wtxid, MempoolAcceptResult::MempoolTxDifferentWitness(iter->impl->GetTx().GetWitnessHash()));
         } else {
             // Transaction does not already exist in the mempool.
             // Try submitting the transaction on its own.

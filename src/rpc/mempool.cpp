@@ -31,6 +31,9 @@ using node::DEFAULT_MAX_RAW_TX_FEE_RATE;
 using node::MempoolPath;
 using node::NodeContext;
 
+using MemPoolMultiIndex::raw_txiter;
+using MemPoolMultiIndex::txiter;
+
 static RPCHelpMan sendrawtransaction()
 {
     return RPCHelpMan{"sendrawtransaction",
@@ -316,7 +319,7 @@ static void entryToJSON(const CTxMemPool& pool, UniValue& info, const CTxMemPool
 
     UniValue spent(UniValue::VARR);
     const auto it = pool.GetIter(tx.GetHash());
-    const CTxMemPoolEntry::Children& children = (*it)->GetMemPoolChildrenConst();
+    const CTxMemPoolEntry::Children& children = it->impl->GetMemPoolChildrenConst();
     for (const CTxMemPoolEntry& child : children) {
         spent.push_back(child.GetTx().GetHash().ToString());
     }
@@ -346,9 +349,9 @@ UniValue MempoolToJSON(const CTxMemPool& pool, bool verbose, bool include_mempoo
         UniValue o(UniValue::VOBJ);
         for (const auto& txinfo : pool.infoAll()) {
             const uint256& hash = txinfo.tx->GetHash();
-            const auto it = pool.GetIter(hash).value();
+            const auto it = pool.GetIter(hash);
             UniValue info(UniValue::VOBJ);
-            entryToJSON(pool, info, *it);
+            entryToJSON(pool, info, *it->impl);
             // Mempool has unique entries so there is no advantage in using
             // UniValue::pushKV, which checks if the key already exists in O(N).
             // UniValue::pushKVEnd is used instead which currently is O(1).
@@ -462,21 +465,21 @@ static RPCHelpMan getmempoolancestors()
     LOCK(mempool.cs);
 
     const auto it = mempool.GetIter(hash);
-    if (!it.has_value()) {
+    if (it == nullptr) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Transaction not in mempool");
     }
 
-    auto ancestors{mempool.AssumeCalculateMemPoolAncestors(__func__, **it, CTxMemPool::Limits::NoLimits(), /*fSearchForParents=*/false)};
+    auto ancestors{mempool.AssumeCalculateMemPoolAncestors(__func__, *it->impl, CTxMemPool::Limits::NoLimits(), /*fSearchForParents=*/false)};
 
     if (!fVerbose) {
         UniValue o(UniValue::VARR);
-        for (CTxMemPool::txiter ancestorIt : ancestors) {
+        for (raw_txiter ancestorIt : ancestors) {
             o.push_back(ancestorIt->GetTx().GetHash().ToString());
         }
         return o;
     } else {
         UniValue o(UniValue::VOBJ);
-        for (CTxMemPool::txiter ancestorIt : ancestors) {
+        for (raw_txiter ancestorIt : ancestors) {
             const CTxMemPoolEntry &e = *ancestorIt;
             const uint256& _hash = e.GetTx().GetHash();
             UniValue info(UniValue::VOBJ);
@@ -523,25 +526,25 @@ static RPCHelpMan getmempooldescendants()
     LOCK(mempool.cs);
 
     const auto it = mempool.GetIter(hash);
-    if (it == std::nullopt) {
+    if (it == nullptr) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Transaction not in mempool");
     }
 
     CTxMemPool::setEntries setDescendants;
     mempool.CalculateDescendants(*it, setDescendants);
     // CTxMemPool::CalculateDescendants will include the given tx
-    setDescendants.erase(*it);
+    setDescendants.erase(it->impl);
 
     if (!fVerbose) {
         UniValue o(UniValue::VARR);
-        for (CTxMemPool::txiter descendantIt : setDescendants) {
+        for (raw_txiter descendantIt : setDescendants) {
             o.push_back(descendantIt->GetTx().GetHash().ToString());
         }
 
         return o;
     } else {
         UniValue o(UniValue::VOBJ);
-        for (CTxMemPool::txiter descendantIt : setDescendants) {
+        for (raw_txiter descendantIt : setDescendants) {
             const CTxMemPoolEntry &e = *descendantIt;
             const uint256& _hash = e.GetTx().GetHash();
             UniValue info(UniValue::VOBJ);
@@ -575,11 +578,11 @@ static RPCHelpMan getmempoolentry()
     LOCK(mempool.cs);
 
     const auto it = mempool.GetIter(hash);
-    if (it == std::nullopt) {
+    if (it == nullptr) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Transaction not in mempool");
     }
 
-    const CTxMemPoolEntry &e = **it;
+    const CTxMemPoolEntry &e = *(it->impl);
     UniValue info(UniValue::VOBJ);
     entryToJSON(mempool, info, e);
     return info;

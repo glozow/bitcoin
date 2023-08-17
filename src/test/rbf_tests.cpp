@@ -89,14 +89,14 @@ BOOST_FIXTURE_TEST_CASE(rbf_helper_functions, TestChain100Setup)
     const auto tx8 = make_tx(/*inputs=*/ {m_coinbase_txns[4]}, /*output_values=*/ {999 * CENT});
     pool.addUnchecked(entry.Fee(high_fee).FromTx(tx8));
 
-    const auto entry1 = pool.GetIter(tx1->GetHash()).value();
-    const auto entry2 = pool.GetIter(tx2->GetHash()).value();
-    const auto entry3 = pool.GetIter(tx3->GetHash()).value();
-    const auto entry4 = pool.GetIter(tx4->GetHash()).value();
-    const auto entry5 = pool.GetIter(tx5->GetHash()).value();
-    const auto entry6 = pool.GetIter(tx6->GetHash()).value();
-    const auto entry7 = pool.GetIter(tx7->GetHash()).value();
-    const auto entry8 = pool.GetIter(tx8->GetHash()).value();
+    const auto entry1 = pool.GetIter(tx1->GetHash())->impl;
+    const auto entry2 = pool.GetIter(tx2->GetHash())->impl;
+    const auto entry3 = pool.GetIter(tx3->GetHash())->impl;
+    const auto entry4 = pool.GetIter(tx4->GetHash())->impl;
+    const auto entry5 = pool.GetIter(tx5->GetHash())->impl;
+    const auto entry6 = pool.GetIter(tx6->GetHash())->impl;
+    const auto entry7 = pool.GetIter(tx7->GetHash())->impl;
+    const auto entry8 = pool.GetIter(tx8->GetHash())->impl;
 
     BOOST_CHECK_EQUAL(entry1->GetFee(), normal_fee);
     BOOST_CHECK_EQUAL(entry2->GetFee(), normal_fee);

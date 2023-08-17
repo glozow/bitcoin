@@ -194,7 +194,7 @@ BOOST_AUTO_TEST_CASE(MempoolIndexingTest)
     CheckSort<descendant_score>(pool, sortedOrder);
 
     CTxMemPool::setEntries setAncestors;
-    setAncestors.insert(*pool.GetIter(tx6.GetHash()));
+    setAncestors.insert(pool.GetIter(tx6.GetHash())->impl);
     CMutableTransaction tx7 = CMutableTransaction();
     tx7.vin.resize(1);
     tx7.vin[0].prevout = COutPoint(tx6.GetHash(), 0);
@@ -226,7 +226,7 @@ BOOST_AUTO_TEST_CASE(MempoolIndexingTest)
     tx8.vout.resize(1);
     tx8.vout[0].scriptPubKey = CScript() << OP_11 << OP_EQUAL;
     tx8.vout[0].nValue = 10 * COIN;
-    setAncestors.insert(pool.GetIter(tx7.GetHash()).value());
+    setAncestors.insert(pool.GetIter(tx7.GetHash())->impl);
     pool.addUnchecked(entry.Fee(0LL).Time(NodeSeconds{2s}).FromTx(tx8), setAncestors);
 
     // Now tx8 should be sorted low, but tx6/tx both high
@@ -250,8 +250,8 @@ BOOST_AUTO_TEST_CASE(MempoolIndexingTest)
 
     std::vector<std::string> snapshotOrder = sortedOrder;
 
-    setAncestors.insert(pool.GetIter(tx8.GetHash()).value());
-    setAncestors.insert(pool.GetIter(tx9.GetHash()).value());
+    setAncestors.insert(pool.GetIter(tx8.GetHash())->impl);
+    setAncestors.insert(pool.GetIter(tx9.GetHash())->impl);
     /* tx10 depends on tx8 and tx9 and has a high fee*/
     CMutableTransaction tx10 = CMutableTransaction();
     tx10.vin.resize(2);
@@ -294,11 +294,11 @@ BOOST_AUTO_TEST_CASE(MempoolIndexingTest)
     BOOST_CHECK_EQUAL(pool.size(), 10U);
 
     // Now try removing tx10 and verify the sort order returns to normal
-    pool.removeRecursive(pool.GetIter(tx10.GetHash()).value()->GetTx(), REMOVAL_REASON_DUMMY);
+    pool.removeRecursive(pool.GetIter(tx10.GetHash())->impl->GetTx(), REMOVAL_REASON_DUMMY);
     CheckSort<descendant_score>(pool, snapshotOrder);
 
-    pool.removeRecursive(pool.GetIter(tx9.GetHash()).value()->GetTx(), REMOVAL_REASON_DUMMY);
-    pool.removeRecursive(pool.GetIter(tx8.GetHash()).value()->GetTx(), REMOVAL_REASON_DUMMY);
+    pool.removeRecursive(pool.GetIter(tx9.GetHash())->impl->GetTx(), REMOVAL_REASON_DUMMY);
+    pool.removeRecursive(pool.GetIter(tx8.GetHash())->impl->GetTx(), REMOVAL_REASON_DUMMY);
 }
 
 BOOST_AUTO_TEST_CASE(MempoolAncestorIndexingTest)

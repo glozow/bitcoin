@@ -35,11 +35,13 @@
 
 using MemPoolMultiIndex::ancestor_score;
 using MemPoolMultiIndex::CompareTxMemPoolEntryByAncestorFee;
+using MemPoolMultiIndex::raw_txiter;
+using MemPoolMultiIndex::txiter;
 
 // Container for tracking updates to ancestor feerate as we include (parent)
 // transactions in a block
 struct CTxMemPoolModifiedEntry {
-    explicit CTxMemPoolModifiedEntry(CTxMemPool::txiter entry)
+    explicit CTxMemPoolModifiedEntry(raw_txiter entry)
     {
         iter = entry;
         nSizeWithAncestors = entry->GetSizeWithAncestors();
@@ -53,26 +55,26 @@ struct CTxMemPoolModifiedEntry {
     size_t GetTxSize() const { return iter->GetTxSize(); }
     const CTransaction& GetTx() const { return iter->GetTx(); }
 
-    CTxMemPool::txiter iter;
+    raw_txiter iter;
     uint64_t nSizeWithAncestors;
     CAmount nModFeesWithAncestors;
     int64_t nSigOpCostWithAncestors;
 };
 
-/** Comparator for CTxMemPool::txiter objects.
+/** Comparator for MemPoolMultiIndex::txiter objects.
  *  It simply compares the internal memory address of the CTxMemPoolEntry object
  *  pointed to. This means it has no meaning, and is only useful for using them
  *  as key in other indexes.
  */
 struct CompareCTxMemPoolIter {
-    bool operator()(const CTxMemPool::txiter& a, const CTxMemPool::txiter& b) const
+    bool operator()(const raw_txiter& a, const raw_txiter& b) const
     {
         return &(*a) < &(*b);
     }
 };
 
 struct modifiedentry_iter {
-    typedef CTxMemPool::txiter result_type;
+    typedef raw_txiter result_type;
     result_type operator() (const CTxMemPoolModifiedEntry &entry) const
     {
         return entry.iter;
@@ -83,7 +85,7 @@ struct modifiedentry_iter {
 // This is sufficient to sort an ancestor package in an order that is valid
 // to appear in a block.
 struct CompareTxIterByAncestorCount {
-    bool operator()(const CTxMemPool::txiter& a, const CTxMemPool::txiter& b) const
+    bool operator()(const raw_txiter& a, const raw_txiter& b) const
     {
         if (a->GetCountWithAncestors() != b->GetCountWithAncestors()) {
             return a->GetCountWithAncestors() < b->GetCountWithAncestors();
@@ -94,7 +96,7 @@ struct CompareTxIterByAncestorCount {
 
 struct update_for_parent_inclusion
 {
-    explicit update_for_parent_inclusion(CTxMemPool::txiter it) : iter(it) {}
+    explicit update_for_parent_inclusion(raw_txiter it) : iter(it) {}
 
     void operator() (CTxMemPoolModifiedEntry &e)
     {
@@ -103,7 +105,7 @@ struct update_for_parent_inclusion
         e.nSigOpCostWithAncestors -= iter->GetSigOpCost();
     }
 
-    CTxMemPool::txiter iter;
+    raw_txiter iter;
 };
 
 typedef boost::multi_index_container<
@@ -311,7 +313,7 @@ bool BlockAssembler::TestPackage(uint64_t packageSize, int64_t packageSigOpsCost
 // - transaction finality (locktime)
 bool BlockAssembler::TestPackageTransactions(const CTxMemPool::setEntries& package) const
 {
-    for (CTxMemPool::txiter it : package) {
+    for (raw_txiter it : package) {
         if (!IsFinalTx(it->GetTx(), nHeight, m_lock_time_cutoff)) {
             return false;
         }
@@ -319,7 +321,14 @@ bool BlockAssembler::TestPackageTransactions(const CTxMemPool::setEntries& packa
     return true;
 }
 
-void BlockAssembler::AddToBlock(CTxMemPool::txiter iter)
+/** Add a tx to the block */
+static void AddToBlock(std::unique_ptr<node::CBlockTemplate>& pblocktemplate,
+    raw_txiter iter,
+    uint64_t& nBlockWeight,
+    uint64_t& nBlockTx,
+    uint64_t& nBlockSigOpsCost,
+    CAmount& nFees,
+    std::unordered_set<uint256, SaltedTxidHasher>& inBlock)
 {
     pblocktemplate->block.vtx.emplace_back(iter->GetSharedTx());
     pblocktemplate->vTxFees.push_back(iter->GetFee());
@@ -348,11 +357,11 @@ static int UpdatePackagesForAdded(const CTxMemPool& mempool,
     AssertLockHeld(mempool.cs);
 
     int nDescendantsUpdated = 0;
-    for (CTxMemPool::txiter it : alreadyAdded) {
+    for (txiter it : alreadyAdded) {
         CTxMemPool::setEntries descendants;
         mempool.CalculateDescendants(it, descendants);
         // Insert all descendants (not yet in block) into the modified set
-        for (CTxMemPool::txiter desc : descendants) {
+        for (raw_txiter desc : descendants) {
             if (alreadyAdded.count(desc)) {
                 continue;
             }
@@ -362,13 +371,14 @@ static int UpdatePackagesForAdded(const CTxMemPool& mempool,
                 CTxMemPoolModifiedEntry modEntry(desc);
                 mit = mapModifiedTx.insert(modEntry).first;
             }
-            mapModifiedTx.modify(mit, update_for_parent_inclusion(it));
+            mapModifiedTx.modify(mit, update_for_parent_inclusion(it.impl));
         }
     }
     return nDescendantsUpdated;
 }
 
-void BlockAssembler::SortForBlock(const CTxMemPool::setEntries& package, std::vector<CTxMemPool::txiter>& sortedEntries)
+/** Sort the package in an order that is valid to appear in a block */
+static void SortForBlock(const CTxMemPool::setEntries& package, std::vector<raw_txiter>& sortedEntries)
 {
     // Sort package by ancestor count
     // If a transaction A depends on transaction B, then A's ancestor count
@@ -400,7 +410,7 @@ void BlockAssembler::addPackageTxs(const CTxMemPool& mempool, int& nPackagesSele
     std::set<uint256> failedTx;
 
     CTxMemPool::indexed_transaction_set::index<ancestor_score>::type::iterator mi = mempool.mapTx.get<ancestor_score>().begin();
-    CTxMemPool::txiter iter;
+    raw_txiter iter;
 
     // Limit the number of attempts to add transactions to the block when it is
     // close to full; this is just a simple heuristic to finish quickly if the
@@ -512,11 +522,18 @@ void BlockAssembler::addPackageTxs(const CTxMemPool& mempool, int& nPackagesSele
         nConsecutiveFailed = 0;
 
         // Package can be added. Sort the entries in a valid order.
-        std::vector<CTxMemPool::txiter> sortedEntries;
+        std::vector<raw_txiter> sortedEntries;
         SortForBlock(ancestors, sortedEntries);
 
         for (size_t i = 0; i < sortedEntries.size(); ++i) {
-            AddToBlock(sortedEntries[i]);
+            AddToBlock(
+                pblocktemplate,
+                sortedEntries[i],
+                nBlockWeight,
+                nBlockTx,
+                nBlockSigOpsCost,
+                nFees,
+                inBlock);
             // Erase from the modified set, if present
             mapModifiedTx.erase(sortedEntries[i]);
         }

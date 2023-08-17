@@ -13,6 +13,8 @@
 #include <optional>
 #include <vector>
 
+using MemPoolMultiIndex::setEntries;
+
 BOOST_FIXTURE_TEST_SUITE(miniminer_tests, TestingSetup)
 
 static inline CTransactionRef make_tx(const std::vector<COutPoint>& inputs, size_t num_outputs)
@@ -142,7 +144,7 @@ BOOST_FIXTURE_TEST_CASE(miniminer_1p1c, TestChain100Setup)
     };
     std::map<uint256, TxDimensions> tx_dims;
     for (const auto& tx : all_transactions) {
-        const auto it = pool.GetIter(tx->GetHash()).value();
+        const auto it = pool.GetIter(tx->GetHash())->impl;
         tx_dims.emplace(tx->GetHash(), TxDimensions{it->GetTxSize(), it->GetModifiedFee(),
                                               CFeeRate(it->GetModifiedFee(), it->GetTxSize())});
     }
@@ -434,16 +436,20 @@ BOOST_FIXTURE_TEST_CASE(calculate_cluster, TestChain100Setup)
         lasttx = tx;
     }
     const auto cluster_500tx = pool.GatherClusters({lasttx->GetHash()});
-    CTxMemPool::setEntries cluster_500tx_set{cluster_500tx.begin(), cluster_500tx.end()};
-    BOOST_CHECK_EQUAL(cluster_500tx.size(), cluster_500tx_set.size());
+    Assert(cluster_500tx);
+    setEntries cluster_500tx_set;
+    for (const auto& uptr : *cluster_500tx) {
+        cluster_500tx_set.insert(uptr.impl);
+    }
+    BOOST_CHECK_EQUAL(cluster_500tx->size(), cluster_500tx_set.size());
     const auto vec_iters_500 = pool.GetIterVec(chain_txids);
-    for (const auto& iter : vec_iters_500) BOOST_CHECK(cluster_500tx_set.count(iter));
+    for (const auto& iter : *vec_iters_500) BOOST_CHECK(cluster_500tx_set.count(iter.impl));
 
     // GatherClusters stops at 500 transactions.
     const auto tx_501 = make_tx({COutPoint{lasttx->GetHash(), 0}}, /*num_outputs=*/1);
     pool.addUnchecked(entry.Fee(CENT).FromTx(tx_501));
-    const auto cluster_501 = pool.GatherClusters({tx_501->GetHash()});
-    BOOST_CHECK_EQUAL(cluster_501.size(), 0);
+    const auto cluster_501{pool.GatherClusters({tx_501->GetHash()})};
+    BOOST_CHECK_EQUAL(cluster_501->size(), 0);
 
     // Zig Zag cluster:
     // txp0     txp1     txp2    ...  txp48  txp49
@@ -467,10 +473,14 @@ BOOST_FIXTURE_TEST_CASE(calculate_cluster, TestChain100Setup)
     const std::vector<size_t> indices{0, 22, 72, zigzag_txids.size() - 1};
     for (const auto index : indices) {
         const auto cluster = pool.GatherClusters({zigzag_txids[index]});
-        BOOST_CHECK_EQUAL(cluster.size(), zigzag_txids.size());
-        CTxMemPool::setEntries clusterset{cluster.begin(), cluster.end()};
-        BOOST_CHECK_EQUAL(cluster.size(), clusterset.size());
-        for (const auto& iter : vec_iters_zigzag) BOOST_CHECK(clusterset.count(iter));
+        Assert(cluster);
+        BOOST_CHECK_EQUAL(cluster->size(), zigzag_txids.size());
+        setEntries clusterset;
+        for (const auto& uptr : *cluster) {
+            clusterset.insert(uptr.impl);
+        }
+        BOOST_CHECK_EQUAL(cluster->size(), clusterset.size());
+        for (const auto& iter : *vec_iters_zigzag) BOOST_CHECK(clusterset.count(iter.impl));
     }
 }
 
