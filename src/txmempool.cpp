@@ -31,6 +31,10 @@
 #include <string_view>
 #include <utility>
 
+using MemPoolMultiIndex::CompareTxMemPoolEntryByScore;
+using MemPoolMultiIndex::descendant_score;
+using MemPoolMultiIndex::entry_time;
+
 bool TestLockPointValidity(CChain& active_chain, const LockPoints& lp)
 {
     AssertLockHeld(cs_main);
