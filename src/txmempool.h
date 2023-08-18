@@ -556,10 +556,7 @@ public:
      * triggered.
      *
      */
-    bool visited(const txiter& it) const EXCLUSIVE_LOCKS_REQUIRED(cs, m_epoch)
-    {
-        return m_epoch.visited(it.impl->m_epoch_marker);
-    }
+    bool visited(const txiter& it) const EXCLUSIVE_LOCKS_REQUIRED(cs, m_epoch);
 };
 
 /**

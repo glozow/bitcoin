@@ -579,6 +579,11 @@ void CTxMemPool::removeUnchecked(txiter& tx_it, MemPoolRemovalReason reason)
     if (minerPolicyEstimator) {minerPolicyEstimator->removeTx(hash, false);}
 }
 
+bool CTxMemPool::visited(const txiter& it) const EXCLUSIVE_LOCKS_REQUIRED(cs, m_epoch)
+{
+    return m_epoch.visited(it.impl->m_epoch_marker);
+}
+
 // Calculates descendants of entry that are not already in setDescendants, and adds to
 // setDescendants. Assumes entryit is already a tx in the mempool and CTxMemPoolEntry::m_children
 // is correct for tx and all descendants.
