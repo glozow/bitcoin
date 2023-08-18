@@ -5,6 +5,7 @@
 #include <node/mini_miner.h>
 
 #include <consensus/amount.h>
+#include <mempool_set_definitions.h>
 #include <policy/feerate.h>
 #include <primitives/transaction.h>
 #include <timedata.h>

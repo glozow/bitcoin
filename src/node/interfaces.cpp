@@ -20,6 +20,7 @@
 #include <kernel/mempool_entry.h>
 #include <logging.h>
 #include <mapport.h>
+#include <mempool_set_definitions.h>
 #include <net.h>
 #include <net_processing.h>
 #include <netaddress.h>

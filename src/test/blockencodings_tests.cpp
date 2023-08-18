@@ -5,6 +5,7 @@
 #include <blockencodings.h>
 #include <chainparams.h>
 #include <consensus/merkle.h>
+#include <mempool_set_definitions.h>
 #include <pow.h>
 #include <streams.h>
 #include <test/util/random.h>

@@ -34,6 +34,16 @@
 
 class CChain;
 
+#ifndef BITCOIN_MEMPOOL_SET_DEFINITIONS_H
+namespace MemPoolMultiIndex {
+struct txiter;
+struct IndexedDisconnectedTransactionsImpl;
+struct DisconnectedTransactionsIteratorImpl;
+struct MapTxImpl;
+struct setEntries;
+} // namespace MemPoolMultiIndex
+#endif // BITCOIN_MEMPOOL_SET_DEFINITIONS_H
+
 /** Fake height value used in Coin to signify they are only in the memory pool (since 0.8) */
 static const uint32_t MEMPOOL_HEIGHT = 0x7FFFFFFF;
 
@@ -197,7 +207,6 @@ public:
      * the mempool is consistent with the new chain tip and fully populated.
      */
 
-    using indexed_transaction_set = MemPoolMultiIndex::indexed_transaction_set;
     using MapTxImpl = MemPoolMultiIndex::MapTxImpl;
 
     mutable RecursiveMutex cs;
@@ -262,6 +271,8 @@ public:
      * in the pool.
      */
     explicit CTxMemPool(const Options& opts);
+
+    ~CTxMemPool();
 
     /**
      * If sanity-checking is turned on, check makes sure the pool is

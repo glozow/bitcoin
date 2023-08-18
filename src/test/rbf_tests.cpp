@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #include <common/system.h>
+#include <mempool_set_definitions.h>
 #include <policy/rbf.h>
 #include <random.h>
 #include <test/util/txmempool.h>

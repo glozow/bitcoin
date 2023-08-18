@@ -10,6 +10,7 @@
 #include <chainparams.h>
 #include <core_io.h>
 #include <kernel/mempool_entry.h>
+#include <mempool_set_definitions.h>
 #include <node/mempool_persist_args.h>
 #include <policy/rbf.h>
 #include <policy/settings.h>

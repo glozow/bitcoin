@@ -10,6 +10,7 @@
 #include <crypto/sha256.h>
 #include <crypto/siphash.h>
 #include <logging.h>
+#include <mempool_set_definitions.h>
 #include <random.h>
 #include <streams.h>
 #include <txmempool.h>
