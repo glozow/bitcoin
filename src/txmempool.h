@@ -215,8 +215,6 @@ private:
     void UpdateParent(txiter& entry, txiter& parent, bool add) EXCLUSIVE_LOCKS_REQUIRED(cs);
     void UpdateChild(txiter& entry, txiter& child, bool add) EXCLUSIVE_LOCKS_REQUIRED(cs);
 
-    std::vector<MemPoolMultiIndex::const_txiter> GetSortedDepthAndScore() const EXCLUSIVE_LOCKS_REQUIRED(cs);
-
     /**
      * Track locally submitted transactions to periodically retry initial broadcast.
      */
