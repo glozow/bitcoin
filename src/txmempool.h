@@ -466,11 +466,7 @@ public:
      */
     void SetLoadTried(bool load_tried);
 
-    unsigned long size() const
-    {
-        LOCK(cs);
-        return mapTx->impl.size();
-    }
+    unsigned long size() const;
 
     uint64_t GetTotalTxSize() const EXCLUSIVE_LOCKS_REQUIRED(cs)
     {
@@ -484,21 +480,10 @@ public:
         return m_total_fee;
     }
 
-    bool exists(const GenTxid& gtxid) const
-    {
-        LOCK(cs);
-        if (gtxid.IsWtxid()) {
-            return (mapTx->impl.get<MemPoolMultiIndex::index_by_wtxid>().count(gtxid.GetHash()) != 0);
-        }
-        return (mapTx->impl.count(gtxid.GetHash()) != 0);
-    }
+    bool exists(const GenTxid& gtxid) const;
 
     CTransactionRef get(const uint256& hash) const;
-    std::unique_ptr<txiter> get_iter_from_wtxid(const uint256& wtxid) const EXCLUSIVE_LOCKS_REQUIRED(cs)
-    {
-        AssertLockHeld(cs);
-        return std::make_unique<txiter>(mapTx->impl.project<0>(mapTx->impl.get<MemPoolMultiIndex::index_by_wtxid>().find(wtxid)));
-    }
+    std::unique_ptr<txiter> get_iter_from_wtxid(const uint256& wtxid) const EXCLUSIVE_LOCKS_REQUIRED(cs);
     TxMempoolInfo info(const GenTxid& gtxid) const;
 
     /** Returns info for a transaction if its entry_sequence < last_sequence */
