@@ -211,9 +211,6 @@ public:
 
     uint64_t CalculateDescendantMaximum(txiter entry) const EXCLUSIVE_LOCKS_REQUIRED(cs);
 private:
-    typedef std::map<txiter, setEntries, CompareIteratorByHash> cacheMap;
-
-
     void UpdateParent(txiter entry, txiter parent, bool add) EXCLUSIVE_LOCKS_REQUIRED(cs);
     void UpdateChild(txiter entry, txiter child, bool add) EXCLUSIVE_LOCKS_REQUIRED(cs);
 
@@ -546,36 +543,6 @@ public:
     }
 
 private:
-    /** UpdateForDescendants is used by UpdateTransactionsFromBlock to update
-     *  the descendants for a single transaction that has been added to the
-     *  mempool but may have child transactions in the mempool, eg during a
-     *  chain reorg.
-     *
-     * @pre CTxMemPoolEntry::m_children is correct for the given tx and all
-     *      descendants.
-     * @pre cachedDescendants is an accurate cache where each entry has all
-     *      descendants of the corresponding key, including those that should
-     *      be removed for violation of ancestor limits.
-     * @post if updateIt has any non-excluded descendants, cachedDescendants has
-     *       a new cache line for updateIt.
-     * @post descendants_to_remove has a new entry for any descendant which exceeded
-     *       ancestor limits relative to updateIt.
-     *
-     * @param[in] updateIt the entry to update for its descendants
-     * @param[in,out] cachedDescendants a cache where each line corresponds to all
-     *     descendants. It will be updated with the descendants of the transaction
-     *     being updated, so that future invocations don't need to walk the same
-     *     transaction again, if encountered in another transaction chain.
-     * @param[in] setExclude the set of descendant transactions in the mempool
-     *     that must not be accounted for (because any descendants in setExclude
-     *     were added to the mempool after the transaction being updated and hence
-     *     their state is already reflected in the parent state).
-     * @param[out] descendants_to_remove Populated with the txids of entries that
-     *     exceed ancestor limits. It's the responsibility of the caller to
-     *     removeRecursive them.
-     */
-    void UpdateForDescendants(txiter updateIt, cacheMap& cachedDescendants,
-                              const std::set<uint256>& setExclude, std::set<uint256>& descendants_to_remove) EXCLUSIVE_LOCKS_REQUIRED(cs);
     /** Update ancestors of hash to add/remove it as a descendant transaction. */
     void UpdateAncestorsOf(bool add, txiter hash, setEntries &setAncestors) EXCLUSIVE_LOCKS_REQUIRED(cs);
     /** Set ancestor state for an entry */
