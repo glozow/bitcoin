@@ -851,27 +851,9 @@ public:
  * that are included in blocks in the new chain, and then process the remaining
  * still-unconfirmed transactions at the end.
  */
-
-// multi_index tag names
-struct txid_index {};
-struct insertion_order {};
-
 struct DisconnectedBlockTransactions {
-    typedef boost::multi_index_container<
-        CTransactionRef,
-        boost::multi_index::indexed_by<
-            // sorted by txid
-            boost::multi_index::hashed_unique<
-                boost::multi_index::tag<txid_index>,
-                mempoolentry_txid,
-                SaltedTxidHasher
-            >,
-            // sorted by order in the blockchain
-            boost::multi_index::sequenced<
-                boost::multi_index::tag<insertion_order>
-            >
-        >
-    > indexed_disconnected_transactions;
+    uint64_t cachedInnerUsage = 0;
+    std::list<CTransactionRef> queuedTx;
 
     // It's almost certainly a logic bug if we don't clear out queuedTx before
     // destruction, as we add to it while disconnecting blocks, and then we
@@ -883,18 +865,14 @@ struct DisconnectedBlockTransactions {
     // reorg, besides draining this object).
     ~DisconnectedBlockTransactions() { assert(queuedTx.empty()); }
 
-    indexed_disconnected_transactions queuedTx;
-    uint64_t cachedInnerUsage = 0;
-
-    // Estimate the overhead of queuedTx to be 6 pointers + an allocation, as
-    // no exact formula for boost::multi_index_contained is implemented.
+    // Estimate the overhead of std::list to be 3 pointers + an allocation per entry.
     size_t DynamicMemoryUsage() const {
-        return memusage::MallocUsage(sizeof(CTransactionRef) + 6 * sizeof(void*)) * queuedTx.size() + cachedInnerUsage;
+        return memusage::MallocUsage(sizeof(CTransactionRef) + 3 * sizeof(void*)) * queuedTx.size() + cachedInnerUsage;
     }
 
     void addTransaction(const CTransactionRef& tx)
     {
-        queuedTx.insert(tx);
+        queuedTx.push_back(tx);
         cachedInnerUsage += RecursiveDynamicUsage(tx);
     }
 
@@ -905,20 +883,26 @@ struct DisconnectedBlockTransactions {
         if (queuedTx.empty()) {
             return;
         }
-        for (auto const &tx : vtx) {
-            auto it = queuedTx.find(tx->GetHash());
-            if (it != queuedTx.end()) {
+        // Create a set of all block txids.
+        std::unordered_set<uint256, SaltedTxidHasher> txids;
+        std::transform(vtx.cbegin(), vtx.cend(), std::inserter(txids, txids.end()), [](const auto& tx) { return tx->GetHash(); });
+        // Iterate through entire list once, removing any transactions in the block.
+        auto it = queuedTx.begin();
+        while (it != queuedTx.end()) {
+            auto it_next = std::next(it);
+            if (txids.count((*it)->GetHash()) > 0) {
                 cachedInnerUsage -= RecursiveDynamicUsage(*it);
                 queuedTx.erase(it);
             }
+            it = it_next;
         }
     }
 
     // Remove an entry by insertion_order index, and update memory usage.
-    void removeEntry(indexed_disconnected_transactions::index<insertion_order>::type::iterator entry)
+    void remove_first()
     {
-        cachedInnerUsage -= RecursiveDynamicUsage(*entry);
-        queuedTx.get<insertion_order>().erase(entry);
+        cachedInnerUsage -= RecursiveDynamicUsage(queuedTx.front());
+        queuedTx.pop_front();
     }
 
     void clear()
