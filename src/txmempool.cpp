@@ -465,7 +465,7 @@ void CTxMemPool::addUnchecked(const CTxMemPoolEntry &entry, setEntries &setAnces
         minerPolicyEstimator->processTransaction(entry, validFeeEstimate);
     }
 
-    vTxHashes.emplace_back(tx.GetWitnessHash(), newit);
+    vTxHashes.emplace_back(newit->GetSharedTx());
     newit->vTxHashesIdx = vTxHashes.size() - 1;
 
     TRACE3(mempool, added,
@@ -503,8 +503,12 @@ void CTxMemPool::removeUnchecked(txiter it, MemPoolRemovalReason reason)
     RemoveUnbroadcastTx(hash, true /* add logging because unchecked */ );
 
     if (vTxHashes.size() > 1) {
-        vTxHashes[it->vTxHashesIdx] = std::move(vTxHashes.back());
-        vTxHashes[it->vTxHashesIdx].second->vTxHashesIdx = it->vTxHashesIdx;
+        const auto this_idx{it->vTxHashesIdx};
+        const auto& that_wtxid{vTxHashes.back()->GetWitnessHash()};
+        // Remove entry from vTxHashes by swapping with the back and deleting the back.
+        vTxHashes[this_idx] = vTxHashes.back();
+        // Update vTxHashesIdx of the now-moved entry.
+        get_iter_from_wtxid(that_wtxid)->vTxHashesIdx = this_idx;
         vTxHashes.pop_back();
         if (vTxHashes.size() * 2 < vTxHashes.capacity())
             vTxHashes.shrink_to_fit();
