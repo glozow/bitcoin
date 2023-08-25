@@ -301,8 +301,8 @@ void Chainstate::MaybeUpdateMempoolForReorg(
     // Iterate disconnectpool in reverse, so that we add transactions
     // back to the mempool starting with the earliest transaction that had
     // been previously seen in a block.
-    auto it = disconnectpool.queuedTx.get<insertion_order>().rbegin();
-    while (it != disconnectpool.queuedTx.get<insertion_order>().rend()) {
+    auto it = disconnectpool.queuedTx.rbegin();
+    while (it != disconnectpool.queuedTx.rend()) {
         // ignore validation errors in resurrected transactions
         if (!fAddToMempool || (*it)->IsCoinBase() ||
             AcceptToMemoryPool(*this, *it, GetTime(),
@@ -2724,9 +2724,9 @@ bool Chainstate::DisconnectTip(BlockValidationState& state, DisconnectedBlockTra
         }
         while (disconnectpool->DynamicMemoryUsage() > MAX_DISCONNECTED_TX_POOL_SIZE * 1000) {
             // Drop the earliest entry, and remove its children from the mempool.
-            auto it = disconnectpool->queuedTx.get<insertion_order>().begin();
-            m_mempool->removeRecursive(**it, MemPoolRemovalReason::REORG);
-            disconnectpool->removeEntry(it);
+            auto ptx = disconnectpool->queuedTx.front();
+            m_mempool->removeRecursive(*ptx, MemPoolRemovalReason::REORG);
+            disconnectpool->remove_first();
         }
     }
 
