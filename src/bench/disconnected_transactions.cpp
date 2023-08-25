@@ -91,8 +91,7 @@ static void Reorg(const ReorgTxns& reorg)
     // Pop transactions until empty, similar to when re-adding transactions to mempool. This is
     // also necessary to clear the data structures before destruction of disconnectpool.
     while (!disconnectpool.queuedTx.empty()) {
-        auto it = disconnectpool.queuedTx.get<insertion_order>().begin();
-        disconnectpool.removeEntry(it);
+        disconnectpool.remove_first();
     }
 }
 
