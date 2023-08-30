@@ -25,12 +25,17 @@ class MiniMinerMempoolEntry
 public:
     CAmount fee_with_ancestors;
     int64_t vsize_with_ancestors;
-    explicit MiniMinerMempoolEntry(CTxMemPool::txiter entry) :
-        fee_individual{entry->GetModifiedFee()},
-        tx{entry->GetSharedTx()},
-        vsize_individual(entry->GetTxSize()),
-        fee_with_ancestors{entry->GetModFeesWithAncestors()},
-        vsize_with_ancestors(entry->GetSizeWithAncestors())
+
+    explicit MiniMinerMempoolEntry(CAmount fee_individual_in,
+                                   CTransactionRef tx_in,
+                                   int64_t vsize_individual_in,
+                                   CAmount fee_anc_in,
+                                   int64_t vsize_anc_in) :
+        fee_individual{fee_individual_in},
+        tx{tx_in},
+        vsize_individual{vsize_individual_in},
+        fee_with_ancestors{fee_anc_in},
+        vsize_with_ancestors{vsize_anc_in}
     { }
 
     CAmount GetModifiedFee() const { return fee_individual; }
