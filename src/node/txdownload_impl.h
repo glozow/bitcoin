@@ -115,6 +115,32 @@ public:
     CRollingBloomFilter m_recent_rejects GUARDED_BY(m_tx_download_mutex){120'000, 0.000'001};
     uint256 hashRecentRejectsChainTip GUARDED_BY(m_tx_download_mutex);
 
+    /**
+     * Filter for transactions or packages of transactions that were recently rejected by
+     * the mempool but are eligible for reconsideration if submitted with other transactions.
+     * This filter only contains wtxids of individual transactions and combined hashes of packages
+     * (see GetCombinedHash and GetPackageHash).
+     *
+     * When a transaction's error is too low fee (in a package or by itself), add its wtxid to this
+     * filter. If it was in a package, also add the combined hash of the transactions in its
+     * subpackage to this filter. When a package fails for any reason, add the combined hash of all
+     * transactions in the package info to this filter.
+     *
+     * Upon receiving an announcement for a transaction, if it exists in this filter, do not
+     * download the txdata. Upon receiving a package info, if the combined hash of its transactions
+     * are in this filter, do not download the txdata.
+     *
+     * Reset this filter when the chain tip changes.
+     *
+     * We will only add wtxids to this filter. Groups of multiple transactions are represented by
+     * the hash of their wtxids, concatenated together in lexicographical order.
+     *
+     * Parameters are picked to be identical to that of m_recent_rejects, with the same rationale.
+     * Memory used: 1.3 MB
+     * FIXME: this filter can probably be smaller, but how much smaller?
+     */
+    CRollingBloomFilter m_recent_rejects_reconsiderable GUARDED_BY(::cs_main){120'000, 0.000'001};
+
     /*
      * Filter for transactions that have been recently confirmed.
      * We use this to avoid requesting transactions that have already been

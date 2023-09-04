@@ -212,6 +212,13 @@ bool TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& tx, const TxValida
         break;
     }
     case TxValidationResult::TX_SINGLE_FAILURE:
+    {
+        // We can add the wtxid of this transaction to our reconsiderable reject filter.
+        // Do not add this transaction to m_recent_rejects because we want to reconsider it if we
+        // see it in a package.
+        m_recent_rejects_reconsiderable.insert(tx->GetWitnessHash());
+        break;
+    }
     case TxValidationResult::TX_CONSENSUS:
     case TxValidationResult::TX_RECENT_CONSENSUS_CHANGE:
     case TxValidationResult::TX_NOT_STANDARD:
