@@ -80,7 +80,9 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
         // trigger orphanage functions
         LIMITED_WHILE(fuzzed_data_provider.ConsumeBool(), 10 * DEFAULT_MAX_ORPHAN_TRANSACTIONS)
         {
-            NodeId peer_id = fuzzed_data_provider.ConsumeIntegral<NodeId>();
+            // Limit possible peers to hit more multiple-announcer behavior.
+            NodeId peer_id = fuzzed_data_provider.ConsumeIntegralInRange<NodeId>(0, 5);
+            const auto& wtxid = tx->GetWitnessHash();
 
             CallOneOf(
                 fuzzed_data_provider,
@@ -91,21 +93,27 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
                     {
                         CTransactionRef ref = orphanage.GetTxToReconsider(peer_id);
                         if (ref) {
-                            bool have_tx = orphanage.HaveTx(GenTxid::Txid(ref->GetHash())) || orphanage.HaveTx(GenTxid::Wtxid(ref->GetHash()));
-                            Assert(have_tx);
+                            Assert(orphanage.HaveTx(GenTxid::Txid(ref->GetHash())) ||
+                                   orphanage.HaveTx(GenTxid::Wtxid(ref->GetWitnessHash())));
                         }
                     }
                 },
                 [&] {
-                    bool have_tx = orphanage.HaveTx(GenTxid::Txid(tx->GetHash())) || orphanage.HaveTx(GenTxid::Wtxid(tx->GetHash()));
+                    bool have_tx = orphanage.HaveTx(GenTxid::Txid(tx->GetHash())) || orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()));
                     // AddTx should return false if tx is too big or already have it
                     // tx weight is unknown, we only check when tx is already in orphanage
                     {
+                        auto total_bytes_before = orphanage.TotalOrphanBytes();
+                        auto peer_bytes_before = orphanage.BytesFromPeer(peer_id);
                         bool add_tx = orphanage.AddTx(tx, peer_id, {});
                         // have_tx == true -> add_tx == false
                         Assert(!have_tx || !add_tx);
+                        if (!have_tx && add_tx) {
+                            Assert(orphanage.BytesFromPeer(peer_id) == peer_bytes_before + tx->GetTotalSize());
+                            Assert(orphanage.TotalOrphanBytes() == total_bytes_before + tx->GetTotalSize());
+                        }
                     }
-                    have_tx = orphanage.HaveTx(GenTxid::Txid(tx->GetHash())) || orphanage.HaveTx(GenTxid::Wtxid(tx->GetHash()));
+                    have_tx = orphanage.HaveTx(GenTxid::Txid(tx->GetHash())) || orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()));
                     {
                         bool add_tx = orphanage.AddTx(tx, peer_id, {});
                         // if have_tx is still false, it must be too big
@@ -114,12 +122,12 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
                     }
                 },
                 [&] {
-                    bool have_tx = orphanage.HaveTx(GenTxid::Txid(tx->GetHash())) || orphanage.HaveTx(GenTxid::Wtxid(tx->GetHash()));
+                    bool have_tx = orphanage.HaveTx(GenTxid::Txid(tx->GetHash())) || orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()));
                     // EraseTx should return 0 if m_orphans doesn't have the tx
                     {
                         Assert(have_tx == orphanage.EraseTx(tx->GetWitnessHash()));
                     }
-                    have_tx = orphanage.HaveTx(GenTxid::Txid(tx->GetHash())) || orphanage.HaveTx(GenTxid::Wtxid(tx->GetHash()));
+                    have_tx = orphanage.HaveTx(GenTxid::Txid(tx->GetHash())) || orphanage.HaveTx(GenTxid::Wtxid(tx->GetWitnessHash()));
                     // have_tx should be false and EraseTx should fail
                     {
                         Assert(!have_tx && !orphanage.EraseTx(tx->GetWitnessHash()));
@@ -127,14 +135,34 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
                 },
                 [&] {
                     orphanage.EraseForPeer(peer_id);
+                    Assert(orphanage.BytesFromPeer(peer_id) == 0);
                 },
                 [&] {
                     // test mocktime and expiry
                     SetMockTime(ConsumeTime(fuzzed_data_provider));
-                    auto limit = fuzzed_data_provider.ConsumeIntegral<unsigned int>();
-                    orphanage.LimitOrphans(limit);
-                    Assert(orphanage.Size() <= limit);
+                    auto count_limit = fuzzed_data_provider.ConsumeIntegral<unsigned int>();
+                    auto size_limit = fuzzed_data_provider.ConsumeIntegral<unsigned int>();
+                    orphanage.LimitOrphans(count_limit, size_limit);
+                    Assert(orphanage.Size() <= count_limit);
+                    Assert(orphanage.TotalOrphanBytes() <= size_limit);
+                },
+                [&] {
+                    // check EraseForBlock
+                    CBlock block;
+                    block.vtx.emplace_back(tx);
+                    orphanage.EraseForBlock(block);
+                    Assert(!orphanage.HaveTx(GenTxid::Wtxid(wtxid)));
+                },
+                [&] {
+                    // EraseOrphanOfPeer
+                    orphanage.EraseOrphanOfPeer(wtxid, peer_id);
+                    Assert(!orphanage.HaveTxAndPeer(GenTxid::Wtxid(wtxid), peer_id));
                 });
+            if (orphanage.Size() == 0) Assert(orphanage.TotalOrphanBytes() == 0);
+            if (orphanage.HaveTx(GenTxid::Wtxid(wtxid))) {
+                Assert(orphanage.HaveTx(GenTxid::Txid(tx->GetHash())));
+                Assert(orphanage.GetParentTxids(wtxid).has_value());
+            }
         }
     }
 }
