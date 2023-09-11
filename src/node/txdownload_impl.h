@@ -12,6 +12,12 @@
 #include <txorphanage.h>
 #include <txrequest.h>
 
+#include <boost/multi_index/indexed_by.hpp>
+#include <boost/multi_index/ordered_index.hpp>
+#include <boost/multi_index/sequenced_index.hpp>
+#include <boost/multi_index/tag.hpp>
+#include <boost/multi_index_container.hpp>
+
 namespace node {
 /** Maximum number of in-flight transaction requests from a peer. It is not a hard limit, but the threshold at which
  *  point the OVERLOADED_PEER_TX_DELAY kicks in. */
@@ -86,6 +92,21 @@ struct GenRequest {
     private:
     explicit GenRequest(const uint256& id, Type type) : m_id{id}, m_type{type} {}
 
+};
+struct PackageToValidate {
+	/** Who provided the package info. */
+	const NodeId m_info_provider;
+	/** Representative transaction, i.e. orphan in an ancestor package. */
+	const uint256 m_rep_wtxid;
+	/** Transactions to submit for mempool validation. */
+	const Package m_unvalidated_txns;
+
+	PackageToValidate() = delete;
+	PackageToValidate(NodeId info_provider, const uint256& rep_wtxid, const Package& txns) :
+		m_info_provider{info_provider},
+		m_rep_wtxid{rep_wtxid},
+		m_unvalidated_txns{txns}
+	{}
 };
 
 class TxDownloadImpl {
@@ -217,12 +238,99 @@ public:
     /** unique ID for a package information request for a tx to a peer. */
     using PackageInfoRequestId = uint256;
     static PackageInfoRequestId GetPackageInfoRequestId(NodeId nodeid, const uint256& wtxid, PackageRelayVersions version) {
-        return (CHashWriter(SER_GETHASH, 0) << nodeid << wtxid << uint64_t{version}).GetSHA256(); 
+        return (CHashWriter(SER_GETHASH, 0) << nodeid << wtxid << uint64_t{version}).GetSHA256();
     }
+    /** unique ID for a getpkgtxns request to a peer. */
+    using PackageTxnsRequestId = uint256;
+    static PackageTxnsRequestId GetPackageTxnsRequestId(NodeId nodeid, const std::vector<uint256>& wtxids) {
+        return (CHashWriter(SER_GETHASH, 0) << nodeid << GetCombinedHash(wtxids)).GetSHA256();
+    }
+    static PackageTxnsRequestId GetPackageTxnsRequestId(NodeId nodeid, const std::vector<CTransactionRef>& pkgtxns) {
+        return (CHashWriter(SER_GETHASH, 0) << nodeid << GetPackageHash(pkgtxns)).GetSHA256();
+    }
+
+    struct IteratorComparator {
+        template<typename I>
+        bool operator()(const I& a, const I& b) const { return &(*a) < &(*b); }
+    };
 
     /** Keep track of the package info requests we have sent recently. Used to identify unsolicited
      * package info messages and already-sent-recently requests. */
     CRollingBloomFilter m_package_info_requested GUARDED_BY(m_tx_download_mutex){50'000, 0.000001};
+
+    /** Represents AncPkgInfo for which we are missing transaction data. */
+    struct PackageToDownload {
+        /** Representative wtxid, i.e. the orphan in an ancestor package. */
+        const uint256 m_rep_wtxid;
+
+		/** All the transactions in this ancestor package. */
+        std::vector<uint256> m_package_wtxids;
+
+        /** When to stop trying to download this package if we haven't received tx data yet. */
+        std::chrono::microseconds m_expiry;
+
+        /** Who provided the ancpkginfo - this is the peer whose work queue to add this package when
+         * all tx data is received. We expect to receive tx data from this peer. */
+        const NodeId m_pkginfo_provider;
+
+        // Package info without wtxids doesn't make sense.
+        PackageToDownload() = delete;
+        // Constructor if you already know size.
+        PackageToDownload(const uint256& rep_wtxid, const std::vector<uint256>& wtxids,
+                         std::chrono::microseconds expiry, NodeId provider) :
+            m_rep_wtxid{rep_wtxid},
+			m_package_wtxids{wtxids},
+            m_expiry{expiry},
+            m_pkginfo_provider{provider}
+        {}
+        /** Returns wtxid of representative transaction (i.e. the orphan in an ancestor package). */
+        uint256 RepresentativeWtxid() const { return m_rep_wtxid; }
+    };
+
+    // multi index tag names and extractors
+    struct ByRepWtxid {};
+    struct RepresentativeWtxidExtractor
+    {
+        using result_type = uint256;
+        result_type operator() (const PackageToDownload& pkg) const { return pkg.RepresentativeWtxid(); }
+    };
+    struct ByPkgTxnsId {};
+    struct PkgTxnsIdExtractor
+    {
+        using result_type = uint256;
+        result_type operator() (const PackageToDownload& pkg) const {
+            return GetPackageTxnsRequestId(pkg.m_pkginfo_provider, pkg.m_package_wtxids);
+        }
+    };
+    struct ByExpiry {};
+    struct ExpiryExtractor
+    {
+        using result_type = std::chrono::microseconds;
+        result_type operator()(const PackageToDownload& pkg) const { return pkg.m_expiry; }
+    };
+    struct ByPeer {};
+    struct PeerExtractor
+    {
+        using result_type = NodeId;
+        result_type operator()(const PackageToDownload& pkg) const { return pkg.m_pkginfo_provider; }
+    };
+
+    typedef boost::multi_index_container<
+        PackageToDownload,
+        boost::multi_index::indexed_by<
+            // wtxid of the representative transaction
+            boost::multi_index::hashed_unique< boost::multi_index::tag<ByRepWtxid>, RepresentativeWtxidExtractor>,
+            // unique id of the getpkgtxns request
+            boost::multi_index::hashed_unique< boost::multi_index::tag<ByPkgTxnsId>, PkgTxnsIdExtractor>,
+            // expiration time
+            boost::multi_index::ordered_non_unique< boost::multi_index::tag<ByExpiry>, ExpiryExtractor>,
+            // Nodeid of the peer we are downloading the transactions from
+            boost::multi_index::ordered_non_unique< boost::multi_index::tag<ByPeer>, PeerExtractor>
+        >
+    > indexed_packages_to_download;
+
+    /** All of the packages being downloaded. */
+    indexed_packages_to_download m_packages_downloading;
 
     /** Number of wtxid relay peers we have. */
     uint32_t m_num_wtxid_peers GUARDED_BY(m_tx_download_mutex){0};
@@ -239,6 +347,10 @@ private:
 
     /** Add another announcer of an orphan who is a potential candidate for resolution. */
     void AddOrphanAnnouncer(NodeId nodeid, const uint256& orphan_wtxid, std::chrono::microseconds now)
+        EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex);
+
+    /** Expire all entries from m_packages_downloading. */
+    void ExpirePackageToDownload(NodeId nodeid, std::chrono::microseconds current_time)
         EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex);
 
 public:
@@ -309,7 +421,8 @@ public:
 
     /** Updates the orphan resolution tracker, schedules transactions from this package that may
      * need to be requested. */
-    void ReceivedAncpkginfo(NodeId nodeid, const std::vector<uint256>& package_wtxids, std::chrono::microseconds current_time)
+    void ReceivedAncpkginfo(NodeId nodeid,
+		const std::vector<uint256>& package_wtxids, std::chrono::microseconds current_time)
         EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
 
     /** Creates deduplicated list of missing parents (based on AlreadyHaveTx). Adds tx to orphanage
