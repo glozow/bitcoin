@@ -163,6 +163,17 @@ util::Result<CTxMemPool::setEntries> CTxMemPool::CalculateAncestorsAndCheckLimit
     int64_t totalSizeWithAncestors = entry_size;
     setEntries ancestors;
 
+    // Package itself is busting mempool limits; should be rejected even if no staged_ancestors exist
+    if (entry_count > static_cast<uint64_t>(limits.ancestor_count)) {
+        return util::Error{Untranslated(strprintf("too many ancestors in package %u [limit: %u]", entry_count, limits.ancestor_count))};
+    } else if (entry_count > static_cast<uint64_t>(limits.descendant_count)) {
+        return util::Error{Untranslated(strprintf("too many descendants in package %u [limit: %u]", entry_count, limits.descendant_count))};
+    } else if (entry_size > limits.ancestor_size_vbytes) {
+        return util::Error{Untranslated(strprintf("exceeds ancestor size limit %u [limit: %u]", entry_size, limits.ancestor_size_vbytes))};
+    } else if (entry_size > limits.descendant_size_vbytes) {
+        return util::Error{Untranslated(strprintf("exceeds descendant size limit for tx %u [limit: %u]", entry_size, limits.descendant_size_vbytes))};
+    }
+
     while (!staged_ancestors.empty()) {
         const CTxMemPoolEntry& stage = staged_ancestors.begin()->get();
         txiter stageit = mapTx.iterator_to(stage);
