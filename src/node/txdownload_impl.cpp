@@ -69,6 +69,14 @@ void TxDownloadImpl::DisconnectedPeer(NodeId nodeid)
     }
     m_peer_info.erase(nodeid);
     m_sendpackages_received.erase(nodeid);
+    auto& index_by_peer = m_packages_downloading.get<ByPeerView>();
+    auto it = m_packages_downloading.get<ByPeer>().lower_bound(ByPeerView{nodeid, 0});
+    while (it != m_packages_downloading.get<ByPeer>().end() && it->m_pkginfo_provider == nodeid) {
+        // If we're at the end or the next package is from a different peer, stop here.
+        auto it_next = (std::next(it)->m_peer != peer) ? index.end() : std::next(it);
+        m_packages_downloading.get<ByPeer>.erase(it);
+        it = it_next;
+    }
 }
 
 bool TxDownloadImpl::SupportsPackageRelay(NodeId nodeid, PackageRelayVersions version) const
@@ -299,6 +307,19 @@ void TxDownloadImpl::ReceivedTxInv(NodeId peer, const GenTxid& gtxid, std::chron
 {
     LOCK(m_tx_download_mutex);
     AddTxAnnouncement(peer, gtxid, now);
+}
+
+void TxDownloadImpl::ExpirePackagesToDownload(std::chrono::microseconds current_time)
+    EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex)
+{
+    AssertLockHeld(m_tx_download_mutex);
+    // Iterate m_packages_downloading by expiry and remove any whose expiry is in the past.
+    while (!m_packages_downloading.empty()) {
+        auto it = m_packages_downloading.get<ByExpiry>().begin();
+        if (it->m_expiry < current_time) {
+            m_packages_downloading.erase(it);
+        }
+    }
 }
 
 std::vector<GenRequest> TxDownloadImpl::GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time)

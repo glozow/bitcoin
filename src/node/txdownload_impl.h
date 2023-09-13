@@ -309,10 +309,11 @@ public:
         result_type operator()(const PackageToDownload& pkg) const { return pkg.m_expiry; }
     };
     struct ByPeer {};
+    using ByPeerView = std::pair<NodeId, std::chrono::microseconds>;
     struct PeerExtractor
     {
-        using result_type = NodeId;
-        result_type operator()(const PackageToDownload& pkg) const { return pkg.m_pkginfo_provider; }
+        using result_type = ByPeerView;
+        result_type operator()(const PackageToDownload& pkg) const { return std::make_pair(pkg.m_pkginfo_provider, pkg.m_expiry); }
     };
 
     typedef boost::multi_index_container<
@@ -350,7 +351,7 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex);
 
     /** Expire all entries from m_packages_downloading. */
-    void ExpirePackageToDownload(NodeId nodeid, std::chrono::microseconds current_time)
+    void ExpirePackageToDownload(std::chrono::microseconds current_time)
         EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex);
 
 public:
