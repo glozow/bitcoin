@@ -18,7 +18,7 @@ tip or some preceding transaction in the package.
 
 The following rules are enforced for all packages:
 
-* Packages cannot exceed `MAX_PACKAGE_COUNT=25` count and `MAX_PACKAGE_SIZE=101KvB` total size
+* Packages cannot exceed `MAX_PACKAGE_COUNT=25` count and `MAX_PACKAGE_SIZE=101KB` total size
    (#20833)
 
    - *Rationale*: This is already enforced as mempool ancestor/descendant limits. If
@@ -27,6 +27,9 @@ The following rules are enforced for all packages:
 
    - Note that, if these mempool limits change, package limits should be reconsidered. Users may
      also configure their mempool limits differently.
+
+   - Note that the this is serialized size, not "virtual" size as with other limits to allow
+     simpler context-less checks.
 
 * Packages must be topologically sorted. (#20833)
 

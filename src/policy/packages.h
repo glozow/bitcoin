@@ -15,8 +15,11 @@
 
 /** Default maximum number of transactions in a package. */
 static constexpr uint32_t MAX_PACKAGE_COUNT{25};
-/** Default maximum total virtual size of transactions in a package in KvB. */
-static constexpr uint32_t MAX_PACKAGE_SIZE{101};
+/** Default maximum total weight of transactions in a package in KWu and (non-virtual) KB
+    to allow for context-less checks. */
+static constexpr uint32_t MAX_PACKAGE_KWEIGHT = 404;
+static constexpr uint32_t MAX_PACKAGE_SIZE{MAX_PACKAGE_KWEIGHT / WITNESS_SCALE_FACTOR};
+static_assert(MAX_PACKAGE_SIZE == 101);
 static_assert(MAX_PACKAGE_SIZE * WITNESS_SCALE_FACTOR * 1000 >= MAX_STANDARD_TX_WEIGHT);
 
 // If a package is submitted, it must be within the mempool's ancestor/descendant limits. Since a
@@ -47,7 +50,7 @@ class PackageValidationState : public ValidationState<PackageValidationResult> {
 
 /** Context-free package policy checks:
  * 1. The number of transactions cannot exceed MAX_PACKAGE_COUNT.
- * 2. The total virtual size cannot exceed MAX_PACKAGE_SIZE.
+ * 2. The total (non-virtual) size cannot exceed MAX_PACKAGE_SIZE.
  * 3. If any dependencies exist between transactions, parents must appear before children.
  * 4. Transactions cannot conflict, i.e., spend the same inputs.
  */
