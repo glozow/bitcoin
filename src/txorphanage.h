@@ -6,12 +6,16 @@
 #define BITCOIN_TXORPHANAGE_H
 
 #include <net.h>
+#include <policy/policy.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <sync.h>
 
 #include <map>
 #include <set>
+
+/** Maximum total size of orphan transactions stored, in bytes. */
+static constexpr unsigned int DEFAULT_MAX_ORPHAN_TOTAL_SIZE{100 * MAX_STANDARD_TX_WEIGHT};
 
 /** A class to track orphan transactions (failed on TX_MISSING_INPUTS)
  * Since we cannot distinguish orphans from bad transactions with
@@ -46,8 +50,9 @@ public:
     /** Erase all orphans included in or invalidated by a new block */
     void EraseForBlock(const CBlock& block) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
-    /** Limit the orphanage to the given maximum */
-    void LimitOrphans(unsigned int max_orphans, FastRandomContext& rng) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    /** Limit the orphanage to the given maximum. Returns all expired entries. */
+    void LimitOrphans(unsigned int max_orphans, unsigned int max_total_size, FastRandomContext& rng)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Add any orphans that list a particular tx as a parent into the from peer's work set */
     void AddChildrenToWorkSet(const CTransaction& tx) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);;

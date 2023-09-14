@@ -369,7 +369,7 @@ std::pair<bool, std::vector<Txid>> TxDownloadImpl::NewOrphanTx(const CTransactio
     m_orphanage.AddTx(tx, nodeid, unique_parents);
 
     // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789).
-    m_orphanage.LimitOrphans(m_opts.m_max_orphan_txs, m_opts.m_rng);
+    m_orphanage.LimitOrphans(m_opts.m_max_orphan_txs, DEFAULT_MAX_ORPHAN_TOTAL_SIZE, m_opts.m_rng);
 
     // LimitOrphans may select this exact orphan for eviction even though it was just added.
     const bool still_in_orphanage{m_orphanage.HaveTx(GenTxid::Wtxid(wtxid))};

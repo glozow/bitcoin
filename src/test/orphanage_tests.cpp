@@ -148,11 +148,11 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
 
     // Test LimitOrphanTxSize() function:
     FastRandomContext rng{/*fDeterministic=*/true};
-    orphanage.LimitOrphans(40, rng);
+    orphanage.LimitOrphans(40, DEFAULT_MAX_ORPHAN_TOTAL_SIZE, rng);
     BOOST_CHECK(orphanage.CountOrphans() <= 40);
-    orphanage.LimitOrphans(10, rng);
+    orphanage.LimitOrphans(10, DEFAULT_MAX_ORPHAN_TOTAL_SIZE, rng);
     BOOST_CHECK(orphanage.CountOrphans() <= 10);
-    orphanage.LimitOrphans(0, rng);
+    orphanage.LimitOrphans(0, DEFAULT_MAX_ORPHAN_TOTAL_SIZE, rng);
     BOOST_CHECK(orphanage.CountOrphans() == 0);
 
     expected_count = 0;
