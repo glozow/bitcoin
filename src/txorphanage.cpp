@@ -187,7 +187,7 @@ void TxOrphanage::EraseForPeer(NodeId peer)
     if (!Assume(m_peer_bytes_used.count(peer) == 0)) m_peer_bytes_used.erase(peer);
 }
 
-std::vector<Wtxid> TxOrphanage::LimitOrphans(unsigned int max_orphans)
+std::vector<Wtxid> TxOrphanage::LimitOrphans(unsigned int max_orphans, unsigned int max_total_size)
 {
     LOCK(m_mutex);
 
@@ -216,7 +216,7 @@ std::vector<Wtxid> TxOrphanage::LimitOrphans(unsigned int max_orphans)
         if (nErased > 0) LogPrint(BCLog::TXPACKAGES, "Erased %d orphan tx due to expiration\n", nErased);
     }
     FastRandomContext rng;
-    while (m_orphans.size() > max_orphans)
+    while (m_orphans.size() > max_orphans || m_total_orphan_bytes > max_total_size)
     {
         // Evict a random orphan:
         size_t randompos = rng.randrange(m_orphan_list.size());
