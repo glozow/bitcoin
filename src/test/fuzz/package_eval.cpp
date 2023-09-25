@@ -51,6 +51,42 @@ void initialize_tx_pool()
     }
     SyncWithValidationInterfaceQueue();
 }
+struct OutpointsUpdater final : public CValidationInterface {
+    std::set<COutPoint>& m_outpoints_rbf;
+    std::set<COutPoint>& m_outpoints_supply;
+
+    explicit OutpointsUpdater(std::set<COutPoint>& r, std::set<COutPoint>& s)
+        : m_outpoints_rbf{r}, m_outpoints_supply{s} {}
+
+    void TransactionAddedToMempool(const CTransactionRef& tx, uint64_t /* mempool_sequence */) override
+    {
+        // outpoints spent by this tx are not available anymore
+        for (const auto& input : tx->vin) {
+            // No need to remove from m_outpoints_rbf
+            m_outpoints_supply.erase(input.prevout);
+        }
+        // outputs from this tx can now be spent
+        for (uint32_t index{0}; index < tx->vout.size(); ++index) {
+            m_outpoints_rbf.insert(COutPoint{tx->GetHash(), index});
+            m_outpoints_supply.insert(COutPoint{tx->GetHash(), index});
+        }
+    }
+
+    void TransactionRemovedFromMempool(const CTransactionRef& tx, MemPoolRemovalReason reason, uint64_t /* mempool_sequence */) override
+    {
+        // outpoints spent by this tx are now available
+        for (const auto& input : tx->vin) {
+            // Could already exist if this was a replacement
+            m_outpoints_rbf.insert(input.prevout);
+            m_outpoints_supply.insert(input.prevout);
+        }
+        // outpoints created by this tx no longer exist
+        for (uint32_t index{0}; index < tx->vout.size(); ++index) {
+            m_outpoints_rbf.erase(COutPoint{tx->GetHash(), index});
+            m_outpoints_supply.erase(COutPoint{tx->GetHash(), index});
+        }
+    }
+};
 
 struct TransactionsDelta final : public CValidationInterface {
     std::set<CTransactionRef>& m_removed;
@@ -147,6 +183,9 @@ FUZZ_TARGET(tx_package_eval, .init = initialize_tx_pool)
     // Seeded by coinbase outputs first
     outpoints_rbf = outpoints_supply;
 
+    auto outpoints_updater = std::make_shared<OutpointsUpdater>(outpoints_rbf, outpoints_supply);
+    RegisterSharedValidationInterface(outpoints_updater);
+
     CTxMemPool tx_pool_{MakeMempool(fuzzed_data_provider, node)};
     MockedTxPool& tx_pool = *static_cast<MockedTxPool*>(&tx_pool_);
 
@@ -164,6 +203,8 @@ FUZZ_TARGET(tx_package_eval, .init = initialize_tx_pool)
         const auto num_txs = (size_t) fuzzed_data_provider.ConsumeIntegralInRange<int>(1, 26);
         std::set<COutPoint> package_outpoints;
         while (txs.size() < num_txs) {
+            Assert(!outpoints_rbf.empty());
+            Assert(!outpoints_supply.empty());
 
             // Last transaction in a package needs to be a child of parents to get further in validation
             // so the last transaction to be generated(in a >1 package) must spend all package-made outputs
@@ -188,6 +229,7 @@ FUZZ_TARGET(tx_package_eval, .init = initialize_tx_pool)
                     std::advance(pop, fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, outpoints.size() - 1));
                     const auto outpoint = *pop;
                     outpoints.erase(pop);
+                    // no need to update or erase from outpoints_value
                     amount_in += outpoints_value.at(outpoint);
 
                     // Create input
@@ -294,42 +336,6 @@ FUZZ_TARGET(tx_package_eval, .init = initialize_tx_pool)
                         removed.erase(wtxid_to_tx[k]);
                     }
                 }
-            }
-        }
-
-        // Helper to insert spent and created outpoints of a tx into collections
-        using Sets = std::vector<std::reference_wrapper<std::set<COutPoint>>>;
-        const auto insert_tx = [](Sets created_by_tx, Sets consumed_by_tx, const auto& tx) {
-            for (size_t i{0}; i < tx.vout.size(); ++i) {
-                for (auto& set : created_by_tx) {
-                    set.get().emplace(tx.GetHash(), i);
-                }
-            }
-            for (const auto& in : tx.vin) {
-                for (auto& set : consumed_by_tx) {
-                    set.get().insert(in.prevout);
-                }
-            }
-        };
-
-        // Add created outpoints, remove spent outpoints
-        {
-            // Outpoints that no longer exist at all
-            std::set<COutPoint> consumed_erased;
-            // Outpoints that no longer count toward the total supply
-            std::set<COutPoint> consumed_supply;
-            for (const auto& removed_tx : removed) {
-                insert_tx(/*created_by_tx=*/{consumed_erased}, /*consumed_by_tx=*/{outpoints_supply}, /*tx=*/*removed_tx);
-            }
-            for (const auto& added_tx : added) {
-                insert_tx(/*created_by_tx=*/{outpoints_supply, outpoints_rbf}, /*consumed_by_tx=*/{consumed_supply}, /*tx=*/*added_tx);
-            }
-            for (const auto& p : consumed_erased) {
-                outpoints_supply.erase(p);
-                outpoints_rbf.erase(p);
-            }
-            for (const auto& p : consumed_supply) {
-                outpoints_supply.erase(p);
             }
         }
     }
