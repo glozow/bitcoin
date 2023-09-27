@@ -89,6 +89,9 @@ public:
         return peer_bytes_it == m_peer_bytes_used.end() ? 0 : peer_bytes_it->second;
     }
 
+    /** Get wtxids of all orphan transactions. */
+    std::vector<Wtxid> GetAllWtxids() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
 protected:
     /** Total bytes of all transactions. */
     unsigned int m_total_orphan_bytes{0};

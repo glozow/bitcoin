@@ -303,3 +303,14 @@ std::optional<std::vector<Txid>> TxOrphanage::GetParentTxids(const Wtxid& wtxid)
     if (it != m_wtxid_to_orphan_it.end()) return it->second->second.parent_txids;
     return std::nullopt;
 }
+
+std::vector<Wtxid> TxOrphanage::GetAllWtxids() const
+{
+    AssertLockNotHeld(m_mutex);
+    LOCK(m_mutex);
+    std::vector<Wtxid> wtxids;
+    wtxids.reserve(m_wtxid_to_orphan_it.size());
+    std::transform(m_wtxid_to_orphan_it.cbegin(), m_wtxid_to_orphan_it.cend(), std::back_inserter(wtxids),
+            [](const auto& kv) { return kv.first; });
+    return wtxids;
+}
