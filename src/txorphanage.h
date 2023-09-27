@@ -99,6 +99,9 @@ public:
     /** Get an orphan's parent_txids, or std::nullopt if the orphan is not present. */
     std::optional<std::vector<Txid>> GetParentTxids(const Wtxid& wtxid) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
+    /** Get wtxids of all orphan transactions. */
+    std::vector<Wtxid> GetAllWtxids() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
 protected:
     /** Total bytes of all transactions. */
     unsigned int m_total_orphan_bytes{0};
