@@ -28,7 +28,6 @@ class ReplaceByFeeTest(BitcoinTestFramework):
         self.num_nodes = 2
         self.extra_args = [
             [
-                "-limitancestorcount=64",
                 "-limitdescendantcount=64",
             ],
             # second node has default mempool parameters
