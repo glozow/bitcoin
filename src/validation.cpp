@@ -3233,6 +3233,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
 
                 for (const PerBlockConnectTrace& trace : connectTrace.GetBlocksConnected()) {
                     assert(trace.pblock && trace.pindex);
+                    GetMainSignals().BlockConnectedSync(trace.pblock, trace.pindex);
                     GetMainSignals().BlockConnected(trace.pblock, trace.pindex);
                 }
 

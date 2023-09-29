@@ -232,6 +232,11 @@ void CMainSignals::BlockConnected(const std::shared_ptr<const CBlock> &pblock, c
                           pindex->nHeight);
 }
 
+void CMainSignals::BlockConnectedSync(const std::shared_ptr<const CBlock> &pblock, const CBlockIndex *pindex) {
+    LOG_EVENT("%s: block hash=%s block height=%d", __func__, pblock->GetHash().ToString(), pindex->nHeight);
+    m_internals->Iterate([&](CValidationInterface& callbacks) { callbacks.BlockConnectedSync(pblock, pindex); });
+}
+
 void CMainSignals::BlockDisconnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindex)
 {
     auto event = [pblock, pindex, this] {
