@@ -484,6 +484,8 @@ public:
     /** Overridden from CValidationInterface. */
     void BlockConnected(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindexConnected) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_recent_confirmed_transactions_mutex, !m_tx_download_mutex);
+    void BlockConnectedSync(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindexConnected) override
+        EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
     void BlockDisconnected(const std::shared_ptr<const CBlock> &block, const CBlockIndex* pindex) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_recent_confirmed_transactions_mutex, !m_tx_download_mutex);
     void UpdatedBlockTip(const CBlockIndex *pindexNew, const CBlockIndex *pindexFork, bool fInitialDownload) override
@@ -781,7 +783,7 @@ private:
     std::atomic<std::chrono::seconds> m_block_stalling_timeout{BLOCK_STALLING_TIMEOUT_DEFAULT};
 
     bool AlreadyHaveTx(const GenTxid& gtxid)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main, m_tx_download_mutex, !m_recent_confirmed_transactions_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex, !m_recent_confirmed_transactions_mutex);
 
     /**
      * Filter for transactions that were recently rejected by the mempool.
@@ -818,7 +820,6 @@ private:
      * Memory used: 1.3 MB
      */
     CRollingBloomFilter m_recent_rejects GUARDED_BY(m_tx_download_mutex){120'000, 0.000'001};
-    uint256 hashRecentRejectsChainTip GUARDED_BY(m_tx_download_mutex);
 
     /*
      * Filter for transactions that have been recently confirmed.
@@ -1852,6 +1853,18 @@ void PeerManagerImpl::StartScheduledTasks(CScheduler& scheduler)
     scheduler.scheduleFromNow([&] { ReattemptInitialBroadcast(scheduler); }, delta);
 }
 
+/** Clear m_recent_rejects immediately so we don't reject transactions that have become valid since
+ * the chainstate change. */
+void PeerManagerImpl::BlockConnectedSync(const std::shared_ptr<const CBlock>& pblock, const CBlockIndex* pindex)
+{
+    LOCK(m_tx_download_mutex);
+    // If the chain tip has changed previously rejected transactions
+    // might be now valid, e.g. due to a nLockTime'd tx becoming valid,
+    // or a double-spend. Reset the rejects filter and give those
+    // txs a second chance.
+    m_recent_rejects.reset();
+}
+
 /**
  * Evict orphan txn pool entries based on a newly connected
  * block, remember the recently confirmed transactions, and delete tracked
@@ -2043,16 +2056,6 @@ void PeerManagerImpl::BlockChecked(const CBlock& block, const BlockValidationSta
 
 bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid)
 {
-    AssertLockHeld(::cs_main);
-    if (m_chainman.ActiveChain().Tip()->GetBlockHash() != hashRecentRejectsChainTip) {
-        // If the chain tip has changed previously rejected transactions
-        // might be now valid, e.g. due to a nLockTime'd tx becoming valid,
-        // or a double-spend. Reset the rejects filter and give those
-        // txs a second chance.
-        hashRecentRejectsChainTip = m_chainman.ActiveChain().Tip()->GetBlockHash();
-        m_recent_rejects.reset();
-    }
-
     const uint256& hash = gtxid.GetHash();
 
     if (m_txdownloadman.GetOrphanageRef().HaveTx(gtxid)) return true;
