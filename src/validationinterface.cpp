@@ -205,6 +205,12 @@ void CMainSignals::UpdatedBlockTip(const CBlockIndex *pindexNew, const CBlockInd
                           fInitialDownload);
 }
 
+void CMainSignals::UpdatedBlockTipSync(const CBlockIndex *pindexNew) {
+    LOG_EVENT("%s: new block hash=%s block height=%d", __func__, pindexNew->GetBlockHash().ToString());
+    m_internals->Iterate([&](CValidationInterface& callbacks) { callbacks.UpdatedBlockTipSync(pindexNew); });
+}
+
+
 void CMainSignals::TransactionAddedToMempool(const CTransactionRef& tx, uint64_t mempool_sequence) {
     auto event = [tx, mempool_sequence, this] {
         m_internals->Iterate([&](CValidationInterface& callbacks) { callbacks.TransactionAddedToMempool(tx, mempool_sequence); });
