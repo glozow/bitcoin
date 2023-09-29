@@ -60,7 +60,7 @@ public:
     std::vector<std::pair<CTransactionRef, NodeId>> GetChildrenFromDifferentPeer(const CTransactionRef& parent, NodeId nodeid) const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     /** Return how many entries exist in the orphange */
-    size_t Size() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
+    size_t Size() const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
     {
         LOCK(m_mutex);
         return m_orphans.size();
