@@ -173,7 +173,7 @@ MiniGraph::MiniGraph(const std::vector<CTransactionRef>& txns_in) : m_txns{txns_
     for (unsigned int i{0}; i < txns_in.size(); ++i) {
         m_info.emplace(txns_in.at(i)->GetWitnessHash(), Tx(txns_in.at(i), i));
     }
-    m_graph = MakeTxGraph(txns_in.size());
+    m_graph = MakeTxGraph(txns_in.size(), MAX_PACKAGE_WEIGHT);
 }
 
 /** Register feerate information for a transaction. Overwrites previous data if called
