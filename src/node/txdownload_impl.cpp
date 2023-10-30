@@ -43,6 +43,7 @@ void TxDownloadImpl::UpdatedBlockTipSync() EXCLUSIVE_LOCKS_REQUIRED(!m_tx_downlo
     // or a double-spend. Reset the rejects filter and give those
     // txs a second chance.
     m_recent_rejects.reset();
+    m_recent_rejects_reconsiderable.reset();
 }
 
 void TxDownloadImpl::BlockConnected(const CBlock& block, const uint256& tiphash)
@@ -100,23 +101,32 @@ void TxDownloadImpl::MempoolAcceptedTx(const CTransactionRef& tx)
     m_orphan_resolution_tracker.ForgetTxHash(tx->GetWitnessHash());
 }
 
-bool TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& tx, const TxValidationResult& result)
+InvalidTxTask TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& tx, const TxValidationResult& result)
     EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)
 {
     LOCK(m_tx_download_mutex);
+    InvalidTxTask task{InvalidTxTask::NONE};
+
     switch (result) {
     case TxValidationResult::TX_RESULT_UNSET:
     case TxValidationResult::TX_NO_MEMPOOL:
     {
         // This function should only be called when a transaction fails validation.
         Assume(false);
-        return false;
+        return InvalidTxTask::NONE;
     }
     case TxValidationResult::TX_UNKNOWN:
     {
         // Transaction was not validated; we don't know that it is invalid. Do not add it to any
         // rejection caches or forget about it yet.
-        return false;
+        return InvalidTxTask::NONE;
+    }
+    case TxValidationResult::TX_RECONSIDERABLE:
+    {
+        // Transaction failed for fee-related reasons but can be reconsidered if part of a package.
+        m_recent_rejects_reconsiderable.insert(tx->GetWitnessHash().ToUint256());
+        task = InvalidTxTask::TRY_CPFP;
+        break;
     }
     case TxValidationResult::TX_WITNESS_STRIPPED:
     {
@@ -132,7 +142,7 @@ bool TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& tx, const TxValida
         // See also comments in https://github.com/bitcoin/bitcoin/pull/18044#discussion_r443419034
         // for concerns around weakening security of unupgraded nodes
         // if we start doing this too early.
-        return false;
+        return InvalidTxTask::NONE;
     }
     case TxValidationResult::TX_MISSING_INPUTS:
     {
@@ -152,9 +162,9 @@ bool TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& tx, const TxValida
             m_recent_rejects.insert(tx->GetWitnessHash().ToUint256());
             m_txrequest.ForgetTxHash(tx->GetHash());
             m_txrequest.ForgetTxHash(tx->GetWitnessHash());
-            return false;
+            return InvalidTxTask::NONE;
         }
-        return true;
+        return InvalidTxTask::ORPHAN;
     }
     case TxValidationResult::TX_INPUTS_NOT_STANDARD:
     {
@@ -174,7 +184,6 @@ bool TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& tx, const TxValida
         }
         break;
     }
-    case TxValidationResult::TX_RECONSIDERABLE:
     case TxValidationResult::TX_CONSENSUS:
     case TxValidationResult::TX_RECENT_CONSENSUS_CHANGE:
     case TxValidationResult::TX_NOT_STANDARD:
@@ -195,10 +204,11 @@ bool TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& tx, const TxValida
     // inputs). No-op if the tx is not in the orphanage.
     m_orphanage.EraseTx(tx->GetWitnessHash());
     m_orphan_resolution_tracker.ForgetTxHash(tx->GetWitnessHash());
-    return false;
+
+    return task;
 }
 
-bool TxDownloadImpl::AlreadyHaveTxLocked(const GenTxid& gtxid) const
+bool TxDownloadImpl::AlreadyHaveTxLocked(const GenTxid& gtxid, bool include_reconsiderable_rejects) const
     EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex)
 {
     const uint256& hash = gtxid.GetHash();
@@ -206,6 +216,8 @@ bool TxDownloadImpl::AlreadyHaveTxLocked(const GenTxid& gtxid) const
     if (m_orphanage.HaveTx(gtxid)) return true;
 
     if (m_recent_confirmed_transactions.contains(hash)) return true;
+
+    if (include_reconsiderable_rejects && m_recent_rejects_reconsiderable.contains(hash)) return true;
 
     return m_recent_rejects.contains(hash) || m_opts.m_mempool_ref.exists(gtxid);
 }
@@ -327,13 +339,23 @@ std::vector<GenTxid> TxDownloadImpl::GetRequestsToSend(NodeId nodeid, std::chron
     return requests;
 }
 
-bool TxDownloadImpl::ReceivedTx(NodeId nodeid, const CTransactionRef& ptx)
+std::optional<InvalidTxTask> TxDownloadImpl::ReceivedTx(NodeId nodeid, const CTransactionRef& ptx)
     EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)
 {
     LOCK(m_tx_download_mutex);
     m_txrequest.ReceivedResponse(nodeid, ptx->GetHash());
     if (ptx->HasWitness()) m_txrequest.ReceivedResponse(nodeid, ptx->GetWitnessHash());
-    return AlreadyHaveTxLocked(GenTxid::Wtxid(ptx->GetWitnessHash()));
+    if (AlreadyHaveTxLocked(GenTxid::Wtxid(ptx->GetWitnessHash()), /*include_reconsiderable_rejects=*/false)) {
+        // We already have this transaction; drop it.
+        return InvalidTxTask::NONE;
+    } else if (m_recent_rejects_reconsiderable.contains(ptx->GetWitnessHash().ToUint256())) {
+        // This transaction has already been validated and got a TX_SINGLE_FAILURE. Go straight to
+        // trying to find a package.
+        return InvalidTxTask::TRY_CPFP;
+    } else {
+        // We don't already have this transaction.
+        return std::nullopt;
+    }
 }
 
 void TxDownloadImpl::ReceivedNotFound(NodeId nodeid, const std::vector<uint256>& txhashes)
@@ -467,6 +489,12 @@ CTransactionRef TxDownloadImpl::GetTxToReconsider(NodeId nodeid) EXCLUSIVE_LOCKS
 {
     LOCK(m_tx_download_mutex);
     return m_orphanage.GetTxToReconsider(nodeid);
+}
+
+CTransactionRef TxDownloadImpl::MaybeGetSingleChild(const CTransactionRef& parent, NodeId nodeid) EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)
+{
+    LOCK(m_tx_download_mutex);
+    return m_orphanage.MaybeGetSingleChild(parent, nodeid);
 }
 
 void TxDownloadImpl::CheckIsEmpty() const EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex)

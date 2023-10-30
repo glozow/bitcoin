@@ -556,12 +556,16 @@ private:
     bool MaybeDiscourageAndDisconnect(CNode& pnode, Peer& peer);
 
     /** Handle a transaction whose result was MempoolAcceptResult::ResultType::INVALID.
-     * @returns true if this transaction is an orphan we should try to resolve. */
-    bool ProcessInvalidTx(const CTransactionRef& tx, NodeId nodeid, const TxValidationState& state)
+     * @returns InvalidTxTask describing what to do next. */
+    node::InvalidTxTask ProcessInvalidTx(const CTransactionRef& tx, NodeId nodeid, const TxValidationState& state)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex);
 
     /** Handle a transaction whose result was MempoolAcceptResult::ResultType::VALID. */
     void ProcessValidTx(const CTransactionRef& tx, NodeId nodeid, const std::list<CTransactionRef>& replaced_transactions)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex);
+
+    /** Handle package of transactions. */
+    void ProcessPackageResult(const Package& package, const PackageMempoolAcceptResult& result, NodeId nodeid)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex);
 
     /**
@@ -2852,7 +2856,7 @@ void PeerManagerImpl::ProcessHeadersMessage(CNode& pfrom, Peer& peer,
     return;
 }
 
-bool PeerManagerImpl::ProcessInvalidTx(const CTransactionRef& tx, NodeId nodeid, const TxValidationState& state)
+node::InvalidTxTask PeerManagerImpl::ProcessInvalidTx(const CTransactionRef& tx, NodeId nodeid, const TxValidationState& state)
 {
     AssertLockNotHeld(m_peer_mutex);
     LogPrint(BCLog::MEMPOOLREJ, "%s (wtxid=%s) from peer=%d was not accepted: %s\n",
@@ -2882,6 +2886,39 @@ void PeerManagerImpl::ProcessValidTx(const CTransactionRef& tx, NodeId nodeid, c
 
     for (const CTransactionRef& removedTx : replaced_transactions) {
         AddToCompactExtraTransactions(removedTx);
+    }
+}
+
+void PeerManagerImpl::ProcessPackageResult(const Package& package, const PackageMempoolAcceptResult& result, NodeId nodeid)
+{
+    AssertLockNotHeld(m_peer_mutex);
+    AssertLockHeld(g_msgproc_mutex);
+
+    // Iterate backwards to erase in-package descendants from the orphanage before they become
+    // relevant in AddChildrenToWorkSet.
+    for (auto package_it = package.rbegin(); package_it != package.rend(); ++package_it) {
+        const auto& tx = *package_it;
+        const auto it_result{result.m_tx_results.find(tx->GetWitnessHash())};
+        if (it_result != result.m_tx_results.end()) {
+            const auto& tx_result = it_result->second;
+            switch (tx_result.m_result_type) {
+                case MempoolAcceptResult::ResultType::VALID:
+                {
+                    ProcessValidTx(tx, nodeid, tx_result.m_replaced_transactions.value());
+                    break;
+                }
+                case MempoolAcceptResult::ResultType::INVALID:
+                {
+                    ProcessInvalidTx(tx, nodeid, tx_result.m_state);
+                    break;
+                }
+                case MempoolAcceptResult::ResultType::MEMPOOL_ENTRY:
+                case MempoolAcceptResult::ResultType::DIFFERENT_WITNESS:
+                {
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -4059,7 +4096,9 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         // already; and an adversary can already relay us old transactions
         // (older than our recency filter) if trying to DoS us, without any need
         // for witness malleation.
-        if (m_txdownloadman.ReceivedTx(pfrom.GetId(), ptx)) {
+        std::optional<node::InvalidTxTask> next_todo{m_txdownloadman.ReceivedTx(pfrom.GetId(), ptx)};
+        if (next_todo.has_value() && *next_todo == node::InvalidTxTask::NONE) {
+            // txdownloadman says that we already have this transaction and should drop it.
             if (pfrom.HasPermission(NetPermissionFlags::ForceRelay)) {
                 // Always relay transactions received from peers with forcerelay
                 // permission, even if they were already in the mempool, allowing
@@ -4089,31 +4128,48 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             // peer simply for relaying a tx that our m_recent_rejects has caught,
             // regardless of false positives.
             return;
+        } else if (next_todo == std::nullopt) {
+            const MempoolAcceptResult result = m_chainman.ProcessTransaction(ptx);
+            const TxValidationState& state = result.m_state;
+
+            if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+                ProcessValidTx(ptx, pfrom.GetId(), result.m_replaced_transactions.value());
+                pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
+                for (const CTransactionRef& removedTx : result.m_replaced_transactions.value()) {
+                    AddToCompactExtraTransactions(removedTx);
+                }
+            } else {
+                next_todo = ProcessInvalidTx(ptx, pfrom.GetId(), state);
+                if (next_todo == node::InvalidTxTask::ORPHAN) {
+                    const auto current_time{GetTime<std::chrono::microseconds>()};
+                    const auto& [will_process_orphan, unique_parents] = m_txdownloadman.NewOrphanTx(ptx, pfrom.GetId(), current_time);
+                    if (will_process_orphan) {
+                        AddToCompactExtraTransactions(ptx);
+                        for (const Txid& parent_txid : unique_parents) {
+                            AddKnownTx(*peer, parent_txid.ToUint256());
+                        }
+                    }
+                } else if (RecursiveDynamicUsage(*ptx) < 100000) {
+                    AddToCompactExtraTransactions(ptx);
+                }
+            }
         }
 
-        const MempoolAcceptResult result = m_chainman.ProcessTransaction(ptx);
-        const TxValidationState& state = result.m_state;
-
-        if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-            ProcessValidTx(ptx, pfrom.GetId(), result.m_replaced_transactions.value());
-            pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
-            for (const CTransactionRef& removedTx : result.m_replaced_transactions.value()) {
-                AddToCompactExtraTransactions(removedTx);
-            }
-        } else {
-            bool should_process_orphan = ProcessInvalidTx(ptx, pfrom.GetId(), state);
-            if (should_process_orphan) {
-                const auto current_time{GetTime<std::chrono::microseconds>()};
-                const auto& [will_process_orphan, unique_parents] = m_txdownloadman.NewOrphanTx(ptx, pfrom.GetId(), current_time);
-                if (will_process_orphan) {
+        // TRY_CPFP may be from ReceivedTx or from MempoolRejectedTx
+        if (next_todo == node::InvalidTxTask::TRY_CPFP) {
+            const auto maybe_cpfp_child = m_txdownloadman.MaybeGetSingleChild(ptx, pfrom.GetId());
+            if (maybe_cpfp_child) {
+                Package maybe_cpfp_package{ptx, maybe_cpfp_child};
+                const auto maybe_cpfp_result{ProcessNewPackage(m_chainman.ActiveChainstate(), m_mempool, maybe_cpfp_package, /*test_accept=*/false)};
+                if (maybe_cpfp_result.m_state.IsValid()) {
+                    LogPrint(BCLog::TXPACKAGES, "optimistic package CPFP succeeded for parent %s (wtxid %s), child %s (wtxid %s), peer=%d\n",
+                             ptx->GetHash().ToString(), ptx->GetWitnessHash().ToString(),
+                             maybe_cpfp_child->GetHash().ToString(), maybe_cpfp_child->GetWitnessHash().ToString(),
+                             pfrom.GetId());
+                } else if (RecursiveDynamicUsage(*ptx) < 100000) {
                     AddToCompactExtraTransactions(ptx);
-                    for (const Txid& parent_txid : unique_parents) {
-                        AddKnownTx(*peer, parent_txid.ToUint256());
-                    }
                 }
-
-            } else if (RecursiveDynamicUsage(*ptx) < 100000) {
-                AddToCompactExtraTransactions(ptx);
+                ProcessPackageResult(maybe_cpfp_package, maybe_cpfp_result, pfrom.GetId());
             }
         }
         return;

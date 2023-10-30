@@ -47,7 +47,7 @@ public:
     void MempoolAcceptedTx(const CTransactionRef& tx) { m_impl->MempoolAcceptedTx(tx); }
 
     /** Should be called whenever a transaction is rejected from mempool for any reason. */
-    bool MempoolRejectedTx(const CTransactionRef& tx, const TxValidationResult& result) {
+    InvalidTxTask MempoolRejectedTx(const CTransactionRef& tx, const TxValidationResult& result) {
         return m_impl->MempoolRejectedTx(tx, result);
     }
 
@@ -64,7 +64,7 @@ public:
     }
 
     /** Record in txrequest that we received a tx. Returns whether we already have tx. */
-    bool ReceivedTx(NodeId nodeid, const CTransactionRef& ptx) { return m_impl->ReceivedTx(nodeid, ptx); }
+    std::optional<InvalidTxTask> ReceivedTx(NodeId nodeid, const CTransactionRef& ptx) { return m_impl->ReceivedTx(nodeid, ptx); }
 
     /** Should be called when a notfound for a tx has been received. */
     void ReceivedNotFound(NodeId nodeid, const std::vector<uint256>& txhashes) { m_impl->ReceivedNotFound(nodeid, txhashes); }
@@ -81,6 +81,11 @@ public:
 
     /** Returns the next orphan to reconsider, or nullptr if there isn't one. */
     CTransactionRef GetTxToReconsider(NodeId nodeid) { return m_impl->GetTxToReconsider(nodeid); }
+
+    /** Return the child of a package that might be 1-parent-1-child CPFP. */
+    CTransactionRef MaybeGetSingleChild(const CTransactionRef& parent, NodeId nodeid) {
+        return m_impl->MaybeGetSingleChild(parent, nodeid);
+    }
 
     /** Should be called when we are not connected to any peers. Checks that all data strutures are empty. */
     void CheckIsEmpty() const { m_impl->CheckIsEmpty(); }

@@ -66,6 +66,9 @@ public:
     /** Add any orphans that list a particular tx as a parent into the from peer's work set */
     void AddChildrenToWorkSet(const CTransaction& tx) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);;
 
+    /** Return a child of this parent if its announcer matches peer and only one exists. */
+    CTransactionRef MaybeGetSingleChild(const CTransactionRef& parent, NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
     /** Does this peer have any work to do? */
     bool HaveTxToReconsider(NodeId peer) const EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 

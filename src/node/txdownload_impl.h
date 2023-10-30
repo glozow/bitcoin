@@ -45,6 +45,12 @@ struct TxDownloadConnectionInfo {
     const bool m_wtxid_relay;
 };
 
+enum class InvalidTxTask : uint8_t {
+    NONE,
+    ORPHAN,
+    TRY_CPFP,
+};
+
 class TxDownloadImpl {
 public:
     mutable Mutex m_tx_download_mutex;
@@ -97,6 +103,23 @@ public:
      */
     CRollingBloomFilter m_recent_rejects GUARDED_BY(m_tx_download_mutex) {120'000, 0.000'001};
 
+    /**
+     * Filter for the wtxids of transactions that were recently rejected by the mempool but are
+     * eligible for reconsideration if submitted with other transactions.
+     *
+     * When a transaction's error is TxValidationResult::TX_SINGLE_FAILURE (in a package or by
+     * itself), add its wtxid to this filter.
+     *
+     * Upon receiving an announcement for a transaction, if it exists in this filter, do not
+     * download the txdata.
+     *
+     * Reset this filter when the chain tip changes.
+     *
+     * Parameters are picked to be the same false positive rate but half the capacity as
+     * m_recent_rejects.
+     */
+    CRollingBloomFilter m_recent_rejects_reconsiderable GUARDED_BY(m_tx_download_mutex){60'000, 0.000'001};
+
     /*
      * Filter for transactions that have been recently confirmed.
      * We use this to avoid requesting transactions that have already been
@@ -141,7 +164,8 @@ protected:
         EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex);
 
     /** Internal AlreadyHaveTx. */
-    bool AlreadyHaveTxLocked(const GenTxid& gtxid) const EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex);
+    bool AlreadyHaveTxLocked(const GenTxid& gtxid, bool include_reconsiderable_rejects = true) const
+        EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex);
 
     /** Add another announcer of an orphan who is a potential candidate for resolution. It is
      * assumed that we CanAddOrphan; callers must check that beforehand. */
@@ -179,7 +203,7 @@ public:
     /** May add the transaction's txid and/or wtxid to recent_rejects depending on the rejection
      * result. Returns true if this transaction is an orphan who should be processed, false
      * otherwise. */
-    bool MempoolRejectedTx(const CTransactionRef& tx, const TxValidationResult& result)
+    InvalidTxTask MempoolRejectedTx(const CTransactionRef& tx, const TxValidationResult& result)
         EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
 
     /** Whether this transaction is found in orphanage, recently confirmed, or recently rejected transactions. */
@@ -194,7 +218,7 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
 
     /** Marks a tx as ReceivedResponse in txrequest. Returns whether we AlreadyHaveTx. */
-    bool ReceivedTx(NodeId nodeid, const CTransactionRef& ptx)
+    std::optional<InvalidTxTask> ReceivedTx(NodeId nodeid, const CTransactionRef& ptx)
         EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
 
     /** Marks a tx as ReceivedResponse in txrequest. */
@@ -213,6 +237,9 @@ public:
 
     /** Get orphan transaction from this peer's workset. */
     CTransactionRef GetTxToReconsider(NodeId nodeid) EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
+
+    /** Return a child of this parent if its announcer matches peer and only one exists. */
+    CTransactionRef MaybeGetSingleChild(const CTransactionRef& parent, NodeId nodeid) EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
 
     /** Size() of orphanage, txrequest, and orphan request tracker are equal to 0. */
     void CheckIsEmpty() const EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
