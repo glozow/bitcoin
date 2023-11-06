@@ -234,10 +234,10 @@ void TxDownloadImpl::AddTxAnnouncement(NodeId peer, const GenTxid& gtxid, std::c
     if (m_peer_info.count(peer) == 0) return;
     if (m_orphanage.HaveTx(gtxid) || (gtxid.IsWtxid() && m_orphanage.HaveTx(GenTxid::Txid(gtxid.GetHash())))) {
         if (gtxid.IsWtxid()) {
-            if (auto parents{m_orphanage.GetParentTxids(Wtxid::FromUint256(gtxid.GetHash()))}) {
-                if (CanAddOrphan(peer, gtxid.GetHash(), parents->size())) {
-                    AddOrphanAnnouncer(peer, Wtxid::FromUint256(gtxid.GetHash()), now);
-                }
+            const auto tx{m_orphanage.GetTx(Wtxid::FromUint256(gtxid.GetHash()))};
+            const auto parents{m_orphanage.GetParentTxids(Wtxid::FromUint256(gtxid.GetHash()))};
+            if (tx && parents && CanAddOrphan(peer, gtxid.GetHash(), parents->size(), tx->GetTotalSize())) {
+                AddOrphanAnnouncer(peer, Wtxid::FromUint256(gtxid.GetHash()), now);
             }
         }
         return;
@@ -369,7 +369,8 @@ void TxDownloadImpl::ReceivedNotFound(NodeId nodeid, const std::vector<uint256>&
     }
 }
 
-bool TxDownloadImpl::CanAddOrphan(NodeId nodeid, const uint256& orphan_wtxid, unsigned int num_txrequests) const
+bool TxDownloadImpl::CanAddOrphan(NodeId nodeid, const uint256& orphan_wtxid, unsigned int num_txrequests, unsigned int tx_bytes) const
+    EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex)
 {
     AssertLockHeld(m_tx_download_mutex);
 
@@ -382,6 +383,12 @@ bool TxDownloadImpl::CanAddOrphan(NodeId nodeid, const uint256& orphan_wtxid, un
             // If we were to request all of the missing transactions, txrequest would have too many
             // entries for this peer.
             if (m_txrequest.Count(nodeid) + num_txrequests >= MAX_PEER_TX_ANNOUNCEMENTS) return false;
+
+            // If we added this tx to the orphan resolution tracker, there would be too many entries stored for this peer.
+            if (m_orphan_resolution_tracker.Count(nodeid) + 1 > MAX_ORPHANS_PER_PEER) return false;
+
+            // If we added this tx to the orphanage, there would be too many bytes stored for this peer.
+            if (m_orphanage.BytesFromPeer(nodeid) + tx_bytes > MAX_ORPHANAGE_BYTES_PER_PER_PEER) return false;
         }
         return true;
     }
@@ -437,14 +444,15 @@ std::pair<bool, std::vector<Txid>> TxDownloadImpl::NewOrphanTx(const CTransactio
             unique_parents.end());
     }
 
-    // Collect all orphan resolution candidates.
+    // Collect all orphan resolution candidates. Do this before attempting to add the new orphan.
     std::vector<NodeId> orphan_resolution_candidates;
-    if (CanAddOrphan(nodeid, wtxid, unique_parents.size())) orphan_resolution_candidates.emplace_back(nodeid);
+    const auto tx_bytes{tx->GetTotalSize()};
+    if (CanAddOrphan(nodeid, wtxid, unique_parents.size(), tx_bytes)) orphan_resolution_candidates.emplace_back(nodeid);
     for (const auto candidate : m_txrequest.GetCandidatePeers(wtxid)) {
-        if (CanAddOrphan(candidate, wtxid, unique_parents.size())) orphan_resolution_candidates.emplace_back(candidate);
+        if (CanAddOrphan(candidate, wtxid, unique_parents.size(), tx_bytes)) orphan_resolution_candidates.emplace_back(candidate);
     }
     for (const auto candidate : m_txrequest.GetCandidatePeers(txid)) {
-        if (CanAddOrphan(candidate, wtxid, unique_parents.size())) orphan_resolution_candidates.emplace_back(candidate);
+        if (CanAddOrphan(candidate, wtxid, unique_parents.size(), tx_bytes)) orphan_resolution_candidates.emplace_back(candidate);
     }
 
     // Only add to orphanage after determining that there are eligible peers. If all of these peers

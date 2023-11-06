@@ -29,6 +29,13 @@ static constexpr auto NONPREF_PEER_TX_DELAY{2s};
 static constexpr auto OVERLOADED_PEER_TX_DELAY{2s};
 /** How long to wait before downloading a transaction from an additional peer */
 static constexpr auto GETDATA_TX_INTERVAL{60s};
+/** Maximum number of orphans we will consider resolving with a peer at a time. */
+static constexpr unsigned int MAX_ORPHANS_PER_PEER{35};
+/** Maximum total bytes of orphans for which a single peer may be a resolution candidate, unless
+ * they have Relay permissions. Equivalent to 2% of the maximum total orphanage capacity. We will
+ * not consider another (tx, peer) for orphan resolution if it would make the peer exceed this
+ * limit. However, we may consider other peers as candidates for the tx if they are eligible. */
+static constexpr unsigned int MAX_ORPHANAGE_BYTES_PER_PER_PEER{2*400'000};
 
 struct TxDownloadOptions {
     /** Global maximum number of orphan transactions to keep. Enforced with LimitOrphans. */
@@ -156,7 +163,7 @@ protected:
      * doesn't exist, is already a candidate for this tx, or has reached limits.
      * @param[in] num_txrequests    The number of txrequests this orphan resolution may result in.
      */
-    bool CanAddOrphan(NodeId nodeid, const uint256& orphan_wtxid, unsigned int num_txrequests) const
+    bool CanAddOrphan(NodeId nodeid, const uint256& orphan_wtxid, unsigned int num_txrequests, unsigned int tx_bytes) const
         EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex);
 
     /** Maybe adds an inv to txrequest. */

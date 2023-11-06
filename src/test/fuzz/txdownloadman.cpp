@@ -281,10 +281,14 @@ static void CheckInvariants(const node::TxDownloadImpl& txdownload_impl, size_t 
         }
     }
 
-    // We should never have more than the maximum in-flight requests out for a peer.
+    // For each peer, we should never exceed:
+    // - MAX_PEER_TX_REQUEST_IN_FLIGHT total in-flight requests per peer (which includes tx requests
+    // for orphan ancestors)
+    // - MAX_ORPHANAGE_BYTES_PER_PER_PEER total size, in bytes, of transactions in the orphanage
     for (NodeId peer = 0; peer < NUM_PEERS; ++peer) {
         if (!HasRelayPermissions(peer)) {
             Assert(txdownload_impl.m_txrequest.CountInFlight(peer) <= node::MAX_PEER_TX_REQUEST_IN_FLIGHT);
+            Assert(txdownload_impl.m_orphanage.BytesFromPeer(peer) <= node::MAX_ORPHANAGE_BYTES_PER_PER_PEER);
         }
     }
 }
