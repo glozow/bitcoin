@@ -3,10 +3,16 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+import random
 import time
 
 from test_framework.messages import (
     CInv,
+    COutPoint,
+    CTransaction,
+    CTxIn,
+    CTxInWitness,
+    CTxOut,
     MSG_TX,
     MSG_WITNESS_TX,
     MSG_WTX,
@@ -25,8 +31,14 @@ from test_framework.p2p import (
     P2PTxInvStore,
     TXID_RELAY_DELAY,
 )
+from test_framework.script import (
+    CScript,
+    OP_NOP,
+    OP_RETURN,
+)
 from test_framework.util import (
     assert_equal,
+    assert_greater_than_or_equal,
 )
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.wallet import (
@@ -39,6 +51,9 @@ from test_framework.wallet import (
 # when the value of the delay is not interesting. If we want to test that the node waits x seconds
 # for one peer and y seconds for another, use specific values instead.
 TXREQUEST_TIME_SKIP = NONPREF_PEER_TX_DELAY + TXID_RELAY_DELAY + OVERLOADED_PEER_TX_DELAY + 1
+
+MAX_ORPHANS_PER_PEER = 50
+MAX_ORPHANAGE_BYTES_PER_PER_PEER = 2*400000
 
 def cleanup(func):
     # Time to fastfoward (using setmocktime) in between subtests to ensure they do not interfere with
@@ -108,6 +123,26 @@ class PeerTxRelayer(P2PTxInvStore):
         for getdata in self.getdata_received:
             for request in getdata.inv:
                 assert request.hash != txhash
+
+def create_large_orphan():
+    """Create huge orphan transaction"""
+    tx = CTransaction()
+    # Nonexistent UTXO
+    tx.vin = [CTxIn(COutPoint(random.randrange(1 << 256), random.randrange(1, 100)))]
+    tx.wit.vtxinwit = [CTxInWitness()]
+    tx.wit.vtxinwit[0].scriptWitness.stack = [CScript([OP_NOP] * 390000)]
+    tx.vout = [CTxOut(100, CScript([OP_RETURN, b'a' * 20]))]
+    return tx
+
+def create_orphan():
+    """Create orphan transaction"""
+    tx = CTransaction()
+    # Nonexistent UTXO
+    tx.vin = [CTxIn(COutPoint(random.randrange(1 << 256), random.randrange(1, 100)))]
+    tx.wit.vtxinwit = [CTxInWitness()]
+    tx.wit.vtxinwit[0].scriptWitness.stack = [CScript([OP_NOP])]
+    tx.vout = [CTxOut(100, CScript([OP_RETURN, b'a' * 20]))]
+    return tx
 
 class OrphanHandlingTest(BitcoinTestFramework):
     def set_test_params(self):
@@ -468,6 +503,74 @@ class OrphanHandlingTest(BitcoinTestFramework):
         self.nodes[0].bumpmocktime(TXREQUEST_TIME_SKIP)
         peer3.assert_never_requested(child["txid"])
 
+    @cleanup
+    def test_orphanage_dos_count_limits(self):
+        self.log.info("Test that nodes limit the number of orphans considered per peer")
+        node = self.nodes[0]
+        peer_doser = node.add_p2p_connection(PeerTxRelayer())
+
+        self.log.info("Create orphans to be sent by DoSy peers (may take a while)")
+        many_orphans = [create_orphan() for _ in range(MAX_ORPHANS_PER_PEER + 1)]
+        # Check to make sure these are orphans, within max standard size (to be accepted into the orphanage), and that 3 of them
+        # would make peer_doser an overloaded orphanage occupant.
+        for tx_orphan in  many_orphans:
+            assert_greater_than_or_equal(100000, tx_orphan.get_vsize())
+            # Check that we are hitting the size limit before the count limit
+            testres = node.testmempoolaccept([tx_orphan.serialize().hex()])
+            assert not testres[0]["allowed"]
+            assert_equal(testres[0]["reject-reason"], "missing-inputs")
+
+        self.log.info(f"Send {MAX_ORPHANS_PER_PEER} orphans from one peer")
+        # This test assumes that unrequested transactions are processed (skipping inv and
+        # getdata steps because they require going through request delays)
+        for tx_orphan in many_orphans[:MAX_ORPHANS_PER_PEER]:
+            peer_doser.send_and_ping(msg_tx(tx_orphan))
+            # Make sure that these transactions are going through the orphan handling codepaths.
+            node.bumpmocktime(TXREQUEST_TIME_SKIP)
+            peer_doser.wait_for_getdata([tx_orphan.vin[0].prevout.hash])
+
+        peer_normal = node.add_p2p_connection(PeerTxRelayer())
+        self.log.info("Send one more and check that it is dropped for this peer, but not others")
+        tx_orphan_extra = many_orphans[MAX_ORPHANS_PER_PEER]
+        peer_normal.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=int(tx_orphan_extra.getwtxid(), 16))]))
+        peer_doser.send_and_ping(msg_tx(tx_orphan_extra))
+        peer_doser.assert_never_requested(int(tx_orphan_extra.vin[0].prevout.hash))
+        node.bumpmocktime(TXREQUEST_TIME_SKIP)
+        peer_normal.wait_for_getdata([tx_orphan_extra.vin[0].prevout.hash])
+
+    @cleanup
+    def test_orphanage_dos_size_limits(self):
+        self.log.info("Test that peers are limited in how much orphanage space they can take up")
+        node = self.nodes[0]
+        peer_doser = node.add_p2p_connection(PeerTxRelayer())
+
+        self.log.info("Create orphans to be sent by DoSy peers (may take a while)")
+        large_orphans = [create_large_orphan() for _ in range(MAX_ORPHANS_PER_PEER)]
+        # Check to make sure these are orphans, within max standard size (to be accepted into the orphanage), and that 3 of them
+        # would make peer_doser an overloaded orphanage occupant.
+        for large_orphan in large_orphans:
+            assert_greater_than_or_equal(100000, large_orphan.get_vsize())
+            # Check that we are hitting the size limit before the count limit
+            assert_greater_than_or_equal(MAX_ORPHANS_PER_PEER * large_orphan.get_vsize(), MAX_ORPHANAGE_BYTES_PER_PER_PEER)
+            testres = node.testmempoolaccept([large_orphan.serialize().hex()])
+            assert not testres[0]["allowed"]
+            assert_equal(testres[0]["reject-reason"], "missing-inputs")
+
+        self.log.info("Send very large orphans from peer")
+        # This test assumes that unrequested transactions are processed (skipping inv and
+        # getdata steps because they require going through request delays)
+        orphan_bytes_sent = 0
+        for large_orphan in large_orphans:
+            peer_doser.send_and_ping(msg_tx(large_orphan))
+            orphan_bytes_sent += len(large_orphan.serialize_with_witness())
+            # Make sure that these transactions are going through the orphan handling codepaths.
+            node.bumpmocktime(TXREQUEST_TIME_SKIP)
+            if orphan_bytes_sent <= MAX_ORPHANAGE_BYTES_PER_PER_PEER:
+                peer_doser.wait_for_getdata([large_orphan.vin[0].prevout.hash])
+            else:
+                peer_doser.assert_never_requested(int(large_orphan.vin[0].prevout.hash))
+
+
     def run_test(self):
         self.nodes[0].setmocktime(int(time.time()))
         self.wallet_nonsegwit = MiniWallet(self.nodes[0], mode=MiniWalletMode.RAW_P2PK)
@@ -482,6 +585,8 @@ class OrphanHandlingTest(BitcoinTestFramework):
         self.test_orphan_inherit_rejection()
         self.test_orphan_handling_prefer_outbound()
         self.test_announcers_before_and_after()
+        self.test_orphanage_dos_count_limits()
+        self.test_orphanage_dos_size_limits()
 
 
 if __name__ == '__main__':
