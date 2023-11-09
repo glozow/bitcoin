@@ -576,6 +576,7 @@ private:
     enum class InvalidTxTask : uint8_t {
         NONE,
         ADD_ORPHAN,
+        TRY_CPFP,
     };
     /** Handle a transaction whose result was MempoolAcceptResult::ResultType::INVALID.
      * @returns true if this transaction is an orphan we should try to resolve. */
@@ -585,6 +586,10 @@ private:
     /** Handle a transaction whose result was MempoolAcceptResult::ResultType::VALID. */
     void ProcessValidTx(const CTransactionRef& tx, NodeId nodeid, const std::list<CTransactionRef>& replaced_transactions)
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex, cs_main);
+
+    /** Handle package of transactions. */
+    void ProcessPackageResult(const Package& package, const PackageMempoolAcceptResult& result, NodeId nodeid)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, g_msgproc_mutex);
 
     /**
      * Reconsider orphan transactions after a parent has been accepted to the mempool.
@@ -3039,6 +3044,8 @@ PeerManagerImpl::InvalidTxTask PeerManagerImpl::ProcessInvalidTx(const CTransact
     // Maybe punish peer that gave us an tx
     MaybePunishNodeForTx(nodeid, state);
 
+    InvalidTxTask task = InvalidTxTask::NONE;
+
     switch (state.GetResult()) {
     case TxValidationResult::TX_RESULT_UNSET:
     case TxValidationResult::TX_NO_MEMPOOL:
@@ -3073,6 +3080,7 @@ PeerManagerImpl::InvalidTxTask PeerManagerImpl::ProcessInvalidTx(const CTransact
     {
        // Transaction failed for fee-related reasons but can be reconsidered if part of a package.
        m_recent_rejects_reconsiderable.insert(tx->GetWitnessHash().ToUint256());
+       task = InvalidTxTask::TRY_CPFP;
        break;
     }
     case TxValidationResult::TX_MISSING_INPUTS:
@@ -3135,7 +3143,7 @@ PeerManagerImpl::InvalidTxTask PeerManagerImpl::ProcessInvalidTx(const CTransact
     // inputs). No-op if the tx is not in the orphanage.
     m_orphanage.EraseTx(tx->GetHash());
 
-    return InvalidTxTask::NONE;
+    return task;
 }
 
 void PeerManagerImpl::ProcessValidTx(const CTransactionRef& tx, NodeId nodeid, const std::list<CTransactionRef>& replaced_transactions)
@@ -3160,6 +3168,43 @@ void PeerManagerImpl::ProcessValidTx(const CTransactionRef& tx, NodeId nodeid, c
 
     for (const CTransactionRef& removedTx : replaced_transactions) {
         AddToCompactExtraTransactions(removedTx);
+    }
+}
+
+void PeerManagerImpl::ProcessPackageResult(const Package& package, const PackageMempoolAcceptResult& result, NodeId nodeid)
+{
+    AssertLockNotHeld(m_peer_mutex);
+    AssertLockHeld(g_msgproc_mutex);
+
+    if (result.m_state.IsInvalid()) {
+        m_recent_rejects_reconsiderable.insert(GetPackageHash(package));
+    }
+
+    // Iterate backwards to erase in-package descendants from the orphanage before they become
+    // relevant in AddChildrenToWorkSet.
+    for (auto package_it = package.rbegin(); package_it != package.rend(); ++package_it) {
+        const auto& tx = *package_it;
+        const auto it_result{result.m_tx_results.find(tx->GetWitnessHash())};
+        if (it_result != result.m_tx_results.end()) {
+            const auto& tx_result = it_result->second;
+            switch (tx_result.m_result_type) {
+                case MempoolAcceptResult::ResultType::VALID:
+                {
+                    ProcessValidTx(tx, nodeid, tx_result.m_replaced_transactions.value());
+                    break;
+                }
+                case MempoolAcceptResult::ResultType::INVALID:
+                {
+                    ProcessInvalidTx(tx, nodeid, tx_result.m_state);
+                    break;
+                }
+                case MempoolAcceptResult::ResultType::MEMPOOL_ENTRY:
+                case MempoolAcceptResult::ResultType::DIFFERENT_WITNESS:
+                {
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -4331,7 +4376,16 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         // already; and an adversary can already relay us old transactions
         // (older than our recency filter) if trying to DoS us, without any need
         // for witness malleation.
-        if (AlreadyHaveTx(GenTxid::Wtxid(wtxid))) {
+        std::optional<InvalidTxTask> next_task;
+        if (AlreadyHaveTx(GenTxid::Wtxid(wtxid), /*include_reconsiderable=*/false)) {
+            next_task = InvalidTxTask::NONE;
+        } else if (m_recent_rejects_reconsiderable.contains(wtxid)) {
+            // This transaction has already been rejected for having low feerate. Don't validate it
+            // by itself again; try 1p1c package validation if eligible.
+            next_task = InvalidTxTask::TRY_CPFP;
+            LogPrint(BCLog::TXPACKAGES, "found tx %s (wtxid=%s) in reconsiderable rejects, attempting optimistic 1p1c", txid.ToString(), wtxid.ToString());
+        }
+        if (next_task == InvalidTxTask::NONE) {
             if (pfrom.HasPermission(NetPermissionFlags::ForceRelay)) {
                 // Always relay transactions received from peers with forcerelay
                 // permission, even if they were already in the mempool, allowing
@@ -4361,56 +4415,78 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             // peer simply for relaying a tx that our m_recent_rejects has caught,
             // regardless of false positives.
             return;
-        }
+       } else if (next_task == std::nullopt) {
+            const MempoolAcceptResult result = m_chainman.ProcessTransaction(ptx);
+            const TxValidationState& state = result.m_state;
 
-        const MempoolAcceptResult result = m_chainman.ProcessTransaction(ptx);
-        const TxValidationState& state = result.m_state;
-
-        if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-            ProcessValidTx(ptx, pfrom.GetId(), result.m_replaced_transactions.value());
-            pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
-            for (const CTransactionRef& removedTx : result.m_replaced_transactions.value()) {
-                AddToCompactExtraTransactions(removedTx);
-            }
-        } else {
-            const auto next_task = ProcessInvalidTx(ptx, pfrom.GetId(), state);
-            if (next_task == InvalidTxTask::ADD_ORPHAN) {
-                // Deduplicate parent txids, so that we don't have to loop over
-                // the same parent txid more than once down below.
-                std::vector<Txid> unique_parents;
-                unique_parents.reserve(tx.vin.size());
-                for (const CTxIn& txin : tx.vin) {
-                    // We start with all parents, and then remove duplicates below.
-                    unique_parents.push_back(Txid::FromUint256(txin.prevout.hash));
+            if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+                ProcessValidTx(ptx, pfrom.GetId(), result.m_replaced_transactions.value());
+                pfrom.m_last_tx_time = GetTime<std::chrono::seconds>();
+                for (const CTransactionRef& removedTx : result.m_replaced_transactions.value()) {
+                    AddToCompactExtraTransactions(removedTx);
                 }
-                std::sort(unique_parents.begin(), unique_parents.end());
-                unique_parents.erase(std::unique(unique_parents.begin(), unique_parents.end()), unique_parents.end());
-                const auto current_time{GetTime<std::chrono::microseconds>()};
+            } else {
+                next_task = ProcessInvalidTx(ptx, pfrom.GetId(), state);
+                if (next_task == InvalidTxTask::ADD_ORPHAN) {
+					// Deduplicate parent txids, so that we don't have to loop over
+					// the same parent txid more than once down below.
+					std::vector<Txid> unique_parents;
+					unique_parents.reserve(tx.vin.size());
+					for (const CTxIn& txin : tx.vin) {
+						// We start with all parents, and then remove duplicates below.
+						unique_parents.push_back(Txid::FromUint256(txin.prevout.hash));
+					}
+					std::sort(unique_parents.begin(), unique_parents.end());
+					unique_parents.erase(std::unique(unique_parents.begin(), unique_parents.end()), unique_parents.end());
+					const auto current_time{GetTime<std::chrono::microseconds>()};
 
-                for (const uint256& parent_txid : unique_parents) {
-                    // Here, we only have the txid (and not wtxid) of the
-                    // inputs, so we only request in txid mode, even for
-                    // wtxidrelay peers.
-                    // Eventually we should replace this with an improved
-                    // protocol for getting all unconfirmed parents.
-                    const auto gtxid{GenTxid::Txid(parent_txid)};
-                    AddKnownTx(*peer, parent_txid);
-                    if (!AlreadyHaveTx(gtxid)) AddTxAnnouncement(pfrom, gtxid, current_time);
+					for (const uint256& parent_txid : unique_parents) {
+						// Here, we only have the txid (and not wtxid) of the
+						// inputs, so we only request in txid mode, even for
+						// wtxidrelay peers.
+						// Eventually we should replace this with an improved
+						// protocol for getting all unconfirmed parents.
+						const auto gtxid{GenTxid::Txid(parent_txid)};
+						AddKnownTx(*peer, parent_txid);
+						if (!AlreadyHaveTx(gtxid)) AddTxAnnouncement(pfrom, gtxid, current_time);
+					}
+                    m_orphanage.AddTx(ptx, pfrom.GetId());
+                    // DoS prevention: do not allow m_orphanage to grow unbounded (see
+                    // CVE-2012-3789)
+                    m_orphanage.LimitOrphans(m_opts.max_orphan_txs);
                 }
-
-                if (m_orphanage.AddTx(ptx, pfrom.GetId())) {
+                if (next_task != InvalidTxTask::TRY_CPFP && RecursiveDynamicUsage(*ptx) < 100000) {
                     AddToCompactExtraTransactions(ptx);
                 }
-
-                // Once added to the orphan pool, a tx is considered AlreadyHave, and we shouldn't request it anymore.
-                m_txrequest.ForgetTxHash(tx.GetHash());
-                m_txrequest.ForgetTxHash(tx.GetWitnessHash());
-
-                // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
-                m_orphanage.LimitOrphans(m_opts.max_orphan_txs);
-            } else if (RecursiveDynamicUsage(*ptx) < 100000) {
-                AddToCompactExtraTransactions(ptx);
             }
+        }
+
+        // This task may have been assigned at the beginning (AlreadyHaveTx) or after getting an
+        // invalid result (ProcessInvalidTx).
+        if (next_task == InvalidTxTask::TRY_CPFP) {
+            const auto cpfp_candidates{m_orphanage.GetChildren(ptx, pfrom.GetId())};
+            bool tried_package_cpfp{false};
+            // Use the first 1p1c package that hasn't already been rejected. Try the children in
+            // random order to not create a bias that attackers can use to delay package acceptance.
+            std::vector<size_t> tx_indices(cpfp_candidates.size());
+            std::iota(tx_indices.begin(), tx_indices.end(), 0);
+            Shuffle(tx_indices.begin(), tx_indices.end(), m_rng);
+            for (const auto index : tx_indices) {
+                const auto& tx_orphan = cpfp_candidates.at(index);
+                Package maybe_cpfp_package{ptx, tx_orphan};
+                if (!m_recent_rejects_reconsiderable.contains(GetPackageHash(maybe_cpfp_package))) {
+                    LogPrint(BCLog::TXPACKAGES, "found child %s (wtxid=%s) of tx %s (wtxid=%s) in orphanage, trying 1p1c\n",
+                             tx_orphan->GetHash().ToString(), tx_orphan->GetWitnessHash().ToString(), txid.ToString(), wtxid.ToString());
+                    const auto maybe_cpfp_result{ProcessNewPackage(m_chainman.ActiveChainstate(), m_mempool, maybe_cpfp_package, /*test_accept=*/false)};
+                    if (maybe_cpfp_result.m_state.IsInvalid() && RecursiveDynamicUsage(*ptx) < 100000) {
+                        AddToCompactExtraTransactions(ptx);
+                    }
+                    ProcessPackageResult(maybe_cpfp_package, maybe_cpfp_result, pfrom.GetId());
+                    tried_package_cpfp = true;
+                    break;
+                }
+            }
+            if (!tried_package_cpfp) LogPrint(BCLog::TXPACKAGES, "didn't evaluate package for %s (wtxid=%s), no eligible child found\n", txid.ToString(), wtxid.ToString());
         }
         return;
     }
