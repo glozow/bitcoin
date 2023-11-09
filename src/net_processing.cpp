@@ -786,7 +786,7 @@ private:
     /** Stalling timeout for blocks in IBD */
     std::atomic<std::chrono::seconds> m_block_stalling_timeout{BLOCK_STALLING_TIMEOUT_DEFAULT};
 
-    bool AlreadyHaveTx(const GenTxid& gtxid)
+    bool AlreadyHaveTx(const GenTxid& gtxid, bool include_reconsiderable = true)
         EXCLUSIVE_LOCKS_REQUIRED(cs_main, !m_recent_confirmed_transactions_mutex);
 
     /**
@@ -825,6 +825,23 @@ private:
      */
     CRollingBloomFilter m_recent_rejects GUARDED_BY(::cs_main){120'000, 0.000'001};
     uint256 hashRecentRejectsChainTip GUARDED_BY(cs_main);
+
+    /**
+     * Filter for the wtxids of transactions that were recently rejected by the mempool but are
+     * eligible for reconsideration if submitted with other transactions.
+     *
+     * When a transaction's error is TxValidationResult::TX_RECONSIDERABLE (in a package or by
+     * itself), add its wtxid to this filter.
+     *
+     * Upon receiving an announcement for a transaction, if it exists in this filter, do not
+     * download the txdata.
+     *
+     * Reset this filter when the chain tip changes.
+     *
+     * Parameters are picked to be the same false positive rate but half the capacity as
+     * m_recent_rejects.
+     */
+    CRollingBloomFilter m_recent_rejects_reconsiderable GUARDED_BY(m_tx_download_mutex){60'000, 0.000'001};
 
     /*
      * Filter for transactions that have been recently confirmed.
@@ -2127,7 +2144,7 @@ void PeerManagerImpl::BlockChecked(const CBlock& block, const BlockValidationSta
 //
 
 
-bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid)
+bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid, bool include_reconsiderable)
 {
     if (m_chainman.ActiveChain().Tip()->GetBlockHash() != hashRecentRejectsChainTip) {
         // If the chain tip has changed previously rejected transactions
@@ -2141,6 +2158,8 @@ bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid)
     const uint256& hash = gtxid.GetHash();
 
     if (m_orphanage.HaveTx(gtxid)) return true;
+
+    if (include_reconsiderable && m_recent_rejects_reconsiderable.contains(gtxid.GetHash())) return true;
 
     {
         LOCK(m_recent_confirmed_transactions_mutex);
@@ -3050,6 +3069,12 @@ PeerManagerImpl::InvalidTxTask PeerManagerImpl::ProcessInvalidTx(const CTransact
         // if we start doing this too early.
         return InvalidTxTask::NONE;
     }
+    case TxValidationResult::TX_RECONSIDERABLE:
+    {
+       // Transaction failed for fee-related reasons but can be reconsidered if part of a package.
+       m_recent_rejects_reconsiderable.insert(tx->GetWitnessHash().ToUint256());
+       break;
+    }
     case TxValidationResult::TX_MISSING_INPUTS:
     {
         if (std::any_of(tx->vin.cbegin(), tx->vin.cend(),
@@ -3090,7 +3115,6 @@ PeerManagerImpl::InvalidTxTask PeerManagerImpl::ProcessInvalidTx(const CTransact
         }
         break;
     }
-    case TxValidationResult::TX_RECONSIDERABLE:
     case TxValidationResult::TX_CONSENSUS:
     case TxValidationResult::TX_RECENT_CONSENSUS_CHANGE:
     case TxValidationResult::TX_NOT_STANDARD:
