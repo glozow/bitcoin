@@ -89,18 +89,25 @@ class PackageRelayTest(BitcoinTestFramework):
         self.transactions_to_presend[1] = [high_fee_child["tx"]]
         # Parent would have been previously rejected
         self.transactions_to_presend[3] = [low_fee_parent["tx"]]
-        self.total_txns += 2
 
         # Basic v3 package, same as above but parent is 0-fee
-        v3_zero_fee_parent = self.wallet.create_self_transfer(fee_rate=0, fee=0, version=3, confirmed_only=True)
-        v3_child = self.wallet.create_self_transfer(utxo_to_spend=v3_zero_fee_parent["new_utxo"], fee_rate=999*FEERATE_1SAT_VB, version=3)
+        utxo_for_v3 = self.wallet.get_utxo(confirmed_only=True)
+        utxo_conf_1 = self.wallet.get_utxo(confirmed_only=True)
+        v3_zero_fee_parent = self.wallet.create_self_transfer_multi(utxos_to_spend=[utxo_for_v3, utxo_conf_1], fee_per_output=0, version=3)
+        v3_child = self.wallet.create_self_transfer(utxo_to_spend=v3_zero_fee_parent["new_utxos"][0], fee_rate=99*FEERATE_1SAT_VB, version=3)
         package_hex_v3 = [v3_zero_fee_parent["hex"], v3_child["hex"]]
         self.packages_to_submit.append(package_hex_v3)
         # Child should already be in orphanage
         self.transactions_to_presend[1] = [v3_child["tx"]]
         # Parent would have been previously rejected
         self.transactions_to_presend[3] = [v3_zero_fee_parent["tx"]]
-        self.total_txns += 2
+
+        # v3 package to replace package_hex_v3 via package RBF
+        utxo_conf_2 = self.wallet.get_utxo(confirmed_only=True)
+        v3_replacement_parent = self.wallet.create_self_transfer_multi(utxos_to_spend=[utxo_for_v3, utxo_conf_2], fee_per_output=0, version=3)
+        v3_replacement_child = self.wallet.create_self_transfer(utxo_to_spend=v3_replacement_parent["new_utxos"][0], fee_rate=300*FEERATE_1SAT_VB, version=3)
+        package_hex_v3_rbf = [v3_replacement_parent["hex"], v3_replacement_child["hex"]]
+        self.replacement_packages.append(package_hex_v3_rbf)
 
     def test_individual_logic(self):
         node = self.nodes[0]
@@ -181,7 +188,7 @@ class PackageRelayTest(BitcoinTestFramework):
         self.log.info("Check end-to-end package relay across multiple nodes")
         self.packages_to_submit = []
         self.transactions_to_presend = [[]] * self.num_nodes
-        self.total_txns = 0
+        self.replacement_packages = []
 
         self.log.info("Create transactions and then mature the coinbases")
         self.wallet.rescan_utxos(include_mempool=True)
@@ -204,6 +211,13 @@ class PackageRelayTest(BitcoinTestFramework):
         self.log.info("Submit full packages to node0")
         for package_hex in self.packages_to_submit:
             self.nodes[0].submitpackage(package_hex)
+
+        self.log.info("Wait for mempools to sync")
+        self.sync_mempools(timeout=20)
+
+        self.log.info("Submit replacement package to node3")
+        for package_hex in self.replacement_packages:
+            self.nodes[3].submitpackage(package_hex)
 
         self.log.info("Wait for mempools to sync")
         self.sync_mempools(timeout=20)
