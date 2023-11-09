@@ -51,6 +51,10 @@ public:
     /** Does this peer have any work to do? */
     bool HaveTxToReconsider(NodeId peer) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);;
 
+    /** Return a child of this parent if this peer provided exactly 1 orphan child of this tx. */
+    std::vector<CTransactionRef> GetChildren(const CTransactionRef& parent, NodeId peer) const
+        EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
     /** Return how many entries exist in the orphange */
     size_t Size() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex)
     {

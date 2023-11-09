@@ -242,3 +242,21 @@ void TxOrphanage::EraseForBlock(const CBlock& block)
         LogPrint(BCLog::TXPACKAGES, "Erased %d orphan tx included or conflicted by block\n", nErased);
     }
 }
+
+std::vector<CTransactionRef> TxOrphanage::GetChildren(const CTransactionRef& parent, NodeId peer) const
+{
+    LOCK(m_mutex);
+    std::vector<CTransactionRef> children_found;
+
+    for (unsigned int i = 0; i < parent->vout.size(); i++) {
+        const auto it_by_prev = m_outpoint_to_orphan_it.find(COutPoint(parent->GetHash(), i));
+        if (it_by_prev != m_outpoint_to_orphan_it.end()) {
+            for (const auto& elem : it_by_prev->second) {
+                if (elem->second.fromPeer == peer) {
+                    children_found.emplace_back(elem->second.tx);
+                }
+            }
+        }
+    }
+    return children_found;
+}
