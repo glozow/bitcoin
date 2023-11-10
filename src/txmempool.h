@@ -627,6 +627,8 @@ public:
     }
 
     /** Remove transactions from the mempool until its dynamic size is <= sizelimit.
+     *  Additionally, if m_min_relay_feerate is >0, proactively trim any transactions whose
+     *  descendant score is <=0.
       *  pvNoSpendsRemaining, if set, will be populated with the list of outpoints
       *  which are not in mempool which no longer have any spends in this mempool.
       */
