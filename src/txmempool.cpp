@@ -1144,17 +1144,26 @@ void CTxMemPool::TrimToSize(size_t sizelimit, std::vector<COutPoint>* pvNoSpends
 
     unsigned nTxnRemoved = 0;
     CFeeRate maxFeeRateRemoved(0);
-    while (!mapTx.empty() && DynamicMemoryUsage() > sizelimit) {
+    while (!mapTx.empty()) {
         indexed_transaction_set::index<descendant_score>::type::iterator it = mapTx.get<descendant_score>().begin();
 
+        // Keep trimming as long as memory is above the maximum.
+        // Also, unless min relay feerate allows it, skim away everything paying <=0 fees.
+        const bool oversize{DynamicMemoryUsage() > sizelimit};
+        const bool zerodescfee{m_min_relay_feerate.GetFeePerK() > 0 && it->GetModFeesWithDescendants() <= 0};
+        if (!oversize && !zerodescfee) break;
+
+        // When we trim oversize (not for zerodescfee), also raise the min fee.
         // We set the new mempool min fee to the feerate of the removed set, plus the
         // "minimum reasonable fee rate" (ie some value under which we consider txn
         // to have 0 fee). This way, we don't allow txn to enter mempool with feerate
         // equal to txn which were removed with no block in between.
         CFeeRate removed(it->GetModFeesWithDescendants(), it->GetSizeWithDescendants());
-        removed += m_incremental_relay_feerate;
-        trackPackageRemoved(removed);
-        maxFeeRateRemoved = std::max(maxFeeRateRemoved, removed);
+        if (oversize) {
+            removed += m_incremental_relay_feerate;
+            trackPackageRemoved(removed);
+            maxFeeRateRemoved = std::max(maxFeeRateRemoved, removed);
+        }
 
         setEntries stage;
         CalculateDescendants(mapTx.project<0>(it), stage);
@@ -1166,7 +1175,7 @@ void CTxMemPool::TrimToSize(size_t sizelimit, std::vector<COutPoint>* pvNoSpends
             for (txiter iter : stage)
                 txn.push_back(iter->GetTx());
         }
-        RemoveStaged(stage, false, MemPoolRemovalReason::SIZELIMIT);
+        RemoveStaged(stage, false, oversize ? MemPoolRemovalReason::SIZELIMIT : MemPoolRemovalReason::ZERODESCFEE);
         if (pvNoSpendsRemaining) {
             for (const CTransaction& tx : txn) {
                 for (const CTxIn& txin : tx.vin) {

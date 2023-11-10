@@ -16,6 +16,7 @@ std::string RemovalReasonToString(const MemPoolRemovalReason& r) noexcept
         case MemPoolRemovalReason::BLOCK: return "block";
         case MemPoolRemovalReason::CONFLICT: return "conflict";
         case MemPoolRemovalReason::REPLACED: return "replaced";
+        case MemPoolRemovalReason::ZERODESCFEE: return "zerodescfee";
     }
     assert(false);
 }
