@@ -7,6 +7,7 @@
 #include <chainparams.h>
 #include <node/context.h>
 #include <node/mempool_args.h>
+#include <policy/rbf.h>
 #include <policy/v3_policy.h>
 #include <txmempool.h>
 #include <util/check.h>
@@ -68,6 +69,19 @@ std::optional<std::string> CheckPackageMempoolAcceptResult(const Package& txns,
             return strprintf("tx %s unexpectedly failed: %s", wtxid.ToString(), atmp_result.m_state.ToString());
         }
 
+        // Each subpackage is allowed MAX_REPLACEMENT_CANDIDATES replacements (only checking individually here)
+        if (atmp_result.m_replaced_transactions.size() > MAX_REPLACEMENT_CANDIDATES) {
+            return strprintf("tx %s result replaced too many transactions",
+                                wtxid.ToString());
+        }
+
+        // Replacements can't happen for subpackages larger than 2
+        if (!atmp_result.m_replaced_transactions.empty() &&
+            atmp_result.m_wtxids_fee_calculations.has_value() && atmp_result.m_wtxids_fee_calculations.value().size() > 2) {
+             return strprintf("tx %s was part of a too-large package RBF subpackage",
+                                wtxid.ToString());
+        }
+
         // m_vsize and m_base_fees should exist iff the result was VALID or MEMPOOL_ENTRY
         const bool mempool_entry{atmp_result.m_result_type == MempoolAcceptResult::ResultType::MEMPOOL_ENTRY};
         if (atmp_result.m_base_fees.has_value() != (valid || mempool_entry)) {
@@ -106,6 +120,11 @@ std::optional<std::string> CheckPackageMempoolAcceptResult(const Package& txns,
             if (tx->HasWitness() && atmp_result.m_result_type == MempoolAcceptResult::ResultType::DIFFERENT_WITNESS) {
                 if (mempool->exists(GenTxid::Wtxid(wtxid))) {
                     return strprintf("wtxid %s should not be in mempool", wtxid.ToString());
+                }
+            }
+            for (const auto& tx_ref : atmp_result.m_replaced_transactions) {
+                if (mempool->exists(GenTxid::Txid(tx_ref->GetHash()))) {
+                    return strprintf("tx %s should not be in mempool as it was replaced", tx_ref->GetWitnessHash().ToString());
                 }
             }
         }
