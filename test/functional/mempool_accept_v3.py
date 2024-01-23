@@ -15,9 +15,12 @@ from test_framework.util import (
     assert_raises_rpc_error,
 )
 from test_framework.wallet import (
+    COIN,
     DEFAULT_FEE,
     MiniWallet,
 )
+
+MAX_REPLACEMENT_CANDIDATES = 100
 
 def cleanup(extra_args=None):
     def decorator(func):
@@ -430,11 +433,85 @@ class MempoolAcceptV3(BitcoinTestFramework):
         self.check_mempool([ancestor_tx["txid"], child_1_conflict["txid"], child_2["txid"]])
         assert_equal(node.getmempoolentry(ancestor_tx["txid"])["descendantcount"], 3)
 
+    @cleanup(extra_args=["-acceptnonstdtxn=1"])
+    def test_v3_sibling_eviction(self):
+        self.log.info("Test sibling eviction for v3")
+        node = self.nodes[0]
+        tx_v3_parent = self.wallet.send_self_transfer_multi(from_node=node, num_outputs=2, version=3)
+        # This is the sibling to replace
+        tx_v3_child_1 = self.wallet.send_self_transfer(
+            from_node=node, utxo_to_spend=tx_v3_parent["new_utxos"][0], fee_rate=DEFAULT_FEE * 2, version=3
+        )
+        assert tx_v3_child_1["txid"] in node.getrawmempool()
+
+        self.log.info("Test tx must be higher feerate than sibling to evict it")
+        tx_v3_child_2_rule6 = self.wallet.create_self_transfer(
+            utxo_to_spend=tx_v3_parent["new_utxos"][1], fee_rate=DEFAULT_FEE, version=3
+        )
+        rule6_str = f"v3-rule-violation and cannot bypass because insufficient fee, tx {tx_v3_parent['txid']} (wtxid={tx_v3_parent['wtxid']}) would exceed descendant count limit and rejecting replacement {tx_v3_child_2_rule6['txid']}; new feerate"
+        assert_raises_rpc_error(-26, rule6_str, node.sendrawtransaction, tx_v3_child_2_rule6["hex"])
+        self.check_mempool([tx_v3_parent['txid'], tx_v3_child_1['txid']])
+
+        self.log.info("Test tx must meet absolute fee rules to evict sibling")
+        tx_v3_child_2_rule4 = self.wallet.create_self_transfer(
+            utxo_to_spend=tx_v3_parent["new_utxos"][1], fee_rate=2 * DEFAULT_FEE + Decimal("0.00000001"), version=3
+        )
+        rule4_str = f"v3-rule-violation and cannot bypass because insufficient fee, tx {tx_v3_parent['txid']} (wtxid={tx_v3_parent['wtxid']}) would exceed descendant count limit and rejecting replacement {tx_v3_child_2_rule4['txid']}, not enough additional fees to relay"
+        assert_raises_rpc_error(-26, rule4_str, node.sendrawtransaction, tx_v3_child_2_rule4["hex"])
+        self.check_mempool([tx_v3_parent['txid'], tx_v3_child_1['txid']])
+
+        self.log.info("Test tx cannot cause more than 100 evictions including RBF and sibling eviction")
+        # First add 4 groups of 25 transactions.
+        utxos_for_conflict = []
+        txids_v2_100 = []
+        for _ in range(4):
+            confirmed_utxo = self.wallet.get_utxo(confirmed_only=True)
+            utxos_for_conflict.append(confirmed_utxo)
+            # 25 is within descendant limits
+            chain_length = int(MAX_REPLACEMENT_CANDIDATES / 4)
+            chain = self.wallet.create_self_transfer_chain(chain_length=chain_length, utxo_to_spend=confirmed_utxo)
+            for item in chain:
+                txids_v2_100.append(item["txid"])
+                node.sendrawtransaction(item["hex"])
+        self.check_mempool(txids_v2_100 + [tx_v3_parent["txid"], tx_v3_child_1["txid"]])
+
+        # Replacing 100 transactions is fine
+        tx_v3_replacement_only = self.wallet.create_self_transfer_multi(utxos_to_spend=utxos_for_conflict, fee_per_output=4000000)
+        # Override maxfeerate - it costs a lot to replace these 100 transactions.
+        assert node.testmempoolaccept([tx_v3_replacement_only["hex"]], maxfeerate=0)[0]["allowed"]
+        # Adding another one exceeds the limit.
+        utxos_for_conflict.append(tx_v3_parent["new_utxos"][1])
+        tx_v3_child_2_rule5 = self.wallet.create_self_transfer_multi(utxos_to_spend=utxos_for_conflict, fee_per_output=4000000, version=3)
+        rule5_str = f"v3-rule-violation and cannot bypass because too many potential replacements, tx {tx_v3_parent['txid']} (wtxid={tx_v3_parent['wtxid']}) would exceed descendant count limit and rejecting replacement {tx_v3_child_2_rule5['txid']}; too many potential replacements (101 > 100)"
+        assert_raises_rpc_error(-26, rule5_str, node.sendrawtransaction, tx_v3_child_2_rule5["hex"])
+        self.check_mempool(txids_v2_100 + [tx_v3_parent["txid"], tx_v3_child_1["txid"]])
+
+        self.log.info("Test sibling eviction is successful if it meets all RBF rules")
+        tx_v3_child_2 = self.wallet.create_self_transfer(
+            utxo_to_spend=tx_v3_parent["new_utxos"][1], fee_rate=DEFAULT_FEE*10, version=3
+        )
+        node.sendrawtransaction(tx_v3_child_2["hex"])
+        self.check_mempool(txids_v2_100 + [tx_v3_parent["txid"], tx_v3_child_2["txid"]])
+
+        self.log.info("Test that it's possible to do a sibling eviction and RBF at the same time")
+        utxo_unrelated_conflict = self.wallet.get_utxo(confirmed_only=True)
+        tx_unrelated_replacee = self.wallet.send_self_transfer(from_node=node, utxo_to_spend=utxo_unrelated_conflict)
+        assert tx_unrelated_replacee["txid"] in node.getrawmempool()
+
+        fee_to_beat_child2 = int(tx_v3_child_2["fee"] * COIN)
+
+        tx_v3_child_3 = self.wallet.create_self_transfer_multi(
+            utxos_to_spend=[tx_v3_parent["new_utxos"][0], utxo_unrelated_conflict], fee_per_output=fee_to_beat_child2*5, version=3
+        )
+        node.sendrawtransaction(tx_v3_child_3["hex"])
+        self.check_mempool(txids_v2_100 + [tx_v3_parent["txid"], tx_v3_child_3["txid"]])
+
+
     def run_test(self):
         self.log.info("Generate blocks to create UTXOs")
         node = self.nodes[0]
         self.wallet = MiniWallet(node)
-        self.generate(self.wallet, 110)
+        self.generate(self.wallet, 120)
         self.test_v3_acceptance()
         self.test_v3_replacement()
         self.test_v3_bip125()
@@ -446,6 +523,7 @@ class MempoolAcceptV3(BitcoinTestFramework):
         self.test_v3_package_inheritance()
         self.test_v3_in_testmempoolaccept()
         self.test_reorg_2child_rbf()
+        self.test_v3_sibling_eviction()
 
 
 if __name__ == "__main__":
