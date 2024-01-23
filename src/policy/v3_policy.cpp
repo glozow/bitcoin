@@ -129,10 +129,11 @@ std::optional<std::string> PackageV3Checks(const CTransactionRef& ptx, int64_t v
             }
 
             // It shouldn't be possible to have any mempool siblings at this point. SingleV3Checks
-            // catches mempool siblings. Also, if the package consists of connected transactions,
+            // catches mempool siblings and sibling eviction is not extended to packages. Also, if the package consists of connected transactions,
             // any tx having a mempool ancestor would mean the package exceeds ancestor limits.
             if (!Assume(!parent_info.m_has_mempool_descendant)) {
-                return strprintf("tx %u would exceed descendant count limit", parent_info.m_wtxid.ToString());
+                return strprintf("tx %s (wtxid=%s) would exceed descendant count limit",
+                                parent_info.m_txid.ToString(), parent_info.m_wtxid.ToString());
             }
         }
     } else {
@@ -203,8 +204,7 @@ std::optional<std::pair<std::string, CTransactionRef>> SingleV3Checks(const CTra
         // Check the descendant counts of in-mempool ancestors.
         const auto& parent_entry = *mempool_ancestors.begin();
         // If there are any ancestors, this is the only child allowed. The parent cannot have any
-        // other descendants. We handle the possibility of multiple children as that case is
-        // possible through a reorg.
+        // other descendants.
         const auto& children = parent_entry->GetMemPoolChildrenConst();
         // Don't double-count a transaction that is going to be replaced. This logic assumes that
         // any descendant of the V3 transaction is a direct child, which makes sense because a V3
@@ -213,10 +213,27 @@ std::optional<std::pair<std::string, CTransactionRef>> SingleV3Checks(const CTra
             std::any_of(children.cbegin(), children.cend(),
                 [&direct_conflicts](const CTxMemPoolEntry& child){return direct_conflicts.count(child.GetTx().GetHash()) > 0;});
         if (parent_entry->GetCountWithDescendants() + 1 > V3_DESCENDANT_LIMIT && !child_will_be_replaced) {
-            return std::make_pair(strprintf("tx %u (wtxid=%s) would exceed descendant count limit",
-                             parent_entry->GetSharedTx()->GetHash().ToString(),
-                             parent_entry->GetSharedTx()->GetWitnessHash().ToString()),
-                nullptr);
+            // Allow sibling eviction for v3 transaction: if another child already exists, even if
+            // we don't conflict with it, consider evicting it under RBF rules. We rely on v3 rules
+            // only permitting 1 descendant, as otherwise we would need to have logic for deciding
+            // which descendant to evict. Skip if this isn't true, e.g. if this transaction has
+            // extra descendants due to a reorg.
+            const bool consider_sibling_eviction{children.size() == 1};
+            if (consider_sibling_eviction) {
+                // Return the original error string together with which tx we are evicting so
+                // that, if sibling eviction fails, we can let the user know which transaction's
+                // descendant limit is exceeded.
+                return std::make_pair(strprintf("tx %u (wtxid=%s) would exceed descendant count limit",
+                                                parent_entry->GetSharedTx()->GetHash().ToString(),
+                                                parent_entry->GetSharedTx()->GetWitnessHash().ToString()),
+                                      children.begin()->get().GetSharedTx());
+            } else {
+                // Otherwise this transaction must be replacing the sibling via direct conflict.
+                return std::make_pair(strprintf("tx %u (wtxid=%s) would exceed descendant count limit",
+                                                parent_entry->GetSharedTx()->GetHash().ToString(),
+                                                parent_entry->GetSharedTx()->GetWitnessHash().ToString()),
+                                      nullptr);
+            }
         }
     }
     return std::nullopt;

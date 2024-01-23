@@ -312,7 +312,8 @@ class MempoolAcceptV3(BitcoinTestFramework):
             version=3
         )
         expected_error_mempool_sibling = f"v3-rule-violation, tx {tx_mempool_parent['txid']} (wtxid={tx_mempool_parent['wtxid']}) would exceed descendant count limit"
-        assert_raises_rpc_error(-26, expected_error_mempool_sibling, node.sendrawtransaction, tx_has_mempool_sibling["hex"])
+        expected_error_mempool_sibling_no_eviction = f"v3-rule-violation and cannot bypass because insufficient fee, tx {tx_mempool_parent['txid']} (wtxid={tx_mempool_parent['wtxid']}) would exceed descendant count limit and rejecting replacement"
+        assert_raises_rpc_error(-26, expected_error_mempool_sibling_no_eviction, node.sendrawtransaction, tx_has_mempool_sibling["hex"])
 
         tx_has_mempool_uncle = self.wallet.create_self_transfer(utxo_to_spend=tx_has_mempool_sibling["new_utxo"], version=3)
 

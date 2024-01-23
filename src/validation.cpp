@@ -601,6 +601,10 @@ private:
          * this transaction, used to return to the MemPoolAccept caller. Only populated if
          * validation is successful and the original transactions are removed. */
         std::list<CTransactionRef> m_replaced_transactions;
+        /** Error string to return if sibling eviction fails. If the value is not std::nullopt, it
+         * means we are not attempting a sibling eviction and everything in m_conflicts,
+         * m_iters_conflicting, m_all_conflicting, and m_replaced_transactions are true conflicts. */
+        std::optional<std::string> m_sibling_eviction_failure_string;
 
         /** Virtual size of the transaction as used by the mempool, calculated using serialized size
          * of the transaction and sigops. */
@@ -690,7 +694,8 @@ private:
 
     Chainstate& m_active_chainstate;
 
-    /** Whether the transaction(s) would replace any mempool transactions. If so, RBF rules apply. */
+    /** Whether the transaction(s) would replace any mempool transactions or evict any siblings. If
+     * so, RBF rules apply. */
     bool m_rbf{false};
 };
 
@@ -954,8 +959,23 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     }
 
     ws.m_ancestors = *ancestors;
+    // Even though just checking direct mempool parents for inheritance would be sufficient, we
+    // check using the full ancestor set here because it's more convenient to use what we have
+    // already calculated.
     if (const auto err{SingleV3Checks(ws.m_ptx, ws.m_ancestors, ws.m_conflicts, ws.m_vsize)}) {
-        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-rule-violation", err->first);
+        // Disabled within package validation.
+        if (err->second != nullptr && !args.m_package_submission && args.m_allow_replacement) {
+            // Potential sibling eviction. Add the sibling to our list of mempool conflicts to be
+            // included in RBF checks.
+            ws.m_conflicts.insert(err->second->GetHash());
+            // Adding the sibling to m_iters_conflicting here means that it doesn't count towards
+            // RBF Carve Out above. This is correct, since removing to-be-replaced transactions from
+            // the descendant count is done separately in ApplyV3Rules for v3 transactions.
+            ws.m_iters_conflicting.insert(m_pool.GetIter(err->second->GetHash()).value());
+            ws.m_sibling_eviction_failure_string = err->first;
+        } else {
+            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-rule-violation", err->first);
+        }
     }
 
     // A transaction that spends outputs that would be replaced by it is invalid. Now
@@ -995,16 +1015,28 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
         // Even though this is a fee-related failure, this result is TX_MEMPOOL_POLICY, not
         // TX_RECONSIDERABLE, because it cannot be bypassed using package validation.
         // This must be changed if package RBF is enabled.
+        if (ws.m_sibling_eviction_failure_string.has_value()) {
+            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-rule-violation and cannot bypass because insufficient fee",
+                                 strprintf("%s and %s", *ws.m_sibling_eviction_failure_string, *err_string));
+        }
         return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "insufficient fee", *err_string);
     }
 
     // Calculate all conflicting entries and enforce Rule #5.
     if (const auto err_string{GetEntriesForConflicts(tx, m_pool, ws.m_iters_conflicting, ws.m_all_conflicting)}) {
+        if (ws.m_sibling_eviction_failure_string.has_value()) {
+            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-rule-violation and cannot bypass because too many potential replacements",
+                                 strprintf("%s and %s", *ws.m_sibling_eviction_failure_string, *err_string));
+        }
         return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
                              "too many potential replacements", *err_string);
     }
     // Enforce Rule #2.
     if (const auto err_string{HasNoNewUnconfirmed(tx, m_pool, ws.m_iters_conflicting)}) {
+        if (ws.m_sibling_eviction_failure_string.has_value()) {
+            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-rule-violation and cannot bypass because replacement-adds-unconfirmed",
+                                 strprintf("%s and %s", *ws.m_sibling_eviction_failure_string, *err_string));
+        }
         return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY,
                              "replacement-adds-unconfirmed", *err_string);
     }
@@ -1019,6 +1051,10 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
         // Even though this is a fee-related failure, this result is TX_MEMPOOL_POLICY, not
         // TX_RECONSIDERABLE, because it cannot be bypassed using package validation.
         // This must be changed if package RBF is enabled.
+        if (ws.m_sibling_eviction_failure_string.has_value()) {
+            return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "v3-rule-violation and cannot bypass because insufficient fee",
+                                 strprintf("%s and %s", *ws.m_sibling_eviction_failure_string, *err_string));
+        }
         return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "insufficient fee", *err_string);
     }
     return true;
