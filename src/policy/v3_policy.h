@@ -84,8 +84,8 @@ struct PackageWithAncestorCounts {
     std::vector<size_t> ancestor_counts; // number of in-mempool ancestors for each package transaction.
 };
 
-bool PackageV3Checks(const CTransactionRef& ptx, int64_t vsize,
-        const PackageWithAncestorCounts& package_with_ancestors,
-        const CTxMemPool::setEntries& mempool_ancestors, CTxMemPool& pool);
+std::optional<std::string> PackageV3Checks(const CTransactionRef& ptx, int64_t vsize,
+                                            const PackageWithAncestorCounts& package_with_ancestors,
+                                            const CTxMemPool::setEntries& mempool_ancestors, CTxMemPool& pool);
 
 #endif // BITCOIN_POLICY_V3_POLICY_H

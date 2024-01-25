@@ -1341,8 +1341,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     // At this point we have all in-mempool ancestors, and we know every transaction's vsize.
     // Run the v3 checks on the package.
     for (Workspace& ws : workspaces) {
-        if (!PackageV3Checks(ws.m_ptx, ws.m_vsize, package_with_ancestors, ws.m_ancestors, m_pool)) {
-            package_state.Invalid(PackageValidationResult::PCKG_POLICY, "v3-violation");
+        if (auto err{PackageV3Checks(ws.m_ptx, ws.m_vsize, package_with_ancestors, ws.m_ancestors, m_pool)}) {
+            package_state.Invalid(PackageValidationResult::PCKG_POLICY, "v3-violation", err.value());
             return PackageMempoolAcceptResult(package_state, {});
         }
     }

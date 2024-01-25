@@ -257,14 +257,12 @@ class MempoolAcceptV3(BitcoinTestFramework):
 
         self.check_mempool([])
         result = node.submitpackage([tx_v3_parent_normal["hex"], tx_v3_parent_2_normal["hex"], tx_v3_child_multiparent["hex"]])
-        #assert_equal(result['package_msg'], f"v3-violation, tx {tx_v3_child_multiparent['wtxid']} would have too many ancestors")
-        assert_equal(result['package_msg'], f"v3-violation")
+        assert_equal(result['package_msg'], f"v3-violation, tx {tx_v3_child_multiparent['wtxid']} would have too many ancestors")
         self.check_mempool([])
 
         self.check_mempool([])
         result = node.submitpackage([tx_v3_parent_normal["hex"], tx_v3_child_heavy["hex"]])
-        #assert_equal(result['package_msg'], f"v3-violation, v3 child tx {tx_v3_child_heavy['wtxid']} is too big: 1005 > 1000 virtual bytes")
-        assert_equal(result['package_msg'], f"v3-violation")
+        assert_equal(result['package_msg'], f"v3-violation, v3 child tx {tx_v3_child_heavy['wtxid']} is too big: 1005 > 1000 virtual bytes")
         self.check_mempool([])
 
     @cleanup(extra_args=None)
@@ -294,9 +292,7 @@ class MempoolAcceptV3(BitcoinTestFramework):
 
         # submitpackage(B, C) should fail
         result = node.submitpackage([tx_0fee_parent["hex"], tx_child_violator["hex"]])
-        #assert_equal(result['package_msg'], "transaction failed")
-        assert_equal(result['package_msg'], "v3-violation")
-        #assert_equal(result['tx-results'][tx_child_violator['wtxid']]['error'], f"v3-rule-violation, tx {tx_child_violator['wtxid']} would have too many ancestors")
+        assert_equal(result['package_msg'], f"v3-violation, tx {tx_child_violator['wtxid']} would have too many ancestors")
         self.check_mempool([tx_in_mempool["txid"]])
 
     @cleanup(extra_args=["-datacarriersize=1000"])
@@ -315,8 +311,7 @@ class MempoolAcceptV3(BitcoinTestFramework):
         )
         self.check_mempool([])
         result = node.submitpackage([tx_v3_parent["hex"], tx_v2_child["hex"]])
-        #assert_equal(result['package_msg'], f"v3-violation, non-v3 tx {tx_v2_child['wtxid']} cannot spend from v3 tx {tx_v3_parent['wtxid']}")
-        assert_equal(result['package_msg'], f"v3-violation")
+        assert_equal(result['package_msg'], f"v3-violation, non-v3 tx {tx_v2_child['wtxid']} cannot spend from v3 tx {tx_v3_parent['wtxid']}")
         self.check_mempool([])
 
     @cleanup(extra_args=None)
@@ -360,11 +355,9 @@ class MempoolAcceptV3(BitcoinTestFramework):
         # Extra v3 transaction does not make us ignore the extra descendant
         test_accept_2children_with_exra = node.testmempoolaccept([tx_v3_parent["hex"], tx_v3_child_1["hex"], tx_v3_child_2["hex"], tx_v3_independent["hex"]])
         assert all([result["package-error"] == "v3-violation" for result in test_accept_2children_with_exra])
-        # If the parent is already in the mempool, the 2 v3 children should not be allowed, but we take them anyway -- oops!
         node.sendrawtransaction(tx_v3_parent["hex"])
         test_accept_2children_with_in_mempool_parent = node.testmempoolaccept([tx_v3_child_1["hex"], tx_v3_child_2["hex"]])
         assert all([result["package-error"] == "v3-violation" for result in test_accept_2children_with_in_mempool_parent])
-        #assert all([result["allowed"] for result in test_accept_2children_with_in_mempool_parent])
 
     def run_test(self):
         self.log.info("Generate blocks to create UTXOs")
