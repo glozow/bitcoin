@@ -58,7 +58,19 @@ std::optional<std::string> ApplyV3Rules(const CTransactionRef& ptx,
                                         const std::set<Txid>& direct_conflicts,
                                         int64_t vsize);
 
-/** Must be called for every package containing any v3 transaction. Should not be called for non-v3 packages.
+struct PackageWithAncestorCounts {
+    const Package& package;
+    /** Number of in-mempool ancestors for each transaction, in the same order as they appear in
+     * package. Equal to 0 if there are no mempool ancestors. Does not include in-package ancestors.
+     */
+    std::vector<size_t> ancestor_counts;
+
+    // Don't create one that doesn't correspond to a package.
+    PackageWithAncestorCounts() = delete;
+    PackageWithAncestorCounts(const Package& package_in) : package{package_in} {}
+};
+
+/** Must be called for every transaction that is submitted within a package.
  *
  * Check the following rules for transactions within the package:
  * 1. A v3 tx must only have v3 unconfirmed ancestors.
@@ -68,24 +80,12 @@ std::optional<std::string> ApplyV3Rules(const CTransactionRef& ptx,
  * 5. If a v3 tx has any unconfirmed ancestors, its vsize must be within V3_CHILD_MAX_VSIZE.
  *
  * Important: this function is necessary but insufficient to enforce these rules. ApplyV3Rules must
- * be called for each individual transaction, after in-mempool ancestors, virtual sizes, and
- * in-package ancestors have been calculated. This function serves as a way to quit early on
- * packages in which those calculations may be expensive.
+ * be called for each individual transaction as well.
  *
- * @returns If all checks pass, a map from each v3 transaction, by txid, to the txids of its
- * in-package ancestor set. Every ancestor set includes the tx itself. If this passed, we know that
- * each connected component does not violate v3 inheritance or topology constraints within the
- * package itself. If any checks fail, an error string detailing what failed.
+ * @returns debug string if an error occurs, std::nullopt otherwise.
  * */
-//util::Result<std::map<Txid, std::set<Txid>>> PackageV3Checks(const Package& package);
-
-struct PackageWithAncestorCounts {
-    Package package;
-    std::vector<size_t> ancestor_counts; // number of in-mempool ancestors for each package transaction.
-};
-
 std::optional<std::string> PackageV3Checks(const CTransactionRef& ptx, int64_t vsize,
                                             const PackageWithAncestorCounts& package_with_ancestors,
-                                            const CTxMemPool::setEntries& mempool_ancestors, CTxMemPool& pool);
+                                            const CTxMemPool::setEntries& mempool_ancestors);
 
 #endif // BITCOIN_POLICY_V3_POLICY_H

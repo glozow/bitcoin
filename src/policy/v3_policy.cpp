@@ -34,8 +34,7 @@ void FindInPackageParents(const PackageWithAncestorCounts& package_with_ancestor
 
 std::optional<std::string> PackageV3Checks(const CTransactionRef& ptx, int64_t vsize,
                                            const PackageWithAncestorCounts& package_with_ancestors,
-                                           const CTxMemPool::setEntries& mempool_ancestors,
-                                           CTxMemPool& pool)
+                                           const CTxMemPool::setEntries& mempool_ancestors)
 {
     std::vector<int> in_package_parents;
 
