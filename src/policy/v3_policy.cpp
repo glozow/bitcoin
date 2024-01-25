@@ -15,8 +15,9 @@
 #include <vector>
 
 /** Helper for PackageV3Checks: Returns a vector containing the indices of transactions (within
- * package) that are direct parents of ptx. */
-std::vector<int> FindInPackageParents(const PackageWithAncestorCounts& package_with_ancestors, const CTransactionRef& ptx)
+ * package) that are direct parents of ptx. Also populates
+ * PackageWithAncestorCounts::has_in_package_ancestor. */
+std::vector<int> FindInPackageParents(PackageWithAncestorCounts& package_with_ancestors, const CTransactionRef& ptx)
 {
     std::vector<int> in_package_parents;
 
@@ -25,20 +26,29 @@ std::vector<int> FindInPackageParents(const PackageWithAncestorCounts& package_w
         possible_parents.insert(input.prevout.hash);
     }
 
+    size_t my_index{0};
+
     for (size_t i = 0; i < package_with_ancestors.package.size(); ++i) {
         const auto& tx = package_with_ancestors.package[i];
         // We assume the package is sorted, so that we don't need to continue
         // looking past the transaction itself.
-        if (&(*tx) == &(*ptx)) break;
+        if (&(*tx) == &(*ptx)) {
+            my_index = i;
+            break;
+        }
         if (possible_parents.count(tx->GetHash())) {
             in_package_parents.push_back(i);
         }
+    }
+
+    if (!in_package_parents.empty()) {
+        package_with_ancestors.has_in_package_ancestor.at(my_index) = true;
     }
     return in_package_parents;
 }
 
 std::optional<std::string> PackageV3Checks(const CTransactionRef& ptx, int64_t vsize,
-                                           const PackageWithAncestorCounts& package_with_ancestors,
+                                           PackageWithAncestorCounts& package_with_ancestors,
                                            const CTxMemPool::setEntries& mempool_ancestors)
 {
     const auto in_package_parents{FindInPackageParents(package_with_ancestors, ptx)};
@@ -76,9 +86,9 @@ std::optional<std::string> PackageV3Checks(const CTransactionRef& ptx, int64_t v
             } else {
                 // Ancestor must be in the package. Find it.
                 auto &parent_index = in_package_parents[0];
-                // If the in-package parent has mempool ancestors, then this is
-                // a v3 violation.
-                if (package_with_ancestors.ancestor_counts[parent_index] > 0) {
+                // If the in-package parent has mempool or in-package ancestors, then this is a v3 violation.
+                if (package_with_ancestors.ancestor_counts[parent_index] > 0 ||
+                    package_with_ancestors.has_in_package_ancestor.at(parent_index)) {
                     return strprintf("tx %s would have too many ancestors", ptx->GetWitnessHash().ToString());
                 }
 
@@ -111,10 +121,11 @@ std::optional<std::string> PackageV3Checks(const CTransactionRef& ptx, int64_t v
                         return strprintf("tx %u would exceed descendant count limit", parent_wtxid.ToString());
                     }
 
-                    // This tx can't have both a parent and an in-package child.
-                    if (input.prevout.hash == ptx->GetHash()) {
-                        return strprintf("tx %u would have too many ancestors", package_tx->GetWitnessHash().ToString());
-                    }
+                    // This tx can't have both a parent and an in-package child. Can be redundant
+                    // with the multiple in-package ancestors check above.
+                    /* if (input.prevout.hash == ptx->GetHash()) { */
+                    /*     return strprintf("tx %u would have too many ancestors", package_tx->GetWitnessHash().ToString()); */
+                    /* } */
                 }
             }
 

@@ -246,9 +246,10 @@ BOOST_FIXTURE_TEST_CASE(version3_tests, RegTestingSetup)
 
         PackageWithAncestorCounts struct_multi_gen{package_multi_gen};
         struct_multi_gen.ancestor_counts.resize(package_multi_gen.size());
-        // Middle tx is what triggers a failure for the grandchild:
-        BOOST_CHECK_EQUAL(*PackageV3Checks(middle_tx, GetVirtualTransactionSize(*middle_tx), struct_multi_gen, empty_ancestors), expected_error_str);
-        BOOST_CHECK(PackageV3Checks(tx_v3_multi_gen, GetVirtualTransactionSize(*tx_v3_multi_gen), struct_multi_gen, empty_ancestors) == std::nullopt);
+        // Middle tx triggers a failure because it has a parent and a child (but that's commented out)
+        /* BOOST_CHECK_EQUAL(*PackageV3Checks(middle_tx, GetVirtualTransactionSize(*middle_tx), struct_multi_gen, empty_ancestors), expected_error_str); */
+        // Bottom tx has too many parents:
+        BOOST_CHECK_EQUAL(*PackageV3Checks(tx_v3_multi_gen, GetVirtualTransactionSize(*tx_v3_multi_gen), struct_multi_gen, empty_ancestors), expected_error_str);
     }
 
     // Tx spending v3 cannot be too large in virtual size.

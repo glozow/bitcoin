@@ -65,9 +65,15 @@ struct PackageWithAncestorCounts {
      */
     std::vector<size_t> ancestor_counts;
 
+    /** Bool indicating whether this transaction has an in-package ancestor. */
+    std::vector<bool> has_in_package_ancestor;
+
     // Don't create one that doesn't correspond to a package.
     PackageWithAncestorCounts() = delete;
-    PackageWithAncestorCounts(const Package& package_in) : package{package_in} {}
+    PackageWithAncestorCounts(const Package& package_in) : package{package_in} {
+        // Default false
+        has_in_package_ancestor.resize(package_in.size());
+    }
 };
 
 /** Must be called for every transaction that is submitted within a package.
@@ -93,7 +99,7 @@ struct PackageWithAncestorCounts {
  * @returns debug string if an error occurs, std::nullopt otherwise.
  * */
 std::optional<std::string> PackageV3Checks(const CTransactionRef& ptx, int64_t vsize,
-                                            const PackageWithAncestorCounts& package_with_ancestors,
-                                            const CTxMemPool::setEntries& mempool_ancestors);
+                                           PackageWithAncestorCounts& package_with_ancestors,
+                                           const CTxMemPool::setEntries& mempool_ancestors);
 
 #endif // BITCOIN_POLICY_V3_POLICY_H
