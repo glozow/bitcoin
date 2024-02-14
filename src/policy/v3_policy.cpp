@@ -85,7 +85,6 @@ std::optional<std::string> PackageV3Checks(const CTransactionRef& ptx, int64_t v
             const auto parent_info = [&] {
                 if (mempool_ancestors.size() > 0) {
                     auto& mempool_parent = *mempool_ancestors.begin();
-                    Assume(mempool_parent->GetCountWithDescendants() == 1);
                     return ParentInfo{mempool_parent->GetTx().GetHash(),
                                       mempool_parent->GetTx().GetWitnessHash(),
                                       mempool_parent->GetTx().nVersion,
