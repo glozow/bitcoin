@@ -524,6 +524,10 @@ def fill_mempool(test_framework, node, miniwallet):
 
     test_framework.log.debug("Create a mempool tx that will be evicted")
     tx_to_be_evicted_id = miniwallet.send_self_transfer(from_node=node, fee_rate=relayfee)["txid"]
+    # remove the newly created coin from MiniWallet's UTXO set, in order to avoid it being spent
+    # in one of the mempool filling txs below (which could bump up its descendant fee-rate and
+    # hence stop it from being evicted)
+    miniwallet.get_utxo(txid=tx_to_be_evicted_id, mark_as_spent=True)
 
     # Increase the tx fee rate to give the subsequent transactions a higher priority in the mempool
     # The tx has an approx. vsize of 65k, i.e. multiplying the previous fee rate (in sats/kvB)
