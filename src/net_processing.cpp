@@ -891,6 +891,8 @@ private:
      */
     CRollingBloomFilter m_recent_rejects_reconsiderable GUARDED_BY(::cs_main){120'000, 0.000'001};
 
+    // Test-only: keep track of what we accepted via 1p1c
+    CRollingBloomFilter accepted_1p1c{20'000, 0.000'001};
     /*
      * Filter for transactions that have been recently confirmed.
      * We use this to avoid requesting transactions that have already been
@@ -2080,6 +2082,8 @@ void PeerManagerImpl::BlockConnected(
             if (ptx->HasWitness()) {
                 m_recent_confirmed_transactions.insert(ptx->GetWitnessHash().ToUint256());
             }
+            LogDebug(BCLog::TXPACKAGES, "CONFIRMED %s (wtxid=%s) %s\n", ptx->GetHash().ToString(), ptx->GetWitnessHash().ToString(),
+                     accepted_1p1c.contains(ptx->GetWitnessHash().ToUint256()) ? "WIN1p1c" : "");
         }
     }
     {
@@ -3178,7 +3182,7 @@ void PeerManagerImpl::ProcessInvalidTx(NodeId nodeid, const CTransactionRef& ptx
     // If the tx failed in ProcessOrphanTx, it should be removed from the orphanage unless the
     // tx was still missing inputs. If the tx was not in the orphanage, EraseTx does nothing and returns 0.
     if (Assume(state.GetResult() != TxValidationResult::TX_MISSING_INPUTS) && m_orphanage.EraseTx(ptx->GetHash()) > 0) {
-        LogDebug(BCLog::TXPACKAGES, "   removed orphan tx %s (wtxid=%s)\n", ptx->GetHash().ToString(), ptx->GetWitnessHash().ToString());
+        LogDebug(BCLog::TXPACKAGES, "   removed orphan tx %s (wtxid=%s) because @inv@lid@@\n", ptx->GetHash().ToString(), ptx->GetWitnessHash().ToString());
     }
 }
 
@@ -3195,7 +3199,8 @@ void PeerManagerImpl::ProcessValidTx(NodeId nodeid, const CTransactionRef& tx, c
 
     m_orphanage.AddChildrenToWorkSet(*tx);
     // If it came from the orphanage, remove it. No-op if the tx is not in txorphanage.
-    m_orphanage.EraseTx(tx->GetHash());
+    if (m_orphanage.EraseTx(tx->GetHash()) > 0) {
+    }
 
     LogDebug(BCLog::MEMPOOL, "AcceptToMemoryPool: peer=%d: accepted %s (wtxid=%s) (poolsz %u txn, %u kB)\n",
              nodeid,
@@ -3237,6 +3242,8 @@ void PeerManagerImpl::ProcessPackageResult(const Package& package, const Package
                     Assume(tx_result.m_replaced_transactions.has_value());
                     std::list<CTransactionRef> empty_replacement_list;
                     ProcessValidTx(nodeid, tx, tx_result.m_replaced_transactions.value_or(empty_replacement_list));
+                    LogPrintf("ACCEPTED PACKAGE TX %s (wtxid %s)\n", tx->GetHash().ToString(), tx->GetWitnessHash().ToString());
+                    accepted_1p1c.insert(tx->GetWitnessHash().ToUint256());
                     break;
                 }
                 case MempoolAcceptResult::ResultType::INVALID:
@@ -3285,6 +3292,8 @@ void PeerManagerImpl::MaybeProcess1P1CPackage(const CTransactionRef& ptx, NodeId
     std::iota(tx_indices.begin(), tx_indices.end(), 0);
     Shuffle(tx_indices.begin(), tx_indices.end(), m_rng);
 
+    LogDebug(BCLog::TXPACKAGES, "NUM CANDIDATES FOR 1P1C: %u\n", cpfp_candidates.size());
+
     for (const auto index : tx_indices) {
         // If we already tried a package and failed for any reason, the combined hash was
         // cached in m_recent_rejects_reconsiderable.
@@ -3300,14 +3309,22 @@ void PeerManagerImpl::MaybeProcess1P1CPackage(const CTransactionRef& ptx, NodeId
         const Package package_1p1c{ptx, tx_orphan};
         const std::vector<NodeId> senders{nodeid, orphan_sender};
         const auto package_result{ProcessNewPackage(m_chainman.ActiveChainstate(), m_mempool, package_1p1c, /*test_accept=*/false, /*client_maxfeerate=*/std::nullopt)};
-        LogDebug(BCLog::TXPACKAGES, "package evaluation for parent %s (wtxid=%s) + child %s (wtxid=%s) in orphanage: %s\n",
+        LogDebug(BCLog::TXPACKAGES, "package evaluation attempt for parent %s (wtxid=%s) + child %s (wtxid=%s) [peers: %d and %d (%s)] in orphanage: %s\n",
                  parent_txid.ToString(), parent_wtxid.ToString(),
                  tx_orphan->GetHash().ToString(), tx_orphan->GetWitnessHash().ToString(),
-                 package_result.m_state.IsValid() ? "package accepted" : "package rejected");
+                 senders.front(), senders.back(), senders.back() == senders.front() ? "same providers" : "different providers",
+                 package_result.m_state.IsValid() ? "p@ckage accepted" : "p@ckage rejected");
         ProcessPackageResult(package_1p1c, package_result, senders);
+        if (package_result.m_state.IsValid()) {
+            const CNodeState* state = State(senders.back());
+            bool outbound = state->fPreferredDownload;
+            LogPrint(BCLog::TXPACKAGES, "1p1c (%s peer %d, %s) USEFUL ORPHAN orphan tx %s (wtxid=%s)\n",
+                     outbound ? "@@K@outbound" : "@@K@inbound",
+                     senders.back(), tx_orphan->GetHash().ToString(), tx_orphan->GetWitnessHash().ToString());
+        }
     } else {
-        LogDebug(BCLog::TXPACKAGES, "didn't evaluate package for %s (wtxid=%s), no eligible child found\n",
-                 parent_txid.ToString(), parent_wtxid.ToString());
+        LogDebug(BCLog::TXPACKAGES, "didn't evaluate package for %s (wtxid=%s), no eligible child found out of %u candidates\n",
+                 parent_txid.ToString(), parent_wtxid.ToString(), cpfp_candidates.size());
     }
 }
 
@@ -3316,6 +3333,8 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
 {
     AssertLockHeld(g_msgproc_mutex);
     LOCK(cs_main);
+    const CNodeState* state = State(peer.m_id);
+    bool outbound = state->fPreferredDownload;
 
     CTransactionRef porphanTx = nullptr;
 
@@ -3326,25 +3345,32 @@ bool PeerManagerImpl::ProcessOrphanTx(Peer& peer)
         const Wtxid& orphan_wtxid = porphanTx->GetWitnessHash();
 
         if (result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-            LogPrint(BCLog::TXPACKAGES, "   accepted orphan tx %s (wtxid=%s)\n", orphanHash.ToString(), orphan_wtxid.ToString());
+            LogPrint(BCLog::TXPACKAGES, "ProcessOrphanTx (%s peer %d workset) USEFUL ORPHAN orphan tx %s (wtxid=%s)\n",
+                     outbound ? "@@P@outbound" : "@@P@inbound",
+                     peer.m_id, orphanHash.ToString(), orphan_wtxid.ToString());
             Assume(result.m_replaced_transactions.has_value());
             std::list<CTransactionRef> empty_replacement_list;
             ProcessValidTx(peer.m_id, porphanTx, result.m_replaced_transactions.value_or(empty_replacement_list));
             return true;
-        } else if (state.GetResult() != TxValidationResult::TX_MISSING_INPUTS) {
-            LogPrint(BCLog::TXPACKAGES, "   invalid orphan tx %s (wtxid=%s) from peer=%d. %s\n",
-                orphanHash.ToString(),
-                orphan_wtxid.ToString(),
-                peer.m_id,
-                state.ToString());
+        } else {
+            if (state.GetResult() == TxValidationResult::TX_MISSING_INPUTS) {
+                LogPrint(BCLog::TXPACKAGES, "ProcessOrphanTx (peer %d workset) orphan tx %s (wtxid=%s) still have missing inputs\n",
+                         peer.m_id, orphanHash.ToString(), orphan_wtxid.ToString());
+            } else {
+                LogPrint(BCLog::TXPACKAGES, "ProcessOrphanTx invalid orphan tx %s (wtxid=%s) from peer=%d. %s\n",
+                    orphanHash.ToString(),
+                    orphan_wtxid.ToString(),
+                    peer.m_id,
+                    state.ToString());
 
-            if (Assume(state.IsInvalid() &&
-                       state.GetResult() != TxValidationResult::TX_UNKNOWN &&
-                       state.GetResult() != TxValidationResult::TX_NO_MEMPOOL &&
-                       state.GetResult() != TxValidationResult::TX_RESULT_UNSET)) {
-                ProcessInvalidTx(peer.m_id, porphanTx, state, /*maybe_add_extra_compact_tx=*/false);
+                if (Assume(state.IsInvalid() &&
+                           state.GetResult() != TxValidationResult::TX_UNKNOWN &&
+                           state.GetResult() != TxValidationResult::TX_NO_MEMPOOL &&
+                           state.GetResult() != TxValidationResult::TX_RESULT_UNSET)) {
+                    ProcessInvalidTx(peer.m_id, porphanTx, state, /*maybe_add_extra_compact_tx=*/false);
+                }
+                return true;
             }
-            return true;
         }
     }
 
@@ -4565,6 +4591,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
 
                 if (m_orphanage.AddTx(ptx, pfrom.GetId())) {
                     AddToCompactExtraTransactions(ptx);
+                    LogPrint(BCLog::TXPACKAGES, "NUM TXNS of orphanage is %u\n", m_orphanage.Size());
                 }
 
                 // Once added to the orphan pool, a tx is considered AlreadyHave, and we shouldn't request it anymore.
