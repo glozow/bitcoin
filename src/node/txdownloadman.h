@@ -13,6 +13,8 @@
 
 class TxOrphanage;
 class TxRequestTracker;
+class CBlockIndex;
+enum class ChainstateRole;
 namespace node {
 
 class TxDownloadManager {
@@ -28,6 +30,15 @@ public:
     CRollingBloomFilter& GetRecentRejectsRef() { return m_impl->m_recent_rejects; }
     CRollingBloomFilter& GetRecentRejectsReconsiderableRef() { return m_impl->m_recent_rejects_reconsiderable; }
     CRollingBloomFilter& GetRecentConfirmedRef() { return m_impl->m_recent_confirmed_transactions; }
+
+    // Responses to chain events. TxDownloadManager is not an actual client of ValidationInterface, these are called through PeerManager.
+    void UpdatedBlockTipSync() { return m_impl->UpdatedBlockTipSync(); }
+    void BlockConnected(const std::shared_ptr<const CBlock>& pblock) {
+        return m_impl->BlockConnected(pblock);
+    }
+    void BlockDisconnected() {
+        return m_impl->BlockDisconnected();
+    }
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H
