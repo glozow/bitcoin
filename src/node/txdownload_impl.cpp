@@ -205,4 +205,9 @@ bool TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& ptx, const TxValid
     }
     return keep;
 }
+
+void TxDownloadImpl::MempoolRejectedPackage(const Package& package)
+{
+    m_recent_rejects_reconsiderable.insert(GetPackageHash(package));
+}
 } // namespace node

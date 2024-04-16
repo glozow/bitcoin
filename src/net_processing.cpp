@@ -3016,7 +3016,7 @@ void PeerManagerImpl::ProcessPackageResult(const Package& package, const Package
     AssertLockHeld(m_tx_download_mutex);
 
     if (package_result.m_state.IsInvalid()) {
-        m_txdownloadman.GetRecentRejectsReconsiderableRef().insert(GetPackageHash(package));
+        m_txdownloadman.MempoolRejectedPackage(package);
     }
     // We currently only expect to process 1-parent-1-child packages. Remove if this changes.
     if (!Assume(package.size() == 2)) return;

@@ -7,6 +7,7 @@
 #include <consensus/validation.h>
 #include <kernel/chain.h>
 #include <net.h>
+#include <policy/packages.h>
 #include <txorphanage.h>
 #include <txrequest.h>
 
@@ -160,6 +161,7 @@ public:
 
     void MempoolAcceptedTx(const CTransactionRef& tx);
     bool MempoolRejectedTx(const CTransactionRef& ptx, const TxValidationState& state);
+    void MempoolRejectedPackage(const Package& package);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOAD_IMPL_H

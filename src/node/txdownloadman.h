@@ -71,6 +71,7 @@ public:
     bool MempoolRejectedTx(const CTransactionRef& ptx, const TxValidationState& state) {
         return m_impl->MempoolRejectedTx(ptx, state);
     }
+    void MempoolRejectedPackage(const Package& package) { m_impl->MempoolRejectedPackage(package); }
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H
