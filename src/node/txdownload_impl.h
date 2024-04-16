@@ -4,6 +4,7 @@
 #ifndef BITCOIN_NODE_TXDOWNLOAD_IMPL_H
 #define BITCOIN_NODE_TXDOWNLOAD_IMPL_H
 
+#include <consensus/validation.h>
 #include <kernel/chain.h>
 #include <net.h>
 #include <txorphanage.h>
@@ -158,6 +159,7 @@ public:
     void ReceivedNotFound(NodeId nodeid, const std::vector<uint256>& txhashes);
 
     void MempoolAcceptedTx(const CTransactionRef& tx);
+    bool MempoolRejectedTx(const CTransactionRef& ptx, const TxValidationState& state);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOAD_IMPL_H

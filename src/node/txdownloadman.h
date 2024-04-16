@@ -68,6 +68,9 @@ public:
 
     /** Respond to successful transaction submission to mempool */
     void MempoolAcceptedTx(const CTransactionRef& tx) { m_impl->MempoolAcceptedTx(tx); }
+    bool MempoolRejectedTx(const CTransactionRef& ptx, const TxValidationState& state) {
+        return m_impl->MempoolRejectedTx(ptx, state);
+    }
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H
