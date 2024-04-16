@@ -21,7 +21,7 @@ class TxDownloadManager {
     const std::unique_ptr<TxDownloadImpl> m_impl;
 
 public:
-    explicit TxDownloadManager() : m_impl{std::make_unique<TxDownloadImpl>()} {}
+    explicit TxDownloadManager(const TxDownloadOptions& options) : m_impl{std::make_unique<TxDownloadImpl>(options)} {}
 
     // Get references to internal data structures. Outside access to these data structures should be
     // temporary and removed later once logic has been moved internally.
