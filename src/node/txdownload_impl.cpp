@@ -49,6 +49,7 @@ void TxDownloadImpl::BlockDisconnected()
     // should be just after a new block containing it is found.
     m_recent_confirmed_transactions.reset();
 }
+
 bool TxDownloadImpl::AlreadyHaveTx(const GenTxid& gtxid, bool include_reconsiderable)
 {
     const uint256& hash = gtxid.GetHash();
@@ -60,5 +61,24 @@ bool TxDownloadImpl::AlreadyHaveTx(const GenTxid& gtxid, bool include_reconsider
     if (m_recent_confirmed_transactions.contains(hash)) return true;
 
     return m_recent_rejects.contains(hash) || m_opts.m_mempool.exists(gtxid);
+}
+
+void TxDownloadImpl::ConnectedPeer(NodeId nodeid, const TxDownloadConnectionInfo& info)
+{
+    // If already connected (shouldn't happen in practice), exit early.
+    if (m_peer_info.count(nodeid) > 0) return;
+
+    m_peer_info.emplace(nodeid, PeerInfo(info));
+    if (info.m_wtxid_relay) m_num_wtxid_peers += 1;
+}
+void TxDownloadImpl::DisconnectedPeer(NodeId nodeid)
+{
+    m_orphanage.EraseForPeer(nodeid);
+    m_txrequest.DisconnectedPeer(nodeid);
+
+    if (m_peer_info.count(nodeid) > 0) {
+        if (m_peer_info.at(nodeid).m_connection_info.m_wtxid_relay) m_num_wtxid_peers -= 1;
+        m_peer_info.erase(nodeid);
+    }
 }
 } // namespace node

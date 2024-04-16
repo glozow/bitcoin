@@ -15,6 +15,14 @@ struct TxDownloadOptions {
     /** Read-only reference to mempool. */
     const CTxMemPool& m_mempool;
 };
+struct TxDownloadConnectionInfo {
+    /** Whether this peer is preferred for transaction download. */
+    const bool m_preferred;
+    /** Whether this peer has Relay permissions. */
+    const bool m_relay_permissions;
+    /** Whether this peer supports wtxid relay. */
+    const bool m_wtxid_relay;
+};
 
 class TxDownloadImpl {
 public:
@@ -102,10 +110,27 @@ public:
 
     TxDownloadImpl(const TxDownloadOptions& options) : m_opts{options} {}
 
+    struct PeerInfo {
+        /** Information relevant to scheduling tx requests. */
+        const TxDownloadConnectionInfo m_connection_info;
+
+        PeerInfo(const TxDownloadConnectionInfo& info) : m_connection_info{info} {}
+    };
+
+    /** Information for all of the peers we may download transactions from. This is not necessarily
+     * all peers we are connected to (no block-relay-only and temporary connections). */
+    std::map<NodeId, PeerInfo> m_peer_info;
+
+    /** Number of wtxid relay peers we have. */
+    uint32_t m_num_wtxid_peers{0};
+
     void UpdatedBlockTipSync();
     void BlockConnected(const std::shared_ptr<const CBlock>& pblock);
     void BlockDisconnected();
     bool AlreadyHaveTx(const GenTxid& gtxid, bool include_reconsiderable);
+
+    void ConnectedPeer(NodeId nodeid, const TxDownloadConnectionInfo& info);
+    void DisconnectedPeer(NodeId nodeid);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOAD_IMPL_H

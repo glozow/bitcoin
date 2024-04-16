@@ -48,6 +48,11 @@ public:
      *  - m_recent_confirmed_transactions
      *  */
     bool AlreadyHaveTx(const GenTxid& gtxid, bool include_reconsiderable) { return m_impl->AlreadyHaveTx(gtxid, include_reconsiderable); }
+
+    /** Creates a new PeerInfo. Saves the connection info to calculate tx announcement delays later. */
+    void ConnectedPeer(NodeId nodeid, const TxDownloadConnectionInfo& info) { m_impl->ConnectedPeer(nodeid, info); }
+    /** Deletes all txrequest announcements and orphans for a given peer. */
+    void DisconnectedPeer(NodeId nodeid) { m_impl->DisconnectedPeer(nodeid); }
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H
