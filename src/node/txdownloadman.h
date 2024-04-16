@@ -39,6 +39,15 @@ public:
     void BlockDisconnected() {
         return m_impl->BlockDisconnected();
     }
+
+    /** Check whether we already have this gtxid in:
+     *  - mempool
+     *  - orphanage
+     *  - m_recent_rejects
+     *  - m_recent_rejects_reconsiderable (if include_reconsiderable = true)
+     *  - m_recent_confirmed_transactions
+     *  */
+    bool AlreadyHaveTx(const GenTxid& gtxid, bool include_reconsiderable) { return m_impl->AlreadyHaveTx(gtxid, include_reconsiderable); }
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H

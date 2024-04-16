@@ -49,4 +49,16 @@ void TxDownloadImpl::BlockDisconnected()
     // should be just after a new block containing it is found.
     m_recent_confirmed_transactions.reset();
 }
+bool TxDownloadImpl::AlreadyHaveTx(const GenTxid& gtxid, bool include_reconsiderable)
+{
+    const uint256& hash = gtxid.GetHash();
+
+    if (m_orphanage.HaveTx(gtxid)) return true;
+
+    if (include_reconsiderable && m_recent_rejects_reconsiderable.contains(hash)) return true;
+
+    if (m_recent_confirmed_transactions.contains(hash)) return true;
+
+    return m_recent_rejects.contains(hash) || m_opts.m_mempool.exists(gtxid);
+}
 } // namespace node

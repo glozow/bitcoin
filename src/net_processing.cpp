@@ -850,16 +850,6 @@ private:
     /** Stalling timeout for blocks in IBD */
     std::atomic<std::chrono::seconds> m_block_stalling_timeout{BLOCK_STALLING_TIMEOUT_DEFAULT};
 
-    /** Check whether we already have this gtxid in:
-     *  - mempool
-     *  - orphanage
-     *  - m_recent_rejects
-     *  - m_recent_rejects_reconsiderable (if include_reconsiderable = true)
-     *  - m_recent_confirmed_transactions
-     *  */
-    bool AlreadyHaveTx(const GenTxid& gtxid, bool include_reconsiderable)
-        EXCLUSIVE_LOCKS_REQUIRED(m_tx_download_mutex);
-
     /**
      * For sending `inv`s to inbound peers, we use a single (exponentially
      * distributed) timer for all peers. If we used a separate timer for each
@@ -2178,25 +2168,6 @@ void PeerManagerImpl::BlockChecked(const CBlock& block, const BlockValidationSta
 //
 // Messages
 //
-
-
-bool PeerManagerImpl::AlreadyHaveTx(const GenTxid& gtxid, bool include_reconsiderable)
-{
-    auto& m_orphanage = m_txdownloadman.GetOrphanageRef();
-    auto& m_recent_rejects = m_txdownloadman.GetRecentRejectsRef();
-    auto& m_recent_rejects_reconsiderable = m_txdownloadman.GetRecentRejectsReconsiderableRef();
-    auto& m_recent_confirmed_transactions = m_txdownloadman.GetRecentConfirmedRef();
-
-    const uint256& hash = gtxid.GetHash();
-
-    if (m_orphanage.HaveTx(gtxid)) return true;
-
-    if (include_reconsiderable && m_recent_rejects_reconsiderable.contains(hash)) return true;
-
-    if (m_recent_confirmed_transactions.contains(hash)) return true;
-
-    return m_recent_rejects.contains(hash) || m_mempool.exists(gtxid);
-}
 
 bool PeerManagerImpl::AlreadyHaveBlock(const uint256& block_hash)
 {
@@ -4129,7 +4100,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     return;
                 }
                 const GenTxid gtxid = ToGenTxid(inv);
-                const bool fAlreadyHave = AlreadyHaveTx(gtxid, /*include_reconsiderable=*/true);
+                const bool fAlreadyHave = m_txdownloadman.AlreadyHaveTx(gtxid, /*include_reconsiderable=*/true);
                 LogPrint(BCLog::NET, "got inv: %s  %s peer=%d\n", inv.ToString(), fAlreadyHave ? "have" : "new", pfrom.GetId());
 
                 AddKnownTx(*peer, inv.hash);
@@ -4439,7 +4410,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         // already; and an adversary can already relay us old transactions
         // (older than our recency filter) if trying to DoS us, without any need
         // for witness malleation.
-        if (AlreadyHaveTx(GenTxid::Wtxid(wtxid), /*include_reconsiderable=*/true)) {
+        if (m_txdownloadman.AlreadyHaveTx(GenTxid::Wtxid(wtxid), /*include_reconsiderable=*/true)) {
             if (pfrom.HasPermission(NetPermissionFlags::ForceRelay)) {
                 // Always relay transactions received from peers with forcerelay
                 // permission, even if they were already in the mempool, allowing
@@ -4540,7 +4511,7 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
                     AddKnownTx(*peer, parent_txid);
                     // Exclude m_recent_rejects_reconsiderable: the missing parent may have been
                     // previously rejected for being too low feerate. This orphan might CPFP it.
-                    if (!AlreadyHaveTx(gtxid, /*include_reconsiderable=*/false)) AddTxAnnouncement(pfrom, gtxid, current_time);
+                    if (!m_txdownloadman.AlreadyHaveTx(gtxid, /*include_reconsiderable=*/false)) AddTxAnnouncement(pfrom, gtxid, current_time);
                 }
 
                 if (m_orphanage.AddTx(ptx, pfrom.GetId())) {
@@ -6198,7 +6169,7 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
         for (const GenTxid& gtxid : requestable) {
             // Exclude m_recent_rejects_reconsiderable: we may be requesting a missing parent
             // that was previously rejected for being too low feerate.
-            if (!AlreadyHaveTx(gtxid, /*include_reconsiderable=*/false)) {
+            if (!m_txdownloadman.AlreadyHaveTx(gtxid, /*include_reconsiderable=*/false)) {
                 LogPrint(BCLog::NET, "Requesting %s %s peer=%d\n", gtxid.IsWtxid() ? "wtx" : "tx",
                     gtxid.GetHash().ToString(), pto->GetId());
                 vGetData.emplace_back(gtxid.IsWtxid() ? MSG_WTX : (MSG_TX | GetFetchFlags(*peer)), gtxid.GetHash());

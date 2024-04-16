@@ -105,6 +105,7 @@ public:
     void UpdatedBlockTipSync();
     void BlockConnected(const std::shared_ptr<const CBlock>& pblock);
     void BlockDisconnected();
+    bool AlreadyHaveTx(const GenTxid& gtxid, bool include_reconsiderable);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOAD_IMPL_H
