@@ -685,6 +685,7 @@ public:
     }
 
     const CTxMemPoolEntry* GetEntry(const Txid& txid) const LIFETIMEBOUND EXCLUSIVE_LOCKS_REQUIRED(cs);
+    const CTxMemPoolEntry* GetEntry(const Wtxid& wtxid) const LIFETIMEBOUND EXCLUSIVE_LOCKS_REQUIRED(cs);
 
     CTransactionRef get(const uint256& hash) const;
     txiter get_iter_from_wtxid(const uint256& wtxid) const EXCLUSIVE_LOCKS_REQUIRED(cs)

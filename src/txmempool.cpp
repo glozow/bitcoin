@@ -844,6 +844,13 @@ const CTxMemPoolEntry* CTxMemPool::GetEntry(const Txid& txid) const
     return i == mapTx.end() ? nullptr : &(*i);
 }
 
+const CTxMemPoolEntry* CTxMemPool::GetEntry(const Wtxid& wtxid) const
+{
+    AssertLockHeld(cs);
+    const auto i = mapTx.get<index_by_wtxid>().find(wtxid);
+    return i == mapTx.get<index_by_wtxid>().end() ? nullptr : &(*i);
+}
+
 CTransactionRef CTxMemPool::get(const uint256& hash) const
 {
     LOCK(cs);
