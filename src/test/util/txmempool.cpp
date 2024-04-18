@@ -82,6 +82,19 @@ std::optional<std::string> CheckPackageMempoolAcceptResult(const Package& txns,
                                 wtxid.ToString());
         }
 
+        if (!atmp_result.m_replaced_transactions.empty() && mempool) {
+            LOCK(mempool->cs);
+            // If replacements occurred and it used 2 transactions, this is a package RBF and should result in a cluster of size 2
+            if (atmp_result.m_wtxids_fee_calculations.has_value() && atmp_result.m_wtxids_fee_calculations.value().size() == 2) {
+                for (const auto& fee_calc_wtxid : atmp_result.m_wtxids_fee_calculations.value()) {
+                    const auto& entry = *Assert(mempool->GetEntry(fee_calc_wtxid));
+                    if (entry.GetCountWithDescendants() + entry.GetCountWithAncestors() != 3) {
+                        return strprintf("tx %s has too many ancestors or descendants for a package rbf", fee_calc_wtxid.ToString());
+                    }
+                }
+            }
+        }
+
         // m_vsize and m_base_fees should exist iff the result was VALID or MEMPOOL_ENTRY
         const bool mempool_entry{atmp_result.m_result_type == MempoolAcceptResult::ResultType::MEMPOOL_ENTRY};
         if (atmp_result.m_base_fees.has_value() != (valid || mempool_entry)) {
