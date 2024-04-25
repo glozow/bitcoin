@@ -34,6 +34,8 @@ struct TxDownloadOptions {
     const CTxMemPool& m_mempool;
     /** RNG provided by caller. */
     FastRandomContext& m_rng;
+    /** Maximum number of transactions allowed in orphanage. */
+    uint32_t m_max_orphan_txs;
 };
 struct TxDownloadConnectionInfo {
     /** Whether this peer is preferred for transaction download. */
@@ -192,6 +194,8 @@ public:
     std::optional<PackageToValidate> Find1P1CPackage(const CTransactionRef& ptx, NodeId nodeid);
 
     std::pair<bool, std::optional<PackageToValidate>> ReceivedTx(NodeId nodeid, const CTransactionRef& ptx);
+
+    std::pair<std::vector<uint256>, bool> MaybeAddNewOrphan(const CTransactionRef& ptx, NodeId nodeid);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOAD_IMPL_H

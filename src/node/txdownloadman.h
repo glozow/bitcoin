@@ -86,6 +86,11 @@ public:
     std::pair<bool, std::optional<PackageToValidate>> ReceivedTx(NodeId nodeid, const CTransactionRef& ptx) {
         return m_impl->ReceivedTx(nodeid, ptx);
     }
+
+    /** Maybe add a new transaction to the orphanage. Return if it was added + a list of the parent txids. */
+    std::pair<std::vector<uint256>, bool> MaybeAddNewOrphan(const CTransactionRef& ptx, NodeId nodeid) {
+        return m_impl->MaybeAddNewOrphan(ptx, nodeid);
+    }
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H
