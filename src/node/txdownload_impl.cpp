@@ -81,4 +81,52 @@ void TxDownloadImpl::DisconnectedPeer(NodeId nodeid)
         m_peer_info.erase(nodeid);
     }
 }
+
+void TxDownloadImpl::ReceivedTxInv(NodeId peer, const GenTxid& gtxid, std::chrono::microseconds now)
+{
+    if (m_peer_info.count(peer) == 0) return;
+    const auto& info = m_peer_info.at(peer).m_connection_info;
+    if (!info.m_relay_permissions && m_txrequest.Count(peer) >= MAX_PEER_TX_ANNOUNCEMENTS) {
+        // Too many queued announcements for this peer
+        return;
+    }
+    // Decide the TxRequestTracker parameters for this announcement:
+    // - "preferred": if fPreferredDownload is set (= outbound, or NetPermissionFlags::NoBan permission)
+    // - "reqtime": current time plus delays for:
+    //   - NONPREF_PEER_TX_DELAY for announcements from non-preferred connections
+    //   - TXID_RELAY_DELAY for txid announcements while wtxid peers are available
+    //   - OVERLOADED_PEER_TX_DELAY for announcements from peers which have at least
+    //     MAX_PEER_TX_REQUEST_IN_FLIGHT requests in flight (and don't have NetPermissionFlags::Relay).
+    auto delay{0us};
+    if (!info.m_preferred) delay += NONPREF_PEER_TX_DELAY;
+    if (!gtxid.IsWtxid() && m_num_wtxid_peers > 0) delay += TXID_RELAY_DELAY;
+    const bool overloaded = !info.m_relay_permissions && m_txrequest.CountInFlight(peer) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
+    if (overloaded) delay += OVERLOADED_PEER_TX_DELAY;
+
+    m_txrequest.ReceivedInv(peer, gtxid, info.m_preferred, now + delay);
+}
+
+std::vector<GenTxid> TxDownloadImpl::GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time)
+{
+    std::vector<GenTxid> requests;
+    std::vector<std::pair<NodeId, GenTxid>> expired;
+    auto requestable = m_txrequest.GetRequestable(nodeid, current_time, &expired);
+    for (const auto& entry : expired) {
+        LogPrint(BCLog::NET, "timeout of inflight %s %s from peer=%d\n", entry.second.IsWtxid() ? "wtx" : "tx",
+            entry.second.GetHash().ToString(), entry.first);
+    }
+    for (const GenTxid& gtxid : requestable) {
+        if (!AlreadyHaveTx(gtxid, /*include_reconsiderable=*/false)) {
+            LogPrint(BCLog::NET, "Requesting %s %s peer=%d\n", gtxid.IsWtxid() ? "wtx" : "tx",
+                gtxid.GetHash().ToString(), nodeid);
+            requests.emplace_back(gtxid);
+            m_txrequest.RequestedTx(nodeid, gtxid.GetHash(), current_time + GETDATA_TX_INTERVAL);
+        } else {
+            // We have already seen this transaction, no need to download. This is just a belt-and-suspenders, as
+            // this should already be called whenever a transaction becomes AlreadyHaveTx().
+            m_txrequest.ForgetTxHash(gtxid.GetHash());
+        }
+    }
+    return requests;
+}
 } // namespace node

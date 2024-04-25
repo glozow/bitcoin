@@ -53,6 +53,15 @@ public:
     void ConnectedPeer(NodeId nodeid, const TxDownloadConnectionInfo& info) { m_impl->ConnectedPeer(nodeid, info); }
     /** Deletes all txrequest announcements and orphans for a given peer. */
     void DisconnectedPeer(NodeId nodeid) { m_impl->DisconnectedPeer(nodeid); }
+
+    /** New inv has been received. May be added as a candidate to txrequest. */
+    void ReceivedTxInv(NodeId peer, const GenTxid& gtxid, std::chrono::microseconds now)
+        { return m_impl->ReceivedTxInv(peer, gtxid, now); }
+
+    /** Get getdata requests to send. */
+    std::vector<GenTxid> GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time) {
+        return m_impl->GetRequestsToSend(nodeid, current_time);
+    }
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H
