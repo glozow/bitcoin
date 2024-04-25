@@ -72,6 +72,13 @@ public:
         return m_impl->MempoolRejectedTx(ptx, state);
     }
     void MempoolRejectedPackage(const Package& package) { m_impl->MempoolRejectedPackage(package); }
+
+    /** Look for a child of this transaction in the orphanage to form a 1-parent-1-child package,
+     * skipping any combinations that have already been tried. Return the resulting package along with
+     * the senders of its respective transactions, or std::nullopt if no package is found. */
+    std::optional<PackageToValidate> Find1P1CPackage(const CTransactionRef& ptx, NodeId nodeid) {
+        return m_impl->Find1P1CPackage(ptx, nodeid);
+    }
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H
