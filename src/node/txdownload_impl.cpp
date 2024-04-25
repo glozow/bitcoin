@@ -129,4 +129,13 @@ std::vector<GenTxid> TxDownloadImpl::GetRequestsToSend(NodeId nodeid, std::chron
     }
     return requests;
 }
+
+void TxDownloadImpl::ReceivedNotFound(NodeId nodeid, const std::vector<uint256>& txhashes)
+{
+    for (const auto& txhash: txhashes) {
+        // If we receive a NOTFOUND message for a tx we requested, mark the announcement for it as
+        // completed in TxRequestTracker.
+        m_txrequest.ReceivedResponse(nodeid, txhash);
+    }
+}
 } // namespace node
