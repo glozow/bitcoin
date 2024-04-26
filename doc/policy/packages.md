@@ -36,10 +36,27 @@ The following rules are enforced for all packages:
 * Packages cannot have conflicting transactions, i.e. no two transactions in a package can spend
    the same inputs. Packages cannot have duplicate transactions. (#20833)
 
-* No transaction in a package can conflict with a mempool transaction. Replace By Fee is
-  currently disabled for packages. (#20833)
+* Only limited package replacements are currently considered. (#28984)
 
-   - Package RBF may be enabled in the future.
+   - All direct conflicts must signal replacement (or have `-mempoolfullrbf=1` set).
+
+   - Packages are 1-parent-1-child, with no in-mempool ancestors of the package.
+
+   - All conflicting clusters must be clusters of up to size 2.
+
+   - No more than MAX_REPLACEMENT_CANDIDATES transactions can be replaced.
+
+   - Total fee plus incremental relay fee must be paid (ala bip125 rules 3 and 4).
+
+   - Parent feerate must be lower than package feerate.
+
+   - Must improve feerate diagram. (#29242)
+
+   - *Rationale*: Basic support for package RBF can be used by wallets
+     by making chains of no longer than two, then directly conflicting
+     those chains when needed. Combined with V3 transactions this can
+     result in more robust fee bumping. More general package RBF may be
+     enabled in the future.
 
 * When packages are evaluated against ancestor/descendant limits, the union of all transactions'
   descendants and ancestors is considered. (#21800)
