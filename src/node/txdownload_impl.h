@@ -196,6 +196,9 @@ public:
     std::pair<bool, std::optional<PackageToValidate>> ReceivedTx(NodeId nodeid, const CTransactionRef& ptx);
 
     std::pair<std::vector<uint256>, bool> MaybeAddNewOrphan(const CTransactionRef& ptx, NodeId nodeid);
+
+    bool HaveMoreWork(NodeId nodeid);
+    CTransactionRef GetTxToReconsider(NodeId nodeid);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOAD_IMPL_H

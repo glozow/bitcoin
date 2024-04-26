@@ -400,4 +400,15 @@ std::pair<std::vector<uint256>, bool> TxDownloadImpl::MaybeAddNewOrphan(const CT
         return std::make_pair(unique_parents, false);
     }
 }
+
+bool TxDownloadImpl::HaveMoreWork(NodeId nodeid)
+{
+    return m_orphanage.HaveTxToReconsider(nodeid);
+}
+
+CTransactionRef TxDownloadImpl::GetTxToReconsider(NodeId nodeid)
+{
+    return m_orphanage.GetTxToReconsider(nodeid);
+}
+
 } // namespace node

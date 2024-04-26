@@ -87,10 +87,17 @@ public:
         return m_impl->ReceivedTx(nodeid, ptx);
     }
 
-    /** Maybe add a new transaction to the orphanage. Return if it was added + a list of the parent txids. */
+    /** Add a potentially new orphan transaction. Returns whether this orphan is going to be
+     * processed and the list of deduplicated parent txids that we don't already have. */
     std::pair<std::vector<uint256>, bool> MaybeAddNewOrphan(const CTransactionRef& ptx, NodeId nodeid) {
         return m_impl->MaybeAddNewOrphan(ptx, nodeid);
     }
+
+    /** Whether there are any orphans to reconsider for this peer. */
+    bool HaveMoreWork(NodeId nodeid) { return m_impl->HaveMoreWork(nodeid); }
+
+    /** Returns next orphan tx to consider, or nullptr if none exist. */
+    CTransactionRef GetTxToReconsider(NodeId nodeid) { return m_impl->GetTxToReconsider(nodeid); }
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_H
