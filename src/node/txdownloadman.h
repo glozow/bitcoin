@@ -23,13 +23,8 @@ class TxDownloadManager {
 public:
     explicit TxDownloadManager(const TxDownloadOptions& options) : m_impl{std::make_unique<TxDownloadImpl>(options)} {}
 
-    // Get references to internal data structures. Outside access to these data structures should be
-    // temporary and removed later once logic has been moved internally.
-    TxOrphanage& GetOrphanageRef() { return m_impl->m_orphanage; }
-    TxRequestTracker& GetTxRequestRef() { return m_impl->m_txrequest; }
-    CRollingBloomFilter& GetRecentRejectsRef() { return m_impl->m_recent_rejects; }
-    CRollingBloomFilter& GetRecentRejectsReconsiderableRef() { return m_impl->m_recent_rejects_reconsiderable; }
-    CRollingBloomFilter& GetRecentConfirmedRef() { return m_impl->m_recent_confirmed_transactions; }
+    void CheckIsEmpty() { return m_impl->CheckIsEmpty(); }
+    void CheckIsEmpty(NodeId nodeid) { return m_impl->CheckIsEmpty(nodeid); }
 
     // Responses to chain events. TxDownloadManager is not an actual client of ValidationInterface, these are called through PeerManager.
     void UpdatedBlockTipSync() { return m_impl->UpdatedBlockTipSync(); }

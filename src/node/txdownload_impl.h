@@ -199,6 +199,9 @@ public:
 
     bool HaveMoreWork(NodeId nodeid);
     CTransactionRef GetTxToReconsider(NodeId nodeid);
+
+    void CheckIsEmpty();
+    void CheckIsEmpty(NodeId nodeid);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOAD_IMPL_H

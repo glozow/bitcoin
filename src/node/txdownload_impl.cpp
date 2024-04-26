@@ -411,4 +411,13 @@ CTransactionRef TxDownloadImpl::GetTxToReconsider(NodeId nodeid)
     return m_orphanage.GetTxToReconsider(nodeid);
 }
 
+void TxDownloadImpl::CheckIsEmpty(NodeId nodeid)
+{
+    assert(m_txrequest.Count(nodeid) == 0);
+}
+void TxDownloadImpl::CheckIsEmpty()
+{
+    assert(m_orphanage.Size() == 0);
+    assert(m_txrequest.Size() == 0);
+}
 } // namespace node
