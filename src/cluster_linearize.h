@@ -824,8 +824,37 @@ public:
                 if (m_depgraph.FeeRate(first) <= best.feerate) return;
             }
 
-            // Pick the first undecided transaction as the one to split on.
-            const ClusterIndex split = first;
+            // Decide which transaction to split on. Splitting is how new work items are added, and
+            // how progress is made. One split transaction is chosen among the queue item's
+            // undecided ones, and:
+            // - A work item is (potentially) added with that transaction plus its remaining
+            //   descendants excluded (removed from the und set).
+            // - A work item is (potentially) added with that transaction plus its remaining
+            //   ancestors included (added to the inc set).
+            //
+            // To decide what to split on, consider the undecided ancestors of the highest
+            // individual feerate undecided transaction. Pick the one which reduces the search space
+            // most. Let I(t) be the size of the undecided set after including t, and E(t) the size
+            // of the undecided set after excluding t. Then choose the split transaction t such
+            // that 2^I(t) + 2^E(t) is minimal, tie-breaking by highest individual feerate for t.
+            ClusterIndex split = 0;
+            const auto select = elem.und & m_depgraph.Ancestors(first);
+            Assume(select.Any());
+            std::optional<std::pair<ClusterIndex, ClusterIndex>> split_counts;
+            for (auto t : select) {
+                // Let counts = {max(I(t), E(t)), min(I(t), E(t))}.
+                std::pair<ClusterIndex, ClusterIndex> counts{
+                    (elem.und - m_depgraph.Ancestors(t)).Count(),
+                    (elem.und - m_depgraph.Descendants(t)).Count()};
+                if (counts.first < counts.second) std::swap(counts.first, counts.second);
+                // Remember the t with the lowest counts.
+                if (!split_counts.has_value() || counts < *split_counts) {
+                    split = t;
+                    split_counts = counts;
+                }
+            }
+            // Since there was at least one transaction in select, we must always find one.
+            Assume(split_counts.has_value());
 
             // Add a work item corresponding to exclusion of the split transaction.
             const auto& desc = m_depgraph.Descendants(split);
