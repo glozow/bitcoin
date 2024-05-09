@@ -710,9 +710,9 @@ private:
     // AcceptSingleTransaction and AcceptMultipleTransactions invocations
 
     /** Aggregated modified fees of all transactions, used to calculate package feerate. */
-    CAmount m_total_modified_fees;
+    CAmount m_total_modified_fees{0};
     /** Aggregated virtual size of all transactions, used to calculate package feerate. */
-    int64_t m_total_vsize;
+    int64_t m_total_vsize{0};
 
     // RBF-related members
     /** Whether the transaction(s) would replace any mempool transactions and/or evict any siblings.
@@ -756,6 +756,14 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     const int64_t nAcceptTime = args.m_accept_time;
     const bool bypass_limits = args.m_bypass_limits;
     std::vector<COutPoint>& coins_to_uncache = args.m_coins_to_uncache;
+
+        assert(m_total_modified_fees == 0);
+        assert(m_total_vsize == 0);
+        assert(!m_rbf);
+        assert(m_all_conflicts.empty());
+        assert(m_replaced_transactions.empty());
+        assert(m_conflicting_fees == 0);
+        assert(m_conflicting_size == 0);
 
     // Alias what we need out of ws
     TxValidationState& state = ws.m_state;

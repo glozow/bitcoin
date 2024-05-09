@@ -937,5 +937,61 @@ BOOST_FIXTURE_TEST_CASE(package_cpfp_tests, TestChain100Setup)
         expected_pool_size += 1;
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
     }
+    {
+        // Package in which one of the transactions replaces something (by itself, without requiring
+        // package RBF).
+        const CAmount low_fee{1000};
+        const CAmount med_fee{2000};
+        const CAmount high_fee{3000};
+        CTransactionRef txA_mempool = MakeTransactionRef(CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[3], /*input_vout=*/0,
+                                                                                       /*input_height=*/102, /*input_signing_key=*/coinbaseKey,
+                                                                                       /*output_destination=*/parent_spk,
+                                                                                       /*output_amount=*/coinbase_value - low_fee, /*submit=*/true));
+        expected_pool_size += 1;
+        BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
+
+        Package package_with_rbf;
+        // Conflicts with txA_mempool and can replace it.
+        CTransactionRef txA_package = MakeTransactionRef(CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[3], /*input_vout=*/0,
+                                                                                       /*input_height=*/102, /*input_signing_key=*/coinbaseKey,
+                                                                                       /*output_destination=*/parent_spk,
+                                                                                       /*output_amount=*/coinbase_value - med_fee, /*submit=*/false));
+        CTransactionRef txB_package = MakeTransactionRef(CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[4], /*input_vout=*/0,
+                                                                                       /*input_height=*/102, /*input_signing_key=*/coinbaseKey,
+                                                                                       /*output_destination=*/parent_spk,
+                                                                                       /*output_amount=*/coinbase_value - low_fee, /*submit=*/false));
+        package_with_rbf.emplace_back(txA_package);
+        package_with_rbf.emplace_back(txB_package);
+
+        CTransactionRef txC_package = MakeTransactionRef(CreateValidMempoolTransaction(/*input_transactions=*/package_with_rbf,
+                                                                                       /*inputs=*/{COutPoint{txA_package->GetHash(), 0},
+                                                                                                   COutPoint{txB_package->GetHash(), 0}},
+                                                                                       /*input_height=*/102,
+                                                                                       /*input_signing_keys=*/{child_key},
+                                                                                       /*outputs=*/{CTxOut{coinbase_value * 2 - low_fee - med_fee - high_fee, child_spk}},
+                                                                                       /*submit=*/false));
+        package_with_rbf.emplace_back(txC_package);
+        const auto result_rbf = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_with_rbf, /*test_accept=*/false, std::nullopt);
+        // Replacement was accepted
+        expected_pool_size += package_with_rbf.size() - 1;
+        BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
+        BOOST_CHECK_EQUAL(result_rbf.m_tx_results.size(), package_with_rbf.size());
+        BOOST_CHECK(result_rbf.m_state.IsValid());
+        BOOST_CHECK(!m_node.mempool->exists(GenTxid::Wtxid(txA_mempool->GetWitnessHash())));
+        for (const auto& ptx: package_with_rbf) {
+            const auto& wtxid = ptx->GetWitnessHash();
+            BOOST_CHECK(m_node.mempool->exists(GenTxid::Wtxid(wtxid)));
+            auto it = result_rbf.m_tx_results.find(wtxid);
+            BOOST_CHECK(it != result_rbf.m_tx_results.end());
+
+            // MempoolAcceptResult::m_replaced_transactions: txA_package replaced txA_mempool
+            if (wtxid == txA_package->GetWitnessHash()) {
+                BOOST_CHECK_EQUAL(it->second.m_replaced_transactions.size(), 1);
+                BOOST_CHECK_EQUAL(it->second.m_replaced_transactions.front()->GetWitnessHash(), txA_mempool->GetWitnessHash());
+            } else {
+                BOOST_CHECK(it->second.m_replaced_transactions.empty());
+            }
+        }
+    }
 }
 BOOST_AUTO_TEST_SUITE_END()
