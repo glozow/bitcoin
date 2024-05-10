@@ -1129,6 +1129,10 @@ bool MemPoolAccept::PackageMempoolChecks(const std::vector<CTransactionRef>& txn
     // No conflicts means we're finished. Further checks are all RBF-only.
     if (!m_rbf) return true;
 
+    LogPrint(BCLog::TXPACKAGES, "Attempting package RBF: parent %s (wtxid=%s), child %s (wtxid=%s)\n",
+        txns.front()->GetHash().ToString(), txns.front()->GetWitnessHash().ToString(),
+        txns.back()->GetHash().ToString(), txns.back()->GetWitnessHash().ToString());
+
     // We're in package RBF context; replacement proposal must be size 2
     if (workspaces.size() != 2 || !Assume(IsChildWithParents(txns))) {
         return package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package RBF failed: package must be 1-parent-1-child");

@@ -2124,6 +2124,7 @@ void PeerManagerImpl::BlockConnected(
     {
         LOCK(cs_main);
         for (const auto& ptx : pblock->vtx) {
+            LogInfo("@CONFIRMED %s (wtxid=%s)\n", ptx->GetHash().ToString(), ptx->GetWitnessHash().ToString());
             m_txrequest.ForgetTxHash(ptx->GetHash());
             m_txrequest.ForgetTxHash(ptx->GetWitnessHash());
         }
