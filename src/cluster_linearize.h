@@ -613,11 +613,20 @@ public:
         VecDeque<WorkItem> queue;
         queue.reserve(std::max<size_t>(256, 2 * m_todo.Count()));
 
-        // Create an initial entry with m_todo as undecided. Also use it as best if not provided,
-        // so that during the work processing loop below, and during the add_fn/split_fn calls, we
-        // do not need to deal with the best=empty case.
-        if (best.feerate.IsEmpty()) best = SetInfo(m_depgraph, m_todo);
-        queue.emplace_back(SetInfo<SetType>{}, SetType{m_todo});
+        // Create initial entries per connected component of m_todo. While clusters themselves are
+        // generally connected, this is not necessarily true after some parts have already been
+        // removed from m_todo. Without this, effort can be wasted on searching "inc" sets that
+        // span multiple components.
+        auto to_cover = m_todo;
+        do {
+            auto component = m_depgraph.FindConnectedComponent(to_cover);
+            to_cover -= component;
+            // If best is not provided, set it to the first component, so that during the work
+            // processing loop below, and during the add_fn/split_fn calls, we do not need to deal
+            // with the best=empty case.
+            if (best.feerate.IsEmpty()) best = SetInfo(m_depgraph, component);
+            queue.emplace_back(SetInfo<SetType>{}, std::move(component));
+        } while (to_cover.Any());
 
         /** Local copy of the iteration limit. */
         uint64_t iterations_left = max_iterations;
