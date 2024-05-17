@@ -9,10 +9,12 @@
 
 from test_framework.messages import (
     DEFAULT_ANCESTOR_LIMIT,
+    WITNESS_SCALE_FACTOR,
 )
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_equal,
+    assert_greater_than,
     assert_raises_rpc_error,
 )
 from test_framework.wallet import MiniWallet
@@ -66,6 +68,34 @@ class MempoolPackagesTest(BitcoinTestFramework):
 
         # Finally, check that we added two transactions
         assert_equal(len(self.nodes[0].getrawmempool()), DEFAULT_ANCESTOR_LIMIT + 3)
+
+        # Check nondefault limits
+        self.restart_node(0, extra_args=["-limitdescendantsize=10", "-datacarriersize=10000"])
+        node = self.nodes[0]
+        self.log.info("Test decreased limitdescendantsize")
+        desc_limit_vb = 10000
+        # We have to lower the descendant limit because bulk_tx doesn't work with larger numbers.
+        # But this theoretically would work for the default size too (100KvB parent + 10KvB child)
+        weight_within_desc = (desc_limit_vb - 10) * WITNESS_SCALE_FACTOR
+        tx_parent = self.wallet.send_self_transfer(
+            from_node=node,
+            target_weight=weight_within_desc,
+        )
+        tx_child = self.wallet.create_self_transfer(
+            utxo_to_spend=tx_parent["new_utxo"],
+            target_weight=weight_within_desc,
+        )
+        assert_greater_than(desc_limit_vb, tx_parent["tx"].get_vsize())
+        assert_greater_than(desc_limit_vb, tx_child["tx"].get_vsize())
+        assert_greater_than(tx_parent["tx"].get_vsize() + tx_child["tx"].get_vsize(), desc_limit_vb)
+
+        # Carve out grants a free +10KvB even if this isn't the second child. It doesn't check, just
+        # loosens the descendant limits, sets ancestor limit to 2, and sees if it passes.
+        # Even though the descendant limit is 10KvB, you can have a 1p1c of size just under 20KvB.
+        # assert_raises_rpc_error(-26, f"too-long-mempool-chain, exceeds descendant size limit for tx {tx_parent['txid']}", node.sendrawtransaction, tx_child["hex"])
+        node.sendrawtransaction(tx_child["hex"])
+        assert_greater_than(node.getmempoolentry(tx_parent["txid"])["descendantsize"], 19000)
+        self.generate(node, 1)
 
 
 if __name__ == '__main__':
