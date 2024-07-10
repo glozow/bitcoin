@@ -689,6 +689,8 @@ private:
 
     /** Whether the transaction(s) would replace any mempool transactions. If so, RBF rules apply. */
     bool m_rbf{false};
+    /** Whether we're simulating a full RBF and should exit after test-accept */
+    bool m_full_rbf{false};
 };
 
 bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
@@ -764,7 +766,8 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                 // If replaceability signaling is ignored due to node setting,
                 // replacement is always allowed.
                 if (!m_pool.m_full_rbf && !SignalsOptInRBF(*ptxConflicting)) {
-                    return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "txn-mempool-conflict");
+                    /* return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "txn-mempool-conflict"); */
+                    m_full_rbf = true;
                 }
 
                 ws.m_conflicts.insert(ptxConflicting->GetHash());
@@ -1238,6 +1241,14 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
 
     const CFeeRate effective_feerate{ws.m_modified_fees, static_cast<uint32_t>(ws.m_vsize)};
     const std::vector<uint256> single_wtxid{ws.m_ptx->GetWitnessHash()};
+
+    if (m_full_rbf && m_rbf) {
+        // Tx was accepted but is a non-signaling replacement, so just log and don't submit it.
+        ws.m_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "txn-mempool-conflict");
+        LogPrintf("@@@ Rejected otherwise-valid tx %s (wtxid=%s) for not signaling RBF\n", ptx->GetHash().ToString(), ptx->GetWitnessHash().ToString());
+        return MempoolAcceptResult::Failure(ws.m_state);
+    }
+
     // Tx was accepted, but not added
     if (args.m_test_accept) {
         return MempoolAcceptResult::Success(std::move(ws.m_replaced_transactions), ws.m_vsize,

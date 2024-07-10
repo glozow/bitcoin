@@ -1958,6 +1958,7 @@ void PeerManagerImpl::BlockConnected(
         for (const auto& ptx : pblock->vtx) {
             m_txrequest.ForgetTxHash(ptx->GetHash());
             m_txrequest.ForgetTxHash(ptx->GetWitnessHash());
+            LogPrintf("@@ CONFIRMED TX %s (wtxid=%s)\n", ptx->GetHash().ToString(), ptx->GetWitnessHash().ToString());
         }
     }
 }
