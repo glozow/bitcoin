@@ -270,32 +270,35 @@ node::RejectedTxTodo TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& pt
             }
         }
         if (!fRejectedParents) {
-            const auto current_time{GetTime<std::chrono::microseconds>()};
+            add_extra_compact_tx &= m_orphanage.AddTx(ptx, nodeid, unique_parents);
+            // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
+            m_orphanage.LimitOrphans(m_opts.m_max_orphan_txs, m_opts.m_rng);
 
-            for (const auto& parent_txid : unique_parents) {
-                // Here, we only have the txid (and not wtxid) of the
-                // inputs, so we only request in txid mode, even for
-                // wtxidrelay peers.
-                // Eventually we should replace this with an improved
-                // protocol for getting all unconfirmed parents.
-                const auto gtxid{GenTxid::Txid(parent_txid)};
+            const bool still_have_orphan = m_orphanage.HaveTx(ptx->GetWitnessHash());
+            add_extra_compact_tx &= still_have_orphan;
 
-                // Exclude m_recent_rejects_reconsiderable: the missing parent may have been
-                // previously rejected for being too low feerate. This orphan might CPFP it.
-                if (!AlreadyHaveTx(gtxid, /*include_reconsiderable=*/false)) {
-                    AddTxAnnouncement(nodeid, gtxid, current_time, /*p2p_inv=*/false);
+            if (still_have_orphan) {
+                const auto current_time{GetTime<std::chrono::microseconds>()};
+
+                for (const auto& parent_txid : unique_parents) {
+                    // Here, we only have the txid (and not wtxid) of the
+                    // inputs, so we only request in txid mode, even for
+                    // wtxidrelay peers.
+                    // Eventually we should replace this with an improved
+                    // protocol for getting all unconfirmed parents.
+                    const auto gtxid{GenTxid::Txid(parent_txid)};
+
+                    // Exclude m_recent_rejects_reconsiderable: the missing parent may have been
+                    // previously rejected for being too low feerate. This orphan might CPFP it.
+                    if (!AlreadyHaveTx(gtxid, /*include_reconsiderable=*/false)) {
+                        AddTxAnnouncement(nodeid, gtxid, current_time, /*p2p_inv=*/false);
+                    }
                 }
             }
-
-            add_extra_compact_tx &= m_orphanage.AddTx(ptx, nodeid, unique_parents);
 
             // Once added to the orphan pool, a tx is considered AlreadyHave, and we shouldn't request it anymore.
             m_txrequest.ForgetTxHash(tx.GetHash());
             m_txrequest.ForgetTxHash(tx.GetWitnessHash());
-
-            // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
-            m_orphanage.LimitOrphans(m_opts.m_max_orphan_txs, m_opts.m_rng);
-
         } else {
             LogPrint(BCLog::MEMPOOL, "not keeping orphan with rejected parents %s (wtxid=%s)\n",
                      tx.GetHash().ToString(),
