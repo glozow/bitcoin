@@ -270,6 +270,13 @@ node::RejectedTxTodo TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& pt
             }
         }
         if (!fRejectedParents) {
+            // Filter parents that we already have.
+            // Exclude m_recent_rejects_reconsiderable: the missing parent may have been
+            // previously rejected for being too low feerate. This orphan might CPFP it.
+            std::erase_if(unique_parents, [&](const auto& txid){
+                return AlreadyHaveTx(GenTxid::Txid(txid), /*include_reconsiderable=*/false);
+            });
+
             add_extra_compact_tx &= m_orphanage.AddTx(ptx, nodeid, unique_parents);
             // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
             m_orphanage.LimitOrphans(m_opts.m_max_orphan_txs, m_opts.m_rng);
@@ -287,12 +294,7 @@ node::RejectedTxTodo TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& pt
                     // Eventually we should replace this with an improved
                     // protocol for getting all unconfirmed parents.
                     const auto gtxid{GenTxid::Txid(parent_txid)};
-
-                    // Exclude m_recent_rejects_reconsiderable: the missing parent may have been
-                    // previously rejected for being too low feerate. This orphan might CPFP it.
-                    if (!AlreadyHaveTx(gtxid, /*include_reconsiderable=*/false)) {
-                        AddTxAnnouncement(nodeid, gtxid, current_time, /*p2p_inv=*/false);
-                    }
+                    AddTxAnnouncement(nodeid, gtxid, current_time, /*p2p_inv=*/false);
                 }
             }
 
