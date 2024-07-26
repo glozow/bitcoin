@@ -230,7 +230,7 @@ node::RejectedTxTodo TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& pt
     // Whether we should call AddToCompactExtraTransactions at the end
     bool add_extra_compact_tx{not_from_orphanage};
     // Hashes to pass to AddKnownTx later
-    std::vector<uint256> unique_parents;
+    std::vector<Txid> unique_parents;
     // Populated if failure is reconsiderable and eligible package is found.
     std::optional<node::PackageToValidate> package_to_validate;
 
@@ -255,11 +255,11 @@ node::RejectedTxTodo TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& pt
         // We can tolerate having up to 1 parent in m_recent_rejects_reconsiderable since we
         // submit 1p1c packages. However, fail immediately if any are in m_recent_rejects.
         std::optional<uint256> rejected_parent_reconsiderable;
-        for (const uint256& parent_txid : unique_parents) {
-            if (m_recent_rejects.contains(parent_txid)) {
+        for (const auto& parent_txid : unique_parents) {
+            if (m_recent_rejects.contains(parent_txid.ToUint256())) {
                 fRejectedParents = true;
                 break;
-            } else if (m_recent_rejects_reconsiderable.contains(parent_txid) && !m_opts.m_mempool.exists(GenTxid::Txid(parent_txid))) {
+            } else if (m_recent_rejects_reconsiderable.contains(parent_txid.ToUint256()) && !m_opts.m_mempool.exists(GenTxid::Txid(parent_txid))) {
                 // More than 1 parent in m_recent_rejects_reconsiderable: 1p1c will not be
                 // sufficient to accept this package, so just give up here.
                 if (rejected_parent_reconsiderable.has_value()) {
@@ -272,7 +272,7 @@ node::RejectedTxTodo TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& pt
         if (!fRejectedParents) {
             const auto current_time{GetTime<std::chrono::microseconds>()};
 
-            for (const uint256& parent_txid : unique_parents) {
+            for (const auto& parent_txid : unique_parents) {
                 // Here, we only have the txid (and not wtxid) of the
                 // inputs, so we only request in txid mode, even for
                 // wtxidrelay peers.
