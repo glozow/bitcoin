@@ -24,7 +24,12 @@ void TxDownloadImpl::ActiveTipChange()
 
 void TxDownloadImpl::BlockConnected(const std::shared_ptr<const CBlock>& pblock)
 {
-    m_orphanage.EraseForBlock(*pblock);
+    // Orphanage may include transactions conflicted by this block. There should not be any
+    // transactions in m_orphan_resolution_tracker that aren't in orphanage, so this should include
+    // all of the relevant orphans we were working on.
+    for (const auto& erased_orphan_wtxid : m_orphanage.EraseForBlock(*pblock)) {
+        m_orphan_resolution_tracker.ForgetTxHash(erased_orphan_wtxid);
+    }
 
     for (const auto& ptx : pblock->vtx) {
         m_recent_confirmed_transactions.insert(ptx->GetHash().ToUint256());
@@ -90,6 +95,7 @@ void TxDownloadImpl::DisconnectedPeer(NodeId nodeid)
 {
     m_orphanage.EraseForPeer(nodeid);
     m_txrequest.DisconnectedPeer(nodeid);
+    m_orphan_resolution_tracker.DisconnectedPeer(nodeid);
 
     if (m_peer_info.count(nodeid) > 0) {
         if (m_peer_info.at(nodeid).m_connection_info.m_wtxid_relay) m_num_wtxid_peers -= 1;
@@ -99,6 +105,16 @@ void TxDownloadImpl::DisconnectedPeer(NodeId nodeid)
 
 bool TxDownloadImpl::AddTxAnnouncement(NodeId peer, const GenTxid& gtxid, std::chrono::microseconds now, bool p2p_inv)
 {
+    // If this is an inv received from a peer but it's an orphan we are trying to resolve, instead
+    // of adding it to m_txrequest, remember this peer as a potential orphan resolution candidate.
+    if (p2p_inv && m_orphanage.HaveTx(Wtxid::FromUint256(gtxid.GetHash()))) {
+        // m_orphan_resolution_tracker only tracks wtxids
+        if (gtxid.IsWtxid()) {
+            AddOrphanAnnouncer(peer, Wtxid::FromUint256(gtxid.GetHash()), now, /*newly_added=*/false);
+        }
+        return true;
+    }
+
     const bool already_had{AlreadyHaveTx(gtxid, /*include_reconsiderable=*/true)};
 
     // If this is an inv received from a peer and we already have it, we can drop it.
@@ -129,8 +145,81 @@ bool TxDownloadImpl::AddTxAnnouncement(NodeId peer, const GenTxid& gtxid, std::c
     return already_had;
 }
 
+void TxDownloadImpl::AddOrphanAnnouncer(NodeId nodeid, const Wtxid& orphan_wtxid, std::chrono::microseconds now, bool newly_added)
+{
+    if (m_peer_info.count(nodeid) == 0) return;
+    if (!Assume(m_orphanage.HaveTx(orphan_wtxid))) return;
+    const auto& info = m_peer_info.at(nodeid).m_connection_info;
+    // This mirrors the delaying and dropping behavior in AddTxAnnouncement in order to preserve
+    // existing behavior.
+    // TODO: add delays and limits based on the amount of orphan resolution we are already doing
+    // with this peer, how much they are using the orphanage, etc.
+    if (!info.m_relay_permissions && m_txrequest.Count(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) {
+        // Too many queued orphan resolutions with this peer
+        return;
+    }
+
+    if (newly_added || m_orphanage.AddAnnouncer(orphan_wtxid, nodeid)) {
+        auto delay{0us};
+        if (!info.m_preferred) delay += NONPREF_PEER_TX_DELAY;
+        // The orphan wtxid is used, but resolution entails requesting the parents by txid.
+        if (m_num_wtxid_peers > 0) delay += TXID_RELAY_DELAY;
+        const bool overloaded = !info.m_relay_permissions && m_txrequest.CountInFlight(nodeid) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
+        if (overloaded) delay += OVERLOADED_PEER_TX_DELAY;
+
+        m_orphan_resolution_tracker.ReceivedInv(nodeid, GenTxid::Wtxid(orphan_wtxid), info.m_preferred, now + delay);
+        LogPrint(BCLog::TXPACKAGES, "added peer=%d as a candidate for resolving orphan %s\n", nodeid, orphan_wtxid.ToString());
+    }
+}
+
 std::vector<GenTxid> TxDownloadImpl::GetRequestsToSend(NodeId nodeid, std::chrono::microseconds current_time)
 {
+    // First process orphan resolution so that the tx requests can be sent asap
+    std::vector<std::pair<NodeId, GenTxid>> expired_orphan_resolution;
+    const auto orphans_ready = m_orphan_resolution_tracker.GetRequestable(nodeid, current_time, &expired_orphan_resolution);
+
+    // Expire orphan resolution attempts
+    for (const auto& [nodeid, orphan_gtxid] : expired_orphan_resolution) {
+        LogPrint(BCLog::TXPACKAGES, "timeout of in-flight orphan resolution %s for peer=%d\n", orphan_gtxid.GetHash().ToString(), nodeid);
+        // All txhashes in m_orphan_resolution_tracker are wtxids.
+        Assume(orphan_gtxid.IsWtxid());
+        const auto wtxid = Wtxid::FromUint256(orphan_gtxid.GetHash());
+        m_orphanage.EraseOrphanOfPeer(wtxid, nodeid);
+        Assume(!m_orphanage.HaveTxAndPeer(wtxid, nodeid));
+    }
+
+    // Process orphan resolution attempts that are ready: schedule the parent requests.
+    for (const auto& orphan_gtxid : orphans_ready) {
+        Assume(orphan_gtxid.IsWtxid());
+        const auto wtxid = Wtxid::FromUint256(orphan_gtxid.GetHash());
+        Assume(m_orphanage.HaveTxAndPeer(wtxid, nodeid));
+
+        const auto parent_txids{m_orphanage.GetParentTxids(wtxid)};
+
+        if (parent_txids.has_value()) {
+            if (!Assume(m_peer_info.count(nodeid) > 0)) continue;
+
+            const auto& info = m_peer_info.at(nodeid).m_connection_info;
+            bool requesting{false};
+
+            for (const auto& txid : *parent_txids) {
+                // Schedule with no delay instead of using AddTxAnnouncement. This means it's scheduled
+                // for request immediately unless there is already a request out for the same txhash
+                // (e.g. if there is another orphan that needs this parent).
+                m_txrequest.ReceivedInv(nodeid, GenTxid::Txid(txid), info.m_preferred, current_time);
+                requesting = true;
+                LogPrint(BCLog::TXPACKAGES, "scheduled parent request %s from peer=%d for orphan %s\n",
+                    txid.ToString(), nodeid, orphan_gtxid.GetHash().ToString());
+            }
+
+            if (requesting) m_orphan_resolution_tracker.RequestedTx(nodeid, orphan_gtxid.GetHash(), current_time + ORPHAN_ANCESTOR_GETDATA_INTERVAL);
+        } else {
+            LogPrint(BCLog::TXPACKAGES, "couldn't find parent txids to resolve orphan %s with peer=%d\n", orphan_gtxid.GetHash().ToString(), nodeid);
+            m_orphan_resolution_tracker.ForgetTxHash(orphan_gtxid.GetHash());
+        }
+    }
+
+    // Now process txrequest
     std::vector<GenTxid> requests;
     std::vector<std::pair<NodeId, GenTxid>> expired;
     auto requestable = m_txrequest.GetRequestable(nodeid, current_time, &expired);
@@ -222,6 +311,7 @@ void TxDownloadImpl::MempoolAcceptedTx(const CTransactionRef& tx)
     m_orphanage.AddChildrenToWorkSet(*tx);
     // If it came from the orphanage, remove it. No-op if the tx is not in txorphanage.
     m_orphanage.EraseTx(tx->GetWitnessHash());
+    m_orphan_resolution_tracker.ForgetTxHash(tx->GetWitnessHash());
 }
 
 node::RejectedTxTodo TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& ptx, const TxValidationState& state, NodeId nodeid, bool not_from_orphanage)
@@ -277,24 +367,27 @@ node::RejectedTxTodo TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& pt
                 return AlreadyHaveTx(GenTxid::Txid(txid), /*include_reconsiderable=*/false);
             });
 
-            add_extra_compact_tx &= m_orphanage.AddTx(ptx, nodeid, unique_parents);
-            // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
-            m_orphanage.LimitOrphans(m_opts.m_max_orphan_txs, m_opts.m_rng);
+            const auto& wtxid = ptx->GetWitnessHash();
 
-            const bool still_have_orphan = m_orphanage.HaveTx(ptx->GetWitnessHash());
+            const bool newly_added = m_orphanage.AddTx(ptx, nodeid, unique_parents);
+            // DoS prevention: do not allow m_orphanage to grow unbounded (see CVE-2012-3789)
+            for (const auto& wtxid : m_orphanage.LimitOrphans(m_opts.m_max_orphan_txs, m_opts.m_rng)) {
+                m_orphan_resolution_tracker.ForgetTxHash(wtxid.ToUint256());
+            }
+
+            const bool still_have_orphan = m_orphanage.HaveTx(wtxid);
             add_extra_compact_tx &= still_have_orphan;
 
             if (still_have_orphan) {
                 const auto current_time{GetTime<std::chrono::microseconds>()};
 
-                for (const auto& parent_txid : unique_parents) {
-                    // Here, we only have the txid (and not wtxid) of the
-                    // inputs, so we only request in txid mode, even for
-                    // wtxidrelay peers.
-                    // Eventually we should replace this with an improved
-                    // protocol for getting all unconfirmed parents.
-                    const auto gtxid{GenTxid::Txid(parent_txid)};
-                    AddTxAnnouncement(nodeid, gtxid, current_time, /*p2p_inv=*/false);
+                // Everyone who announced the orphan is a candidate for orphan resolution.
+                AddOrphanAnnouncer(nodeid, wtxid, current_time, /*newly_added=*/newly_added);
+                for (const auto& candidate : m_txrequest.GetCandidatePeers(wtxid)) {
+                    AddOrphanAnnouncer(candidate, wtxid, current_time, /*newly_added=*/false);
+                }
+                for (const auto& candidate : m_txrequest.GetCandidatePeers(ptx->GetHash())) {
+                    AddOrphanAnnouncer(candidate, wtxid, current_time, /*newly_added=*/false);
                 }
             }
 
@@ -368,6 +461,7 @@ node::RejectedTxTodo TxDownloadImpl::MempoolRejectedTx(const CTransactionRef& pt
     // If the tx failed in ProcessOrphanTx, it should be removed from the orphanage unless the
     // tx was still missing inputs. If the tx was not in the orphanage, EraseTx does nothing and returns 0.
     if (state.GetResult() != TxValidationResult::TX_MISSING_INPUTS && m_orphanage.EraseTx(ptx->GetWitnessHash()) > 0) {
+        m_orphan_resolution_tracker.ForgetTxHash(ptx->GetWitnessHash());
         LogDebug(BCLog::TXPACKAGES, "   removed orphan tx %s (wtxid=%s)\n", ptx->GetHash().ToString(), ptx->GetWitnessHash().ToString());
     }
 
@@ -450,10 +544,12 @@ CTransactionRef TxDownloadImpl::GetTxToReconsider(NodeId nodeid)
 void TxDownloadImpl::CheckIsEmpty(NodeId nodeid)
 {
     assert(m_txrequest.Count(nodeid) == 0);
+    Assume(m_orphan_resolution_tracker.Count(nodeid) == 0);
 }
 void TxDownloadImpl::CheckIsEmpty()
 {
     assert(m_orphanage.Size() == 0);
     assert(m_txrequest.Size() == 0);
+    Assume(m_orphan_resolution_tracker.Size() == 0);
 }
 } // namespace node
