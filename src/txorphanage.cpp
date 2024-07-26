@@ -223,7 +223,7 @@ bool TxOrphanage::HaveTxToReconsider(NodeId peer)
     return false;
 }
 
-void TxOrphanage::EraseForBlock(const CBlock& block)
+std::vector<Wtxid> TxOrphanage::EraseForBlock(const CBlock& block)
 {
     std::vector<Wtxid> vOrphanErase;
 
@@ -249,6 +249,8 @@ void TxOrphanage::EraseForBlock(const CBlock& block)
         }
         LogPrint(BCLog::TXPACKAGES, "Erased %d orphan transaction(s) included or conflicted by block\n", nErased);
     }
+
+    return vOrphanErase;
 }
 
 std::vector<CTransactionRef> TxOrphanage::GetChildrenFromSamePeer(const CTransactionRef& parent, NodeId nodeid) const
