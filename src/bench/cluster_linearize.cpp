@@ -107,6 +107,26 @@ DepGraph<SetType> MakeHardGraph(ClusterIndex ntx)
     return depgraph;
 }
 
+template<typename SetType>
+DepGraph<SetType> MakeArborTree(ClusterIndex ntx, std::optional<ClusterIndex> feenode)
+{
+    DepGraph<SetType> depgraph;
+    for (ClusterIndex i = 0; i < ntx-1; ++i) {
+        int32_t fee = 0;
+        if (feenode.has_value()) {
+            // Only 1 transaction has any feerate. Makes calculating pot very beneficial.
+            if (i == feenode) fee = 100;
+        } else {
+            fee = i;
+        }
+
+        depgraph.AddTransaction({fee, 1});
+        if (i > 0) {
+            depgraph.AddDependency((int32_t(i - 1) / 4), i);
+        }
+    }
+    return depgraph;
+}
 /** Benchmark that does search-based candidate finding with 10000 iterations.
  *
  * Its goal is measuring how much time every additional search iteration in linearization costs.
@@ -170,6 +190,30 @@ void BenchLinearizeNoItersWorstCaseLIMO(ClusterIndex ntx, benchmark::Bench& benc
 }
 
 template<typename SetType>
+void BenchLinearizeOptimizablePot(ClusterIndex ntx, benchmark::Bench& bench)
+{
+    const auto depgraph = MakeArborTree<SetType>(ntx, ntx - 2);
+    const auto iter_limit = std::min<uint64_t>(10000, uint64_t{1} << (ntx / 2 - 1));
+    uint64_t rng_seed = 0;
+    bench.batch(iter_limit).unit("iters").run([&] {
+        SearchCandidateFinder finder(depgraph, rng_seed++);
+        finder.FindCandidateSet(iter_limit, {});
+    });
+}
+
+template<typename SetType>
+void BenchLinearizeOptimizableSplit(ClusterIndex ntx, benchmark::Bench& bench)
+{
+    const auto depgraph = MakeArborTree<SetType>(ntx, std::nullopt);
+    const auto iter_limit = std::min<uint64_t>(10000, uint64_t{1} << (ntx / 2 - 1));
+    uint64_t rng_seed = 0;
+    bench.batch(iter_limit).unit("iters").run([&] {
+        SearchCandidateFinder finder(depgraph, rng_seed++);
+        finder.FindCandidateSet(iter_limit, {});
+    });
+}
+
+template<typename SetType>
 void BenchPostLinearizeWorstCase(ClusterIndex ntx, benchmark::Bench& bench)
 {
     DepGraph<SetType> depgraph = MakeWideGraph<SetType>(ntx);
@@ -209,6 +253,13 @@ static void LinearizePerIter48TxWorstCase(benchmark::Bench& bench) { BenchLinear
 static void LinearizePerIter64TxWorstCase(benchmark::Bench& bench) { BenchLinearizePerIterWorstCase<BitSet<64>>(64, bench); }
 static void LinearizePerIter75TxWorstCase(benchmark::Bench& bench) { BenchLinearizePerIterWorstCase<BitSet<75>>(75, bench); }
 static void LinearizePerIter99TxWorstCase(benchmark::Bench& bench) { BenchLinearizePerIterWorstCase<BitSet<99>>(99, bench); }
+
+static void LinearizeOptimizable16Pot(benchmark::Bench& bench) { BenchLinearizeOptimizablePot<BitSet<16>>(16, bench); }
+static void LinearizeOptimizable64Pot(benchmark::Bench& bench) { BenchLinearizeOptimizablePot<BitSet<64>>(64, bench); }
+static void LinearizeOptimizable128Pot(benchmark::Bench& bench) { BenchLinearizeOptimizablePot<BitSet<128>>(128, bench); }
+static void LinearizeOptimizable16Split(benchmark::Bench& bench) { BenchLinearizeOptimizableSplit<BitSet<16>>(16, bench); }
+static void LinearizeOptimizable64Split(benchmark::Bench& bench) { BenchLinearizeOptimizableSplit<BitSet<64>>(64, bench); }
+static void LinearizeOptimizable128Split(benchmark::Bench& bench) { BenchLinearizeOptimizableSplit<BitSet<128>>(128, bench); }
 
 static void LinearizeNoIters16TxWorstCaseAnc(benchmark::Bench& bench) { BenchLinearizeNoItersWorstCaseAnc<BitSet<16>>(16, bench); }
 static void LinearizeNoIters32TxWorstCaseAnc(benchmark::Bench& bench) { BenchLinearizeNoItersWorstCaseAnc<BitSet<32>>(32, bench); }
@@ -272,3 +323,10 @@ BENCHMARK(MergeLinearizations48TxWorstCase, benchmark::PriorityLevel::HIGH);
 BENCHMARK(MergeLinearizations64TxWorstCase, benchmark::PriorityLevel::HIGH);
 BENCHMARK(MergeLinearizations75TxWorstCase, benchmark::PriorityLevel::HIGH);
 BENCHMARK(MergeLinearizations99TxWorstCase, benchmark::PriorityLevel::HIGH);
+
+BENCHMARK(LinearizeOptimizable16Pot, benchmark::PriorityLevel::HIGH);
+BENCHMARK(LinearizeOptimizable64Pot, benchmark::PriorityLevel::HIGH);
+BENCHMARK(LinearizeOptimizable128Pot, benchmark::PriorityLevel::HIGH);
+BENCHMARK(LinearizeOptimizable16Split, benchmark::PriorityLevel::HIGH);
+BENCHMARK(LinearizeOptimizable64Split, benchmark::PriorityLevel::HIGH);
+BENCHMARK(LinearizeOptimizable128Split, benchmark::PriorityLevel::HIGH);
