@@ -35,6 +35,9 @@ public:
     /** Add an additional announcer to an orphan if it exists. Otherwise, do nothing. */
     bool AddAnnouncer(const Wtxid& wtxid, NodeId peer);
 
+    /** Get the size of an orphan if it exists, 0 otherwise. */
+    unsigned int GetOrphanSize(const Wtxid& wtxid) const;
+
     /** Check if we already have an orphan transaction (by wtxid only) */
     bool HaveTx(const Wtxid& wtxid) const;
 

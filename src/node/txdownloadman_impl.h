@@ -139,6 +139,10 @@ public:
         /** Information relevant to scheduling tx requests. */
         const TxDownloadConnectionInfo m_connection_info;
 
+        unsigned int MaxOrphanBytes() const {
+            return m_connection_info.m_preferred ? MAX_ORPHAN_BYTES_PREFERRED : MAX_ORPHAN_BYTES_NONPREFERRED;
+        }
+
         PeerInfo(const TxDownloadConnectionInfo& info) : m_connection_info{info} {}
     };
 
@@ -196,7 +200,7 @@ protected:
      * @returns delay for orphan resolution if this peer is a good candidate for orphan resolution,
      * std::nullopt if this peer cannot be added because it has reached download/orphanage limits.
      * */
-    std::optional<std::chrono::seconds> OrphanResolutionCandidate(NodeId nodeid, const Wtxid& orphan_wtxid);
+    std::optional<std::chrono::seconds> OrphanResolutionCandidate(NodeId nodeid, const Wtxid& orphan_wtxid, unsigned int orphan_size);
 
 };
 } // namespace node

@@ -33,6 +33,15 @@ static constexpr int32_t MAX_PEER_TX_ANNOUNCEMENTS = 5000;
 /** Maximum number of orphan resolutions per peer. This limit is intended to prevent any one peer
  * from dominating usage of the orphanage. Equal to half of the default maximum global number of orphans. */
 static constexpr int32_t MAX_ORPHAN_RESOLUTIONS{50};
+/** Maximum amount of orphan bytes to store per peer that is preferred for download. This limit is
+ * intended to prevent any one peer from dominating usage of the orphanage, and may help load
+ * balance orphan resolutions. */
+static constexpr unsigned int MAX_ORPHAN_BYTES_PREFERRED{4'000'000};
+/** Maximum amount of orphan bytes to store per peer that is not preferred for download. This limit
+ * is intended to prevent any one peer from dominating usage of the orphanage, and may help load
+ * balance orphan resolutions. Equivalent to 1 maximum size orphan, so all non-preferred peers are
+ * always allowed at least 1 orphan. */
+static constexpr unsigned int MAX_ORPHAN_BYTES_NONPREFERRED{400'000};
 /** How long to delay requesting transactions via txids, if we have wtxid-relaying peers */
 static constexpr auto TXID_RELAY_DELAY{2s};
 /** How long to delay requesting transactions from non-preferred peers */

@@ -175,15 +175,17 @@ void TxDownloadManagerImpl::DisconnectedPeer(NodeId nodeid)
 
 bool TxDownloadManagerImpl::AddTxAnnouncement(NodeId peer, const GenTxid& gtxid, std::chrono::microseconds now, bool p2p_inv)
 {
+    const auto wtxid = Wtxid::FromUint256(gtxid.GetHash());
     // If this is an inv received from a peer but it's an orphan we are trying to resolve, instead
     // of adding it to m_txrequest, remember this peer as a potential orphan resolution candidate.
-    if (p2p_inv && m_orphanage.HaveTx(Wtxid::FromUint256(gtxid.GetHash()))) {
+    if (p2p_inv && m_orphanage.HaveTx(wtxid)) {
         // m_orphan_resolution_tracker only tracks wtxids
         if (gtxid.IsWtxid()) {
-            if (auto delay{OrphanResolutionCandidate(peer, Wtxid::FromUint256(gtxid.GetHash()))}) {
+            const auto orphan_size{m_orphanage.GetOrphanSize(wtxid)};
+            if (auto delay{OrphanResolutionCandidate(peer, wtxid, orphan_size)}) {
                 const auto& info = m_peer_info.at(peer).m_connection_info;
-                m_orphanage.AddAnnouncer(Wtxid::FromUint256(gtxid.GetHash()), peer);
-                m_orphan_resolution_tracker.ReceivedInv(peer, GenTxid::Wtxid(gtxid.GetHash()), info.m_preferred, now + *delay);
+                m_orphanage.AddAnnouncer(wtxid, peer);
+                m_orphan_resolution_tracker.ReceivedInv(peer, gtxid, info.m_preferred, now + *delay);
                 LogDebug(BCLog::TXPACKAGES, "added peer=%d as a candidate for resolving orphan %s\n", peer, gtxid.GetHash().ToString());
             }
         }
@@ -221,9 +223,11 @@ bool TxDownloadManagerImpl::AddTxAnnouncement(NodeId peer, const GenTxid& gtxid,
     return false;
 }
 
-std::optional<std::chrono::seconds> TxDownloadManagerImpl::OrphanResolutionCandidate(NodeId nodeid, const Wtxid& orphan_wtxid)
+std::optional<std::chrono::seconds> TxDownloadManagerImpl::OrphanResolutionCandidate(NodeId nodeid, const Wtxid& orphan_wtxid, unsigned int orphan_size)
 {
     if (m_peer_info.count(nodeid) == 0) return std::nullopt;
+
+    if (m_orphanage.HaveTxAndPeer(orphan_wtxid, nodeid)) return std::nullopt;
 
     const auto& peer_entry = m_peer_info.at(nodeid);
     const auto& info = peer_entry.m_connection_info;
@@ -236,6 +240,9 @@ std::optional<std::chrono::seconds> TxDownloadManagerImpl::OrphanResolutionCandi
 
         // Drop if too many queued orphan resolutions with this peer.
         if (m_orphan_resolution_tracker.Count(nodeid) >= MAX_ORPHAN_RESOLUTIONS) return std::nullopt;
+
+        // Drop if peer is taking up too much space in orphanage.
+        if (m_orphanage.BytesFromPeer(nodeid) + orphan_size > peer_entry.MaxOrphanBytes()) return std::nullopt;
     }
 
     std::chrono::seconds delay{0s};
@@ -430,7 +437,8 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
 
             auto add_orphan_reso_candidate = [&](const CTransactionRef& orphan_tx, std::vector<Txid> unique_parents, NodeId nodeid, std::chrono::microseconds now) {
                 const auto& wtxid = orphan_tx->GetWitnessHash();
-                if (auto delay{OrphanResolutionCandidate(nodeid, wtxid)}) {
+                const auto orphan_size{orphan_tx->GetTotalSize()};
+                if (auto delay{OrphanResolutionCandidate(nodeid, wtxid, orphan_size)}) {
                     const auto& info = m_peer_info.at(nodeid).m_connection_info;
                     m_orphanage.AddTx(orphan_tx, nodeid, unique_parents);
                     m_orphan_resolution_tracker.ReceivedInv(nodeid, GenTxid::Wtxid(wtxid), info.m_preferred, now + *delay);

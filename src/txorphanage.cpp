@@ -94,6 +94,12 @@ bool TxOrphanage::AddAnnouncer(const Wtxid& wtxid, NodeId peer)
     return false;
 }
 
+unsigned int TxOrphanage::GetOrphanSize(const Wtxid& wtxid) const
+{
+    const auto it = m_orphans.find(wtxid);
+    return it != m_orphans.end() ? it->second.tx->GetTotalSize() : 0;
+}
+
 int TxOrphanage::EraseTx(const Wtxid& wtxid)
 {
     std::map<Wtxid, OrphanTx>::iterator it = m_orphans.find(wtxid);
