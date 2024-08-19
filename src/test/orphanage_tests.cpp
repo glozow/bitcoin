@@ -5,6 +5,8 @@
 #include <arith_uint256.h>
 #include <primitives/transaction.h>
 #include <consensus/validation.h>
+#include <node/txdownloadman_impl.h>
+#include <node/txdownloadman.h>
 #include <pubkey.h>
 #include <script/sign.h>
 #include <script/signingprovider.h>
@@ -45,22 +47,43 @@ static void MakeNewKeyWithFastRandomContext(CKey& key, FastRandomContext& rand_c
     assert(key.IsValid());
 }
 
-// Creates a transaction with 2 outputs. Spends all outpoints. If outpoints is empty, spends a random one.
-static CTransactionRef MakeTransactionSpending(const std::vector<COutPoint>& outpoints, FastRandomContext& det_rand)
+static CTransactionRef MakeLargeOrphan(FastRandomContext& det_rand)
 {
+    CKey key;
+    MakeNewKeyWithFastRandomContext(key, det_rand);
+    CMutableTransaction tx;
+    tx.vout.resize(1);
+    tx.vout[0].nValue = CENT;
+    tx.vout[0].scriptPubKey = GetScriptForDestination(PKHash(key.GetPubKey()));
+    tx.vin.resize(80);
+    for (unsigned int j = 0; j < tx.vin.size(); j++) {
+        tx.vin[j].prevout.n = j;
+        tx.vin[j].prevout.hash = Txid::FromUint256(det_rand.rand256());
+        tx.vin[j].scriptWitness.stack.reserve(100);
+        for (int i = 0; i < 100; ++i) {
+            tx.vin[j].scriptWitness.stack.push_back(std::vector<unsigned char>(j));
+        }
+    }
+    return MakeTransactionRef(tx);
+}
+
+// Creates a transaction with 2 outputs. Spends all outpoints. If outpoints is empty, spends a random one.
+static CTransactionRef MakeTransactionSpending(const std::vector<COutPoint>& outpoints, FastRandomContext& det_rand, bool segwit=true)
+{
+    static uint32_t num = 0;
     CKey key;
     MakeNewKeyWithFastRandomContext(key, det_rand);
     CMutableTransaction tx;
     // If no outpoints are given, create a random one.
     if (outpoints.empty()) {
-        tx.vin.emplace_back(Txid::FromUint256(det_rand.rand256()), 0);
+        tx.vin.emplace_back(Txid::FromUint256(det_rand.rand256()), num++);
     } else {
         for (const auto& outpoint : outpoints) {
             tx.vin.emplace_back(outpoint);
         }
     }
     // Ensure txid != wtxid
-    tx.vin[0].scriptWitness.stack.push_back({1});
+    if (segwit) tx.vin[0].scriptWitness.stack.push_back({1});
     tx.vout.resize(2);
     tx.vout[0].nValue = CENT;
     tx.vout[0].scriptPubKey = GetScriptForDestination(PKHash(key.GetPubKey()));
@@ -179,7 +202,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
 
         BOOST_CHECK(!orphanage.AddTx(MakeTransactionRef(tx), i, {}));
     }
-    BOOST_CHECK_EQUAL(orphanage.Size(), expected_count);
+    BOOST_CHECK_EQUAL(orphanage.CountOrphans(), expected_count);
     BOOST_CHECK_EQUAL(orphanage.TotalOrphanBytes(), expected_total_size);
 
     size_t expected_num_orphans = orphanage.CountOrphans();
@@ -570,5 +593,95 @@ BOOST_AUTO_TEST_CASE(peer_worksets)
             BOOST_CHECK(!orphanage.HaveTxAndPeer(orphan_wtxid, node));
         }
     }
+}
+
+BOOST_AUTO_TEST_CASE(orphan_peer_dos)
+{
+    const NodeId peer_normal_pref{1};
+    const NodeId peer_normal_nonpref{2};
+    std::vector<NodeId> peer_spammers{3, 4, 5, 6, 7, 8};
+
+    const unsigned int max_orphan_count = 100;
+    FastRandomContext det_rand{true};
+    node::TxDownloadManagerImpl txdownload_impl{node::TxDownloadOptions{*m_node.mempool, det_rand, max_orphan_count}};
+
+    txdownload_impl.ConnectedPeer(peer_normal_pref, node::TxDownloadConnectionInfo{/*m_preferred=*/true, /*m_relay_permissions=*/false, /*m_wtxid_relay=*/true});
+    txdownload_impl.ConnectedPeer(peer_normal_nonpref, node::TxDownloadConnectionInfo{/*m_preferred=*/false, /*m_relay_permissions=*/false, /*m_wtxid_relay=*/true});
+
+    for (auto peer_dos : peer_spammers) {
+        txdownload_impl.ConnectedPeer(peer_dos, node::TxDownloadConnectionInfo{/*m_preferred=*/false, /*m_relay_permissions=*/false, /*m_wtxid_relay=*/true});
+    }
+
+    // Preferred peer should be granted protection tokens.
+    BOOST_CHECK_EQUAL(txdownload_impl.m_peer_info.at(peer_normal_pref).AvailableProtectionTokens(), node::MAX_ORPHAN_PROTECTED_BYTES);
+    BOOST_CHECK_EQUAL(txdownload_impl.m_peer_info.at(peer_normal_nonpref).AvailableProtectionTokens(), 0);
+
+    // Resuable TxValidationState indicating the transaction is an orphan.
+    TxValidationState state_missing_inputs;
+    state_missing_inputs.Invalid(TxValidationResult::TX_MISSING_INPUTS, "");
+    // Reusable TxValidationState indicating the transaction was low feerate but reconsiderable in a package.
+    TxValidationState state_reconsiderable;
+    state_reconsiderable.Invalid(TxValidationResult::TX_RECONSIDERABLE, "");
+
+    // Set time to now
+    auto start_time = GetTime<std::chrono::seconds>();
+    SetMockTime(start_time);
+
+    // Add an orphan, spending from a low feerate (TX_RECONSIDERABLE) nonsegwit parent. Updates requests_to_expect for later checking.
+    auto add_orphan = [&](NodeId peer, std::vector<GenTxid>& requests_to_expect) {
+        const auto grandparent_txid = det_rand.rand256();
+        const auto parent_tx = MakeTransactionSpending({{Txid::FromUint256(grandparent_txid), 0}}, det_rand, /*segwit=*/false);
+        const auto orphan_tx = MakeTransactionSpending({{parent_tx->GetHash(), 0}}, det_rand);
+        // Parent is low feerate. It must not have a witness so that it can be detected in m_lazy_recent_rejects_reconsiderable.
+        txdownload_impl.MempoolRejectedTx(parent_tx, state_reconsiderable, peer, /*maybe_add_new_orphan=*/true);
+
+        // May add this orphan and then calls LimitOrphans
+        txdownload_impl.MempoolRejectedTx(orphan_tx, state_missing_inputs, peer, /*maybe_add_new_orphan=*/true);
+        BOOST_CHECK(txdownload_impl.m_orphanage.HaveTxAndPeer(orphan_tx->GetWitnessHash(), peer));
+        requests_to_expect.emplace_back(GenTxid::Txid(parent_tx->GetHash()));
+    };
+
+    // Send orphans from normal peers
+    std::vector<GenTxid> requests_pref;
+
+    add_orphan(peer_normal_pref, requests_pref);
+
+    // Send spam:
+    for (auto peer_dos : peer_spammers) {
+        if (peer_dos % 2) {
+            // Odd peers spam by sending a lot of orphans
+            for (unsigned int i = 0; i < max_orphan_count; ++i) {
+                const auto fake_orphan = MakeTransactionSpending({}, det_rand);
+                txdownload_impl.MempoolRejectedTx(fake_orphan, state_missing_inputs, peer_dos, /*maybe_add_new_orphan=*/true);
+            }
+        } else {
+            // Even peers spam by sending a large amount of orphan bytes
+            for (int i = 0; i < 20; ++i) {
+                auto large_orphan = MakeLargeOrphan(det_rand);
+                txdownload_impl.MempoolRejectedTx(large_orphan, state_missing_inputs, peer_dos, /*maybe_add_new_orphan=*/true);
+
+                // Ensure this tx is within max standard size but is large, i.e. will reach the
+                // MAX_ORPHAN_BYTES_NONPREFERRED limit before the MAX_ORPHAN_RESOLUTIONS limit.
+                auto orphan_bytes = large_orphan->GetTotalSize();
+                BOOST_CHECK(orphan_bytes <= MAX_STANDARD_TX_WEIGHT);
+                BOOST_CHECK(orphan_bytes * node::MAX_ORPHAN_RESOLUTIONS > node::MAX_ORPHAN_BYTES_NONPREFERRED);
+            }
+        }
+
+        // After each spam round, send another orphan from each normal peer.
+        add_orphan(peer_normal_pref, requests_pref);
+    }
+
+    add_orphan(peer_normal_pref, requests_pref);
+
+    // Given all the DoSy peers, orphanage will have exceeded limits.
+    // Protection tokens should have been used to ensure peer_normal_pref's orphans are not evicted..
+    BOOST_CHECK(txdownload_impl.m_peer_info.at(peer_normal_pref).AvailableProtectionTokens() < node::MAX_ORPHAN_PROTECTED_BYTES);
+
+    // Check that txdownload still remembers to schedule the "normal" orphan resolutions after the DoSy peers' spam.
+    const auto normal_requests = txdownload_impl.GetRequestsToSend(peer_normal_pref, start_time + 10s);
+    BOOST_CHECK_EQUAL(normal_requests.size(), requests_pref.size());
+    BOOST_CHECK(normal_requests == requests_pref);
+
 }
 BOOST_AUTO_TEST_SUITE_END()
