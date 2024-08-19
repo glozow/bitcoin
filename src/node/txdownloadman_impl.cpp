@@ -227,14 +227,15 @@ std::optional<std::chrono::seconds> TxDownloadManagerImpl::OrphanResolutionCandi
 
     const auto& peer_entry = m_peer_info.at(nodeid);
     const auto& info = peer_entry.m_connection_info;
-    // TODO: add delays and limits based on the amount of orphan resolution we are already doing
-    // with this peer, how much they are using the orphanage, etc.
     if (!info.m_relay_permissions) {
         // This mirrors the delaying and dropping behavior in AddTxAnnouncement in order to preserve
         // existing behavior: drop if we are tracking too many invs for this peer already. Each
         // orphan resolution involves at least 1 transaction request which may or may not be
         // currently tracked in m_txrequest, so we include that in the count.
         if (m_txrequest.Count(nodeid) + m_orphan_resolution_tracker.Count(nodeid) >= MAX_PEER_TX_ANNOUNCEMENTS) return std::nullopt;
+
+        // Drop if too many queued orphan resolutions with this peer.
+        if (m_orphan_resolution_tracker.Count(nodeid) >= MAX_ORPHAN_RESOLUTIONS) return std::nullopt;
     }
 
     std::chrono::seconds delay{0s};
