@@ -7,6 +7,7 @@ Test opportunistic 1p1c package submission logic.
 """
 
 from decimal import Decimal
+import random
 import time
 from test_framework.mempool_util import (
     fill_mempool,
@@ -54,6 +55,72 @@ def cleanup(func):
             self.nodes[0].setmocktime(0)
     return wrapper
 
+def create_unknown_orphans(count, wallet):
+    """Create count pairs of parent and child, returning all child CTransaction objects.
+    An orphan is any transaction with missing inputs, so parents isn't strictly necessary, but
+    this allows us to ensure the input does not exist.
+    This is implemented by creating a chain of transactions descended from 1 utxo, with 2*count
+    generations. The returned result contains every 2nd transaction. This is sufficient to
+    ensure the orphans don't look like they are related to each other.
+    """
+    orphans = []
+    # Do not mark utxo as spent. Allows us to create a lot of unknown orphans without needing to
+    # generate a lot of utxos up front.
+    utxo = wallet.get_utxo(mark_as_spent=False, confirmed_only=True)
+
+    for i in range(count):
+        # Use a random feerate to decrease the likelihood of collisions between calls to this function
+        parent = wallet.create_self_transfer(utxo_to_spend=utxo, fee_rate=random.randint(0, 100) * FEERATE_1SAT_VB)
+        child = wallet.create_self_transfer(utxo_to_spend=parent["new_utxo"])
+        orphans.append(child["tx"])
+        utxo = child["new_utxo"]
+
+    return orphans
+
+def create_large_unknown_orphans(count, wallet):
+    """Create count pairs of parent and child, returning all child CTransaction objects.
+    Similar to create_unknown_orphans but the children are very large, targeting 200,000Wu.
+    """
+    orphans = []
+    # Do not mark utxo as spent. Allows us to create a lot of unknown orphans without needing to
+    # generate a lot of utxos up front.
+    utxo = wallet.get_utxo(mark_as_spent=False, confirmed_only=True)
+
+    for i in range(count):
+        # Use a random feerate to decrease the likelihood of collisions between calls to this function
+        parent = wallet.create_self_transfer(utxo_to_spend=utxo, fee_rate=random.randint(0, 100) * FEERATE_1SAT_VB)
+        child = wallet.create_self_transfer(utxo_to_spend=parent["new_utxo"], target_weight=200000)
+        orphans.append(child["tx"])
+        utxo = child["new_utxo"]
+
+    return orphans
+
+class PeerSendsManyOrphans(P2PInterface):
+    def __init__(self, wallet):
+        super().__init__()
+        self.wallet = wallet
+
+    def do_adversarial_stuff(self):
+        # Unsolicited transactions are not normal, but this means we don't need to wait for the node
+        # to send getdatas for each one. If this is changed in the future, note that since there are
+        # many orphans, sending them serially with inv/getdata rounds bloats the amount of time
+        # spent in this portion of the test, potentially hitting timeouts on the normal transactions.
+        for orphan in create_unknown_orphans(120, self.wallet):
+            self.send_message(msg_tx(orphan))
+        self.sync_with_ping()
+
+class PeerSendsLargeOrphans(P2PInterface):
+    def __init__(self, wallet):
+        super().__init__()
+        self.wallet = wallet
+
+    def do_adversarial_stuff(self):
+        # Unsolicited transactions are not normal, but this means we don't need to wait for the node
+        # to send getdatas for each one.
+        for orphan in create_unknown_orphans(10, self.wallet):
+            self.send_message(msg_tx(orphan))
+        self.sync_with_ping()
+
 class PackageRelayTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
@@ -74,14 +141,15 @@ class PackageRelayTest(BitcoinTestFramework):
         return wallet.create_self_transfer(fee_rate=FEERATE_1SAT_VB, sequence=self.sequence, confirmed_only=True)
 
     @cleanup
-    def test_basic_child_then_parent(self):
+    def test_basic_child_then_parent(self, adversarial_peers):
         node = self.nodes[0]
-        self.log.info("Check that opportunistic 1p1c logic works when child is received before parent")
 
         low_fee_parent = self.create_tx_below_mempoolminfee(self.wallet)
         high_fee_child = self.wallet.create_self_transfer(utxo_to_spend=low_fee_parent["new_utxo"], fee_rate=20*FEERATE_1SAT_VB)
 
         peer_sender = node.add_p2p_connection(P2PInterface())
+        for peer in adversarial_peers:
+            node.add_p2p_connection(peer)
 
         # 1. Child is received first (perhaps the low feerate parent didn't meet feefilter or the requests were sent to different nodes). It is missing an input.
         high_child_wtxid_int = int(high_fee_child["tx"].getwtxid(), 16)
@@ -92,6 +160,9 @@ class PackageRelayTest(BitcoinTestFramework):
         # 2. Node requests the missing parent by txid.
         parent_txid_int = int(low_fee_parent["txid"], 16)
         peer_sender.wait_for_getdata([parent_txid_int])
+
+        for peer in adversarial_peers:
+            peer.do_adversarial_stuff()
 
         # 3. Sender relays the parent. Parent+Child are evaluated as a package and accepted.
         peer_sender.send_and_ping(msg_tx(low_fee_parent["tx"]))
@@ -104,13 +175,15 @@ class PackageRelayTest(BitcoinTestFramework):
         node.disconnect_p2ps()
 
     @cleanup
-    def test_basic_parent_then_child(self, wallet):
+    def test_basic_parent_then_child(self, wallet, adversarial_peers):
         node = self.nodes[0]
         low_fee_parent = self.create_tx_below_mempoolminfee(wallet)
         high_fee_child = wallet.create_self_transfer(utxo_to_spend=low_fee_parent["new_utxo"], fee_rate=20*FEERATE_1SAT_VB)
 
         peer_sender = node.add_outbound_p2p_connection(P2PInterface(), p2p_idx=1, connection_type="outbound-full-relay")
         peer_ignored = node.add_outbound_p2p_connection(P2PInterface(), p2p_idx=2, connection_type="outbound-full-relay")
+        for peer in adversarial_peers:
+            node.add_p2p_connection(peer)
 
         # 1. Parent is relayed first. It is too low feerate.
         parent_wtxid_int = int(low_fee_parent["tx"].getwtxid(), 16)
@@ -133,6 +206,9 @@ class PackageRelayTest(BitcoinTestFramework):
         # It should do so even if it has previously rejected that parent for being too low feerate.
         parent_txid_int = int(low_fee_parent["txid"], 16)
         peer_sender.wait_for_getdata([parent_txid_int])
+
+        for peer in adversarial_peers:
+            peer.do_adversarial_stuff()
 
         # 4. Sender re-relays the parent. Parent+Child are evaluated as a package and accepted.
         peer_sender.send_and_ping(msg_tx(low_fee_parent["tx"]))
@@ -377,19 +453,22 @@ class PackageRelayTest(BitcoinTestFramework):
 
         self.wallet = MiniWallet(node)
         self.wallet_nonsegwit = MiniWallet(node, mode=MiniWalletMode.RAW_P2PK)
+        self.wallet_adversaries = MiniWallet(node)
+
         self.generate(self.wallet_nonsegwit, 10)
-        self.generate(self.wallet, 20)
+        self.generate(self.wallet, 30)
+        self.generate(self.wallet_adversaries, 10)
 
         fill_mempool(self, node)
 
         self.log.info("Check opportunistic 1p1c logic when parent (txid != wtxid) is received before child")
-        self.test_basic_parent_then_child(self.wallet)
+        self.test_basic_parent_then_child(self.wallet, [])
 
         self.log.info("Check opportunistic 1p1c logic when parent (txid == wtxid) is received before child")
-        self.test_basic_parent_then_child(self.wallet_nonsegwit)
+        self.test_basic_parent_then_child(self.wallet_nonsegwit, [])
 
         self.log.info("Check opportunistic 1p1c logic when child is received before parent")
-        self.test_basic_child_then_parent()
+        self.test_basic_child_then_parent([])
 
         self.log.info("Check opportunistic 1p1c logic when 2 candidate children exist (parent txid != wtxid)")
         self.test_low_and_high_child(self.wallet)
@@ -401,6 +480,15 @@ class PackageRelayTest(BitcoinTestFramework):
         self.test_parent_consensus_failure()
         self.test_multiple_parents()
         self.test_other_parent_in_mempool()
+
+        # DoS test: can we download a 1p1c even when there are lots of peers spamming orphans,
+        # causing orphanage evictions?
+        # 5 peers that send lots of orphans, 5 peers that sends large orphans
+        adversaries_many = [PeerSendsManyOrphans(self.wallet_adversaries) for _ in range(5)]
+        adversaries_many += [PeerSendsLargeOrphans(self.wallet_adversaries) for _ in range(5)]
+
+        self.log.info("Check 1p1c (parent sent before child) with large mix of adversaries")
+        self.test_basic_parent_then_child(self.wallet_nonsegwit, adversaries_many)
 
 
 if __name__ == '__main__':
