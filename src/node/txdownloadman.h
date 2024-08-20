@@ -42,6 +42,9 @@ static constexpr unsigned int MAX_ORPHAN_BYTES_PREFERRED{4'000'000};
  * balance orphan resolutions. Equivalent to 1 maximum size orphan, so all non-preferred peers are
  * always allowed at least 1 orphan. */
 static constexpr unsigned int MAX_ORPHAN_BYTES_NONPREFERRED{400'000};
+/** Maximum number of orphan bytes that can be protected for a peer. Only given to peers who are
+ * preferred for download. */
+static constexpr unsigned int MAX_ORPHAN_PROTECTED_BYTES{400'000};
 /** How long to delay requesting transactions via txids, if we have wtxid-relaying peers */
 static constexpr auto TXID_RELAY_DELAY{2s};
 /** How long to delay requesting transactions from non-preferred peers */

@@ -93,13 +93,6 @@ void TxDownloadManagerImpl::ActiveTipChange()
 
 void TxDownloadManagerImpl::BlockConnected(const std::shared_ptr<const CBlock>& pblock)
 {
-    // Orphanage may include transactions conflicted by this block. There should not be any
-    // transactions in m_orphan_resolution_tracker that aren't in orphanage, so this should include
-    // all of the relevant orphans we were working on.
-    for (const auto& erased_orphan_wtxid : m_orphanage.EraseForBlock(*pblock)) {
-        m_orphan_resolution_tracker.ForgetTxHash(erased_orphan_wtxid);
-    }
-
     for (const auto& ptx : pblock->vtx) {
         RecentConfirmedTransactionsFilter().insert(ptx->GetHash().ToUint256());
         if (ptx->HasWitness()) {
@@ -107,6 +100,27 @@ void TxDownloadManagerImpl::BlockConnected(const std::shared_ptr<const CBlock>& 
         }
         m_txrequest.ForgetTxHash(ptx->GetHash());
         m_txrequest.ForgetTxHash(ptx->GetWitnessHash());
+
+        // Refund tokens used to protect orphans that have confirmed in this block, because they
+        // were used to protect a useful orphan even though we didn't download the tx in time.
+        // Calling RefundOrphanProtectors before EraseForBlock is important for 2 reasons:
+        // - the orphanage can return the list of peers who protected the orphan
+        // - this loop only includes the transactions that confirmed in this block, and not the
+        // orphans conflicted by the block.
+        RefundOrphanProtectors(ptx->GetWitnessHash());
+    }
+
+    // Orphanage may include transactions conflicted by this block. There should not be any
+    // transactions in m_orphan_resolution_tracker that aren't in orphanage, so this should include
+    // all of the relevant orphans we were working on.
+    for (const auto& erased_orphan_wtxid : m_orphanage.EraseForBlock(*pblock)) {
+        m_orphan_resolution_tracker.ForgetTxHash(erased_orphan_wtxid);
+    }
+
+    // Once per BlockConnected, restore peers' orphan protection tokens.
+    for (auto& peer_it : m_peer_info) {
+        // noop for peers that don't have the protection ability.
+        peer_it.second.RefundTokens(MAX_ORPHAN_PROTECTED_BYTES / 2);
     }
 }
 
@@ -270,6 +284,7 @@ std::vector<GenTxid> TxDownloadManagerImpl::GetRequestsToSend(NodeId nodeid, std
         // All txhashes in m_orphan_resolution_tracker are wtxids.
         Assume(orphan_gtxid.IsWtxid());
         const auto wtxid = Wtxid::FromUint256(orphan_gtxid.GetHash());
+        // Remove peer as announcer and protector
         m_orphanage.EraseOrphanOfPeer(wtxid, nodeid);
         Assume(!m_orphanage.HaveTxAndPeer(wtxid, nodeid));
     }
@@ -301,6 +316,9 @@ std::vector<GenTxid> TxDownloadManagerImpl::GetRequestsToSend(NodeId nodeid, std
             if (requesting) m_orphan_resolution_tracker.RequestedTx(nodeid, orphan_gtxid.GetHash(), current_time + ORPHAN_ANCESTOR_GETDATA_INTERVAL);
         } else {
             LogPrint(BCLog::TXPACKAGES, "couldn't find parent txids to resolve orphan %s with peer=%d\n", orphan_gtxid.GetHash().ToString(), nodeid);
+            // Undo protection if it exists. Don't restore tokens, as this orphan was not
+            // successfully resolved.
+            MaybeUndoProtectOrphan(nodeid, Wtxid::FromUint256(orphan_gtxid.GetHash()));
             m_orphan_resolution_tracker.ForgetTxHash(orphan_gtxid.GetHash());
         }
     }
@@ -371,6 +389,7 @@ void TxDownloadManagerImpl::MempoolAcceptedTx(const CTransactionRef& tx)
     m_txrequest.ForgetTxHash(tx->GetHash());
     m_txrequest.ForgetTxHash(tx->GetWitnessHash());
 
+    RefundOrphanProtectors(tx->GetWitnessHash());
     m_orphanage.AddChildrenToWorkSet(*tx);
     // If it came from the orphanage, remove it. No-op if the tx is not in txorphanage.
     m_orphanage.EraseTx(tx->GetWitnessHash());
@@ -442,6 +461,7 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
                     const auto& info = m_peer_info.at(nodeid).m_connection_info;
                     m_orphanage.AddTx(orphan_tx, nodeid, unique_parents);
                     m_orphan_resolution_tracker.ReceivedInv(nodeid, GenTxid::Wtxid(wtxid), info.m_preferred, now + *delay);
+
                     LogDebug(BCLog::TXPACKAGES, "added peer=%d as a candidate for resolving orphan %s\n", nodeid, wtxid.ToString());
                 }
             };
@@ -534,6 +554,7 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
     // If the tx failed in ProcessOrphanTx, it should be removed from the orphanage unless the
     // tx was still missing inputs. If the tx was not in the orphanage, EraseTx does nothing and returns 0.
     if (state.GetResult() != TxValidationResult::TX_MISSING_INPUTS && m_orphanage.EraseTx(ptx->GetWitnessHash()) > 0) {
+        // fixme: undoprotect, don't return tokens
         m_orphan_resolution_tracker.ForgetTxHash(ptx->GetWitnessHash());
         LogDebug(BCLog::TXPACKAGES, "   removed orphan tx %s (wtxid=%s)\n", ptx->GetHash().ToString(), ptx->GetWitnessHash().ToString());
     }
@@ -625,5 +646,43 @@ void TxDownloadManagerImpl::CheckIsEmpty()
     assert(m_txrequest.Size() == 0);
     assert(m_num_wtxid_peers == 0);
     Assume(m_orphan_resolution_tracker.Size() == 0);
+}
+
+void TxDownloadManagerImpl::MaybeProtectOrphan(NodeId nodeid, const Wtxid& wtxid)
+{
+    auto peer_info_it = m_peer_info.find(nodeid);
+    if (peer_info_it == m_peer_info.end()) return;
+
+    // Cannot protect orphans or is already protecting this orphan
+    if (!peer_info_it->second.CanProtectOrphans()) return;
+
+    const auto max_orphan_size{peer_info_it->second.AvailableProtectionTokens()};
+    if (auto orphan_size{m_orphanage.ProtectOrphan(wtxid, nodeid, max_orphan_size)}) {
+        peer_info_it->second.m_protection_tokens -= orphan_size.value();
+    }
+}
+
+void TxDownloadManagerImpl::MaybeUndoProtectOrphan(NodeId nodeid, const Wtxid& wtxid)
+{
+    auto peer_info_it = m_peer_info.find(nodeid);
+    if (peer_info_it == m_peer_info.end()) return;
+
+    // Cannot protect orphans or is not protecting this orphan
+    if (!peer_info_it->second.CanProtectOrphans()) return;
+
+    m_orphanage.UndoProtectOrphan(wtxid, nodeid);
+
+    // Peer's orphan protection tokens are not refunded.
+}
+
+void TxDownloadManagerImpl::RefundOrphanProtectors(const Wtxid& wtxid)
+{
+    if (auto protection_info{m_orphanage.GetProtectors(wtxid)}) {
+        for (const auto& protector_peer : protection_info->second) {
+            auto peer_info_it = m_peer_info.find(protector_peer);
+            if (!Assume(peer_info_it != m_peer_info.end())) return;
+            peer_info_it->second.RefundTokens(protection_info->first);
+        }
+    }
 }
 } // namespace node

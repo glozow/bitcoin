@@ -139,11 +139,32 @@ public:
         /** Information relevant to scheduling tx requests. */
         const TxDownloadConnectionInfo m_connection_info;
 
+        /** Current amount of orphan transactions that this peer can protect. 1 token = 1 byte of
+         * orphan data (data usage, not Wu or vB). */
+        unsigned int m_protection_tokens;
+
+        /** Maximum amount of orphan transactions that this peer can protect. */
+        const unsigned int m_max_protection_tokens;
+
         unsigned int MaxOrphanBytes() const {
             return m_connection_info.m_preferred ? MAX_ORPHAN_BYTES_PREFERRED : MAX_ORPHAN_BYTES_NONPREFERRED;
         }
 
-        PeerInfo(const TxDownloadConnectionInfo& info) : m_connection_info{info} {}
+        bool CanProtectOrphans() const { return m_connection_info.m_preferred; }
+        unsigned int MaxProtectionTokens() const { return m_max_protection_tokens; }
+        unsigned int AvailableProtectionTokens() const { return m_protection_tokens; }
+
+        void RefundTokens(unsigned int new_tokens) {
+            // Token refund should never result in having more than the maximum number of allowed tokens.
+            // This can happen if a refund happens right after a scheduled top up.
+            m_protection_tokens = std::min(m_max_protection_tokens, m_protection_tokens + new_tokens);
+        }
+
+        PeerInfo(const TxDownloadConnectionInfo& info) :
+            m_connection_info{info},
+            m_protection_tokens{info.m_preferred ? MAX_ORPHAN_PROTECTED_BYTES : 0},
+            m_max_protection_tokens{info.m_preferred ? MAX_ORPHAN_PROTECTED_BYTES : 0}
+        {}
     };
 
     /** Information for all of the peers we may download transactions from. This is not necessarily
@@ -202,6 +223,16 @@ protected:
      * */
     std::optional<std::chrono::seconds> OrphanResolutionCandidate(NodeId nodeid, const Wtxid& orphan_wtxid, unsigned int orphan_size);
 
+    /** Try to protect an orphan with this wtxid */
+    void MaybeProtectOrphan(NodeId nodeid, const Wtxid& wtxid);
+
+    /** Get the peers who have protected this transaction in the orphanage and refund their
+     * protection tokens. */
+    void RefundOrphanProtectors(const Wtxid& wtxid);
+
+    /** Try to remove protection by this nodeid for an orphan with this wtxid. The node's protection
+     * tokens are not refunded. */
+    void MaybeUndoProtectOrphan(NodeId nodeid, const Wtxid& wtxid);
 };
 } // namespace node
 #endif // BITCOIN_NODE_TXDOWNLOADMAN_IMPL_H
