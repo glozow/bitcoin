@@ -279,6 +279,21 @@ static void CheckInvariants(const node::TxDownloadManagerImpl& txdownload_impl, 
         }
     }
     txdownload_impl.m_txrequest.SanityCheck();
+
+    // If a tx is in orphanage, it should also be in m_orphan_resolution_tracker.
+    for (const auto& tx : TRANSACTIONS) {
+        if (orphanage.HaveTx(tx->GetWitnessHash())) {
+            const auto candidate_peers_wtxid{txdownload_impl.m_txrequest.GetCandidatePeers(tx->GetWitnessHash().ToUint256())};
+            const auto candidate_peers_txid{txdownload_impl.m_txrequest.GetCandidatePeers(tx->GetWitnessHash().ToUint256())};
+            Assert(!candidate_peers_txid.empty() || !candidate_peers_wtxid.empty());
+        }
+    }
+
+    // Each peer has limited orphanage usage, by count and bytes.
+    for (const auto& [nodeid, info] : txdownload_impl.m_peer_info) {
+        Assert(orphanage.BytesFromPeer(nodeid) <= info.MaxOrphanBytes());
+        Assert(txdownload_impl.m_orphan_resolution_tracker.Count(nodeid) <= node::MAX_ORPHAN_RESOLUTIONS);
+    }
 }
 
 FUZZ_TARGET(txdownloadman_impl, .init = initialize)
