@@ -462,6 +462,15 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
                     m_orphanage.AddTx(orphan_tx, nodeid, unique_parents);
                     m_orphan_resolution_tracker.ReceivedInv(nodeid, GenTxid::Wtxid(wtxid), info.m_preferred, now + *delay);
 
+                    // If this could be a 1p1c package, attempt to protect this orphan from eviction
+                    // (only peers preferred for download have the protection ability). We give
+                    // orphans with exactly 1 parent in m_lazy_recent_rejects_reconsiderable special
+                    // treatment because orphan resolution is potentially the only way we will
+                    // accept these transactions (the parent will not be accepted by itself).
+                    if (rejected_parent_reconsiderable.has_value()) {
+                        MaybeProtectOrphan(nodeid, wtxid);
+                    }
+
                     LogDebug(BCLog::TXPACKAGES, "added peer=%d as a candidate for resolving orphan %s\n", nodeid, wtxid.ToString());
                 }
             };
