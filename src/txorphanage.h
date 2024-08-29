@@ -63,8 +63,8 @@ public:
 
     /** Limit the orphanage to the given maximum. Delete orphans whose expiry has been reached.
      * The maximum does not apply to protected transactions, i.e., LimitOrphans(100) ensures
-     * that Size() <= 100. However, the total number of transactions including protected ones may
-     * exceed 100. It is the caller's responsibility to ensure that not too many orphans are protected.
+     * that TotalUnprotectedCount() <= 100. However, TotalCount() may exceed 100. It is the caller's
+     * responsibility to ensure that not too many orphans are protected.
      */
     std::vector<Wtxid> LimitOrphans(unsigned int max_orphans, FastRandomContext& rng);
 
@@ -82,10 +82,10 @@ public:
     void EraseOrphanOfPeer(const Wtxid& wtxid, NodeId peer);
 
     /** Return how many unprotected entries exist in the orphange. */
-    size_t Size() const
-    {
-        return m_orphan_list.size();
-    }
+    size_t TotalUnprotectedCount() const { return m_orphan_list.size(); }
+
+    /** Return how many total entries exist in the orphange, including both protected and unprotected. */
+    size_t TotalCount() const { return m_orphans.size(); }
 
     /** Protect an orphan from eviction from the orphanage getting full. The orphan may still be
      * removed for other reasons - expiry, EraseTx, EraseForBlock, EraseForPeer will still remove
@@ -116,6 +116,8 @@ public:
         auto peer_bytes_it = m_peer_bytes_used.find(peer);
         return peer_bytes_it == m_peer_bytes_used.end() ? 0 : peer_bytes_it->second;
     }
+
+    unsigned int TotalProtectedBytes() const { return m_total_protected_orphan_bytes; }
 
 protected:
     struct OrphanTx {

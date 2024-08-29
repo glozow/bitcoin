@@ -269,7 +269,7 @@ static void CheckInvariants(const node::TxDownloadManagerImpl& txdownload_impl, 
     const TxOrphanage& orphanage = txdownload_impl.m_orphanage;
 
     // Orphanage usage should never exceed what is allowed
-    Assert(orphanage.Size() <= max_orphan_count);
+    Assert(orphanage.TotalUnprotectedCount() <= max_orphan_count);
 
     for (NodeId peer = 0; peer < NUM_PEERS; ++peer) {
         if (!HasRelayPermissions(peer)) {

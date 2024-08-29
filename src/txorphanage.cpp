@@ -408,6 +408,7 @@ std::optional<unsigned int> TxOrphanage::ProtectOrphan(const Wtxid& wtxid, NodeI
         it_last->second.list_pos = old_pos;
     }
     m_orphan_list.pop_back();
+    m_total_protected_orphan_bytes += it->second.tx->GetTotalSize();
     // Set list_pos to -1 to indicate this orphan is protected.
     it->second.list_pos = -1;
     return it->second.tx->GetTotalSize();
