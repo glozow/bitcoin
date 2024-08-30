@@ -25,9 +25,22 @@
 #include <utility>
 #include <vector>
 
+// Cap the highest NodeId to make it possible to loop through all NodeIds generated in the test.
+static constexpr NodeId MAX_NODEID{500};
+
 void initialize_orphanage()
 {
     static const auto testing_setup = MakeNoLogFileContext();
+}
+
+static bool IsProtectedBy(const TxOrphanage& orphanage, NodeId nodeid, const Wtxid& wtxid)
+{
+    if (auto protector_info{orphanage.GetProtectors(wtxid)}) {
+        for (const auto& protector : protector_info->second) {
+            if (nodeid == protector) return true;
+        }
+    }
+    return false;
 }
 
 FUZZ_TARGET(txorphan, .init = initialize_orphanage)
@@ -79,7 +92,7 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
             orphanage.AddChildrenToWorkSet(*ptx_potential_parent);
 
             // Check that all txns returned from GetChildrenFrom* are indeed a direct child of this tx.
-            NodeId peer_id = fuzzed_data_provider.ConsumeIntegral<NodeId>();
+            NodeId peer_id = fuzzed_data_provider.ConsumeIntegralInRange<NodeId>(0, MAX_NODEID);
             for (const auto& child : orphanage.GetChildrenFromSamePeer(ptx_potential_parent, peer_id)) {
                 assert(std::any_of(child->vin.cbegin(), child->vin.cend(), [&](const auto& input) {
                     return input.prevout.hash == ptx_potential_parent->GetHash();
@@ -90,7 +103,7 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
         // trigger orphanage functions
         LIMITED_WHILE(fuzzed_data_provider.ConsumeBool(), 10 * DEFAULT_MAX_ORPHAN_TRANSACTIONS)
         {
-            NodeId peer_id = fuzzed_data_provider.ConsumeIntegral<NodeId>();
+            NodeId peer_id = fuzzed_data_provider.ConsumeIntegralInRange<NodeId>(0, MAX_NODEID);
 
             CallOneOf(
                 fuzzed_data_provider,
@@ -153,6 +166,16 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
                     Assert(!orphanage.HaveTxAndPeer(tx->GetWitnessHash(), peer_id));
                 },
                 [&] {
+                    const bool have_tx_and_peer{orphanage.HaveTxAndPeer(tx->GetWitnessHash(), peer_id)};
+                    const bool protected_by_peer{IsProtectedBy(orphanage, peer_id, tx->GetWitnessHash())};
+                    orphanage.ProtectOrphan(tx->GetWitnessHash(), peer_id, tx->GetTotalSize());
+                    if (have_tx_and_peer && !protected_by_peer) Assert(IsProtectedBy(orphanage, peer_id, tx->GetWitnessHash()));
+                },
+                [&] {
+                    orphanage.UndoProtectOrphan(tx->GetWitnessHash(), peer_id);
+                    Assert(!IsProtectedBy(orphanage, peer_id, tx->GetWitnessHash()));
+                },
+                [&] {
                     // test mocktime and expiry
                     SetMockTime(ConsumeTime(fuzzed_data_provider));
                     auto limit = fuzzed_data_provider.ConsumeIntegral<unsigned int>();
@@ -165,9 +188,15 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
         if (!ptx_potential_parent || fuzzed_data_provider.ConsumeBool()) {
             ptx_potential_parent = tx;
         }
+        Assert(orphanage.TotalOrphanBytes() >= orphanage.TotalProtectedBytes());
+    }
 
+    for (NodeId peer{0}; peer <= MAX_NODEID; ++peer) {
+        orphanage.EraseForPeer(peer);
+        Assert(orphanage.BytesFromPeer(peer) == 0);
     }
 
     Assert(orphanage.TotalCount() == 0);
     Assert(orphanage.TotalOrphanBytes() == 0);
+    Assert(orphanage.TotalProtectedBytes() == 0);
 }
