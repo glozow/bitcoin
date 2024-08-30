@@ -463,11 +463,10 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
                     m_orphan_resolution_tracker.ReceivedInv(nodeid, GenTxid::Wtxid(wtxid), info.m_preferred, now + *delay);
 
                     // If this could be a 1p1c package, attempt to protect this orphan from eviction
-                    // (only peers preferred for download have the protection ability). We give
-                    // orphans with exactly 1 parent in m_lazy_recent_rejects_reconsiderable special
+                    // (only peers preferred for download have the protection ability). We give them
                     // treatment because orphan resolution is potentially the only way we will
-                    // accept these transactions (the parent will not be accepted by itself).
-                    if (rejected_parent_reconsiderable.has_value()) {
+                    // accept these transactions (low feerate  parent will not be accepted by itself).
+                    if (unique_parents.size() == 1) {
                         MaybeProtectOrphan(nodeid, wtxid);
                     }
 

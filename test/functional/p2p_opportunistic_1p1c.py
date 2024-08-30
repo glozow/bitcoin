@@ -147,7 +147,16 @@ class PackageRelayTest(BitcoinTestFramework):
         low_fee_parent = self.create_tx_below_mempoolminfee(self.wallet)
         high_fee_child = self.wallet.create_self_transfer(utxo_to_spend=low_fee_parent["new_utxo"], fee_rate=20*FEERATE_1SAT_VB)
 
-        peer_sender = node.add_p2p_connection(P2PInterface())
+        # When there are no adversarial_peers, test that 1p1c works with inbound peers, which are
+        # given fewer privileges than outbounds.
+        # When there are adversarial_peers, make peer_sender an outbound connection to test that the
+        # preferential download logic works properly. We are not testing that inbound connections
+        # work under adversarial conditions, because there are no guarantees in those situations.
+        if len(adversarial_peers) > 0:
+            peer_sender = node.add_outbound_p2p_connection(P2PInterface(), p2p_idx=5, connection_type="outbound-full-relay")
+        else:
+            peer_sender = node.add_p2p_connection(P2PInterface())
+
         for peer in adversarial_peers:
             node.add_p2p_connection(peer)
 
@@ -180,7 +189,10 @@ class PackageRelayTest(BitcoinTestFramework):
         low_fee_parent = self.create_tx_below_mempoolminfee(wallet)
         high_fee_child = wallet.create_self_transfer(utxo_to_spend=low_fee_parent["new_utxo"], fee_rate=20*FEERATE_1SAT_VB)
 
-        peer_sender = node.add_outbound_p2p_connection(P2PInterface(), p2p_idx=1, connection_type="outbound-full-relay")
+        if len(adversarial_peers) > 0:
+            peer_sender = node.add_outbound_p2p_connection(P2PInterface(), p2p_idx=1, connection_type="outbound-full-relay")
+        else:
+            peer_sender = node.add_p2p_connection(P2PInterface())
         peer_ignored = node.add_outbound_p2p_connection(P2PInterface(), p2p_idx=2, connection_type="outbound-full-relay")
         for peer in adversarial_peers:
             node.add_p2p_connection(peer)
@@ -488,7 +500,13 @@ class PackageRelayTest(BitcoinTestFramework):
         adversaries_many += [PeerSendsLargeOrphans(self.wallet_adversaries) for _ in range(5)]
 
         self.log.info("Check 1p1c (parent sent before child) with large mix of adversaries")
+        # Protecting orphans with 1 rejected reconsiderable parent makes this work.
+        # But this is probably the rarest case of 1p1c.
         self.test_basic_parent_then_child(self.wallet_nonsegwit, adversaries_many)
+
+        # Protecting orphans with 1 parent makes these work.
+        self.test_basic_child_then_parent(adversaries_many)
+        self.test_basic_parent_then_child(self.wallet, adversaries_many)
 
 
 if __name__ == '__main__':
