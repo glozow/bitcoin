@@ -494,13 +494,17 @@ BOOST_AUTO_TEST_CASE(package_submission_tests)
     }
 }
 
-// Tests for packages containing a single transaction that doesn't have
-// any unconfirmed parents.
+// Tests for packages containing a single transaction
 BOOST_AUTO_TEST_CASE(package_single_tx)
 {
+    // Mine blocks to mature coinbases.
+    mineBlocks(3);
     LOCK(cs_main);
     auto expected_pool_size{m_node.mempool->size()};
 
+    const CAmount high_fee{1000};
+
+    // No unconfirmed parents
     CKey single_key = GenerateRandomKey();
     CScript single_locking_script = GetScriptForDestination(PKHash(single_key.GetPubKey()));
     auto mtx_single = CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[0], /*input_vout=*/0,
@@ -513,8 +517,49 @@ BOOST_AUTO_TEST_CASE(package_single_tx)
                                                     package_tx_single, /*test_accept=*/false, /*client_maxfeerate=*/{});
     expected_pool_size += 1;
     BOOST_CHECK_MESSAGE(result_single_tx.m_state.IsValid(),
-                        "Package validation unexpectedly failed: " << result_single_tx.m_state.GetRejectReason());
+                        "Package validation unexpectedly failed: " << result_single_tx.m_state.ToString());
     BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
+
+    // Parent and Child. Both submitted by themselves through the ProcessNewPackage interface.
+    CKey parent_key = GenerateRandomKey();
+    CScript parent_locking_script = GetScriptForDestination(WitnessV0KeyHash(parent_key.GetPubKey()));
+    auto mtx_parent = CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[1], /*input_vout=*/0,
+                                                    /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
+                                                    /*output_destination=*/parent_locking_script,
+                                                    /*output_amount=*/CAmount(50 * COIN) - high_fee, /*submit=*/false);
+    CTransactionRef tx_parent = MakeTransactionRef(mtx_parent);
+    Package package_just_parent{tx_parent};
+    const auto result_just_parent = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_just_parent, /*test_accept=*/false, /*client_maxfeerate=*/{});
+    if (auto err_parent_child{CheckPackageMempoolAcceptResult(package_just_parent, result_just_parent, /*expect_valid=*/true, nullptr)}) {
+        BOOST_ERROR(err_parent_child.value());
+    } else {
+        auto it_parent = result_just_parent.m_tx_results.find(tx_parent->GetWitnessHash());
+        BOOST_CHECK_MESSAGE(it_parent->second.m_state.IsValid(), it_parent->second.m_state.ToString());
+        BOOST_CHECK(it_parent->second.m_effective_feerate.value().GetFee(GetVirtualTransactionSize(*tx_parent)) == high_fee);
+        BOOST_CHECK_EQUAL(it_parent->second.m_wtxids_fee_calculations.value().size(), 1);
+        BOOST_CHECK_EQUAL(it_parent->second.m_wtxids_fee_calculations.value().front(), tx_parent->GetWitnessHash());
+    }
+    expected_pool_size += 1;
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
+
+    CKey child_key = GenerateRandomKey();
+    CScript child_locking_script = GetScriptForDestination(WitnessV0KeyHash(child_key.GetPubKey()));
+    auto mtx_child = CreateValidMempoolTransaction(/*input_transaction=*/tx_parent, /*input_vout=*/0,
+                                                   /*input_height=*/101, /*input_signing_key=*/parent_key,
+                                                   /*output_destination=*/child_locking_script,
+                                                   /*output_amount=*/CAmount(50 * COIN) - 2 * high_fee, /*submit=*/false);
+    CTransactionRef tx_child = MakeTransactionRef(mtx_child);
+    Package package_just_child{tx_child};
+    const auto result_just_child = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_just_child, /*test_accept=*/false, /*client_maxfeerate=*/{});
+    if (auto err_parent_child{CheckPackageMempoolAcceptResult(package_just_child, result_just_child, /*expect_valid=*/true, nullptr)}) {
+        BOOST_ERROR(err_parent_child.value());
+    } else {
+        auto it_child = result_just_child.m_tx_results.find(tx_child->GetWitnessHash());
+        BOOST_CHECK_MESSAGE(it_child->second.m_state.IsValid(), it_child->second.m_state.ToString());
+        BOOST_CHECK(it_child->second.m_effective_feerate.value().GetFee(GetVirtualTransactionSize(*tx_child)) == high_fee);
+        BOOST_CHECK_EQUAL(it_child->second.m_wtxids_fee_calculations.value().size(), 1);
+        BOOST_CHECK_EQUAL(it_child->second.m_wtxids_fee_calculations.value().front(), tx_child->GetWitnessHash());
+    }
 }
 
 // Tests for packages containing transactions that have same-txid-different-witness equivalents in
