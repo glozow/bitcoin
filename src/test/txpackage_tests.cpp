@@ -283,6 +283,8 @@ BOOST_AUTO_TEST_CASE(noncontextual_package_tests)
         BOOST_CHECK(GetPackageHash({tx_parent}) != GetPackageHash({tx_child}));
         BOOST_CHECK(GetPackageHash({tx_child, tx_child}) != GetPackageHash({tx_child}));
         BOOST_CHECK(GetPackageHash({tx_child, tx_parent}) != GetPackageHash({tx_child, tx_child}));
+        BOOST_CHECK(!IsChildWithParents({}));
+        BOOST_CHECK(!IsChildWithParentsTree({}));
     }
 
     // 24 Parents and 1 Child
@@ -490,6 +492,29 @@ BOOST_AUTO_TEST_CASE(package_submission_tests)
 
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
     }
+}
+
+// Tests for packages containing a single transaction that doesn't have
+// any unconfirmed parents.
+BOOST_AUTO_TEST_CASE(package_single_tx)
+{
+    LOCK(cs_main);
+    auto expected_pool_size{m_node.mempool->size()};
+
+    CKey single_key = GenerateRandomKey();
+    CScript single_locking_script = GetScriptForDestination(PKHash(single_key.GetPubKey()));
+    auto mtx_single = CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[0], /*input_vout=*/0,
+                                                    /*input_height=*/0, /*input_signing_key=*/coinbaseKey,
+                                                    /*output_destination=*/single_locking_script,
+                                                    /*output_amount=*/CAmount(49 * COIN), /*submit=*/false);
+    CTransactionRef tx_single = MakeTransactionRef(mtx_single);
+    Package package_tx_single{tx_single};
+    const auto result_single_tx = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
+                                                    package_tx_single, /*test_accept=*/false, /*client_maxfeerate=*/{});
+    expected_pool_size += 1;
+    BOOST_CHECK_MESSAGE(result_single_tx.m_state.IsValid(),
+                        "Package validation unexpectedly failed: " << result_single_tx.m_state.GetRejectReason());
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 }
 
 // Tests for packages containing transactions that have same-txid-different-witness equivalents in
