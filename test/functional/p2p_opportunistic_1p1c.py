@@ -340,7 +340,7 @@ class PackageRelayTest(BitcoinTestFramework):
 
     @cleanup
     def test_other_parent_in_mempool(self):
-        self.log.info("Check opportunistic 1p1c fails if child already has another parent in mempool")
+        self.log.info("Check opportunistic 1p1c works even if child already has another parent in mempool")
         node = self.nodes[0]
 
         # This parent needs CPFP
@@ -361,20 +361,15 @@ class PackageRelayTest(BitcoinTestFramework):
         # 2. Send child.
         peer_sender.send_and_ping(msg_tx(child["tx"]))
 
-        # 3. Node requests parent_low. However, 1p1c fails because package-not-child-with-unconfirmed-parents
+        # 3. Node requests parent_low.
         parent_low_txid_int = int(parent_low["txid"], 16)
         peer_sender.wait_for_getdata([parent_low_txid_int])
         peer_sender.send_and_ping(msg_tx(parent_low["tx"]))
 
         node_mempool = node.getrawmempool()
         assert parent_high["txid"] in node_mempool
-        assert parent_low["txid"] not in node_mempool
-        assert child["txid"] not in node_mempool
-
-        # Same error if submitted through submitpackage without parent_high
-        package_hex_missing_parent = [parent_low["hex"], child["hex"]]
-        result_missing_parent = node.submitpackage(package_hex_missing_parent)
-        assert_equal(result_missing_parent["package_msg"], "package-not-child-with-unconfirmed-parents")
+        assert parent_low["txid"] in node_mempool
+        assert child["txid"] in node_mempool
 
     def run_test(self):
         node = self.nodes[0]
