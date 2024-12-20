@@ -55,13 +55,12 @@ BOOST_AUTO_TEST_CASE(txgraph_trim_zigzag)
     auto removed_refs = graph->Trim();
     BOOST_CHECK(!graph->IsOversized(false));
 
-    BOOST_CHECK_EQUAL(removed_refs.size(), total_num_tx - max_cluster_count);
-    BOOST_CHECK_EQUAL(graph->GetTransactionCount(), (max_cluster_count));
+    // We only need to trim in the middle bottom transaction to end up with 2 clusters each within cluster limits.
+    BOOST_CHECK_EQUAL(removed_refs.size(), 1);
+    BOOST_CHECK_EQUAL(graph->GetTransactionCount(false), max_cluster_count * 2 - 2);
 
-    // Only prefix of size max_cluster_count is left. That's the first half of the top and first half of the bottom.
     for (unsigned int i = 0; i < refs.size(); ++i) {
-        const bool first_half = i < num_bottom_tx / 2 || (i >= num_bottom_tx && i < num_bottom_tx + num_top_tx / 2 + 1);
-        BOOST_CHECK_EQUAL(graph->Exists(refs[i]), first_half);
+        BOOST_CHECK_EQUAL(graph->Exists(refs[i]), i != num_bottom_tx / 2);
     }
 }
 
@@ -103,13 +102,13 @@ BOOST_AUTO_TEST_CASE(txgraph_trim_flower)
     auto removed_refs = graph->Trim();
     BOOST_CHECK(!graph->IsOversized(false));
 
-    BOOST_CHECK_EQUAL(removed_refs.size(), max_cluster_count + 1);
-    BOOST_CHECK_EQUAL(graph->GetTransactionCount(), max_cluster_count);
+    // Since only the bottom transaction connects these clusters, we only need to remove it.
+    BOOST_CHECK_EQUAL(removed_refs.size(), 1);
+    BOOST_CHECK_EQUAL(graph->GetTransactionCount(false), max_cluster_count * 2);
 
-    // Only prefix of size max_cluster_count (last max_cluster_count top transactions) is left.
-    for (unsigned int i = 0; i < refs.size(); ++i) {
-        const bool top_highest_feerate = i > total_num_tx - max_cluster_count - 1;
-        BOOST_CHECK_EQUAL(graph->Exists(refs[i]), top_highest_feerate);
+    BOOST_CHECK(!graph->Exists(refs[0]));
+    for (unsigned int i = 1; i < refs.size(); ++i) {
+        BOOST_CHECK(graph->Exists(refs[i]));
     }
 }
 
