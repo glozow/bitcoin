@@ -56,8 +56,13 @@ BOOST_AUTO_TEST_CASE(txgraph_trim_zigzag)
 
     // Check that the number of removed transactions and remaining transactions matches expectations
     // for this specific graph structure and feerate distribution.
-    BOOST_CHECK_EQUAL(removed_refs.size(), total_num_tx - max_cluster_count);
-    BOOST_CHECK_EQUAL(graph->GetTransactionCount(false), (max_cluster_count));
+    BOOST_CHECK_EQUAL(removed_refs.size(), max_cluster_count / 2 + 1);
+    BOOST_CHECK_EQUAL(graph->GetTransactionCount(false), max_cluster_count * 3 / 2);
+
+    // Removed refs are just the first half of the bottom transactions (which are the lowest feerate ones).
+    for (unsigned int i = 0; i < refs.size(); ++i) {
+        BOOST_CHECK_EQUAL(graph->Exists(refs[i]), i > num_bottom_tx / 2);
+    }
 }
 
 BOOST_AUTO_TEST_CASE(txgraph_trim_flower)
@@ -100,8 +105,13 @@ BOOST_AUTO_TEST_CASE(txgraph_trim_flower)
 
     // Check that the number of removed transactions and remaining transactions matches expectations
     // for this specific graph structure and feerate distribution.
-    BOOST_CHECK_EQUAL(removed_refs.size(), max_cluster_count + 1);
-    BOOST_CHECK_EQUAL(graph->GetTransactionCount(false), max_cluster_count);
+    BOOST_CHECK_EQUAL(removed_refs.size(), 1);
+    BOOST_CHECK_EQUAL(graph->GetTransactionCount(false), max_cluster_count * 2);
+
+    BOOST_CHECK(!graph->Exists(refs[0]));
+    for (unsigned int i = 1; i < refs.size(); ++i) {
+        BOOST_CHECK(graph->Exists(refs[i]));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END() 
