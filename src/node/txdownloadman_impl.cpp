@@ -586,9 +586,11 @@ CTransactionRef TxDownloadManagerImpl::GetTxToReconsider(NodeId nodeid)
 void TxDownloadManagerImpl::CheckIsEmpty(NodeId nodeid)
 {
     assert(m_txrequest.Count(nodeid) == 0);
+    assert(m_orphanage.BytesFromPeer(nodeid) == 0);
 }
 void TxDownloadManagerImpl::CheckIsEmpty()
 {
+    assert(m_orphanage.TotalOrphanBytes() == 0);
     assert(m_orphanage.Size() == 0);
     assert(m_txrequest.Size() == 0);
     assert(m_num_wtxid_peers == 0);
