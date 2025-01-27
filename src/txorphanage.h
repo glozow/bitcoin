@@ -96,6 +96,14 @@ public:
      * only counted once within this total. */
     unsigned int TotalOrphanBytes() const { return m_total_orphan_size; }
 
+    /** Total weight of orphans for which this peer is an announcer. If an orphan has multiple
+     * announcers, its weight will be accounted for in each PeerOrphanInfo, so the total of all
+     * peers' BytesFromPeer() may be larger than TotalOrphanBytes(). */
+    unsigned int BytesFromPeer(NodeId peer) const {
+        auto peer_it = m_peer_orphanage_info.find(peer);
+        return peer_it == m_peer_orphanage_info.end() ? 0 : peer_it->second.m_total_size;
+    }
+
 protected:
     struct OrphanTx : public OrphanTxBase {
         size_t list_pos;
@@ -114,6 +122,13 @@ protected:
          * transactions that are no longer present in orphanage; these are lazily removed in
          * GetTxToReconsider. */
         std::set<Wtxid> m_work_set;
+
+        /** Total weight of orphans for which this peer is an announcer.
+         * If orphans are provided by different peers, its weight will be accounted for in each
+         * PeerOrphanInfo, so the total of all peers' m_total_size may be larger than
+         * m_total_orphan_size. If a peer is removed as an announcer, even if the orphan still
+         * remains in the orphanage, this number will be decremented. */
+        unsigned int m_total_size{0};
     };
     std::map<NodeId, PeerOrphanInfo> m_peer_orphanage_info;
 
