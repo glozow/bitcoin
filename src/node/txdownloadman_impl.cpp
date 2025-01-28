@@ -601,6 +601,6 @@ std::vector<TxOrphanage::OrphanTxBase> TxDownloadManagerImpl::GetOrphanTransacti
 }
 unsigned int TxDownloadManagerImpl::CalculateMaxOrphanBytes() const
 {
-    return m_opts.m_max_orphan_txs * MAX_STANDARD_TX_WEIGHT;
+    return MAX_ORPHAN_BYTES_PER_PEER * m_peer_info.size();
 }
 } // namespace node
