@@ -200,7 +200,7 @@ FUZZ_TARGET(txorphan, .init = initialize_orphanage)
                     SetMockTime(ConsumeTime(fuzzed_data_provider));
                     auto limit = fuzzed_data_provider.ConsumeIntegral<unsigned int>();
                     orphanage.LimitOrphans(limit, orphanage_rng);
-                    Assert(orphanage.Size() <= limit);
+                    Assert(orphanage.TotalOrphanBytes() <= limit);
                 });
 
         }
