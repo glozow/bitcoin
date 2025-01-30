@@ -185,14 +185,24 @@ void TxOrphanage::LimitOrphans(unsigned int max_orphan_size, FastRandomContext& 
 
         // Select a random transaction of this peer to evict until its usage is within the maximum allowed.
         do {
-            size_t randompos = rng.randrange(it_biggest_peer->second.m_iter_list.size());
-            auto it_to_evict = it_biggest_peer->second.m_iter_list.at(randompos);
+            auto& orphan_list = it_biggest_peer->second.m_iter_list;
+            size_t random_pos = rng.randrange(orphan_list.size());
+            auto it_to_evict = orphan_list.at(random_pos);
 
             // Only erase this peer as an announcer, unless it is the only announcer. Otherwise peers
             // can selectively delete orphan transactions by announcing a lot of them.
             if (it_to_evict->second.announcers.size() > 1) {
                 Assume(it_to_evict->second.announcers.erase(it_biggest_peer->first));
                 it_biggest_peer->second.m_total_size -= it_to_evict->second.GetSize();
+
+                // Remove this orphan from the peer's list
+                if (random_pos + 1 != orphan_list.size()) {
+                    // Unless we're deleting the last entry in orphan_list, move the last
+                    // entry to the position we're deleting.
+                    auto it_last = orphan_list.back();
+                    orphan_list[random_pos] = it_last;
+                }
+                orphan_list.pop_back();
             } else {
                 EraseTx(it_to_evict->first);
                 ++nEvicted;
@@ -350,4 +360,25 @@ std::vector<TxOrphanage::OrphanTxBase> TxOrphanage::GetOrphanTransactions() cons
         ret.push_back({o.second.tx, o.second.announcers, o.second.nTimeExpire});
     }
     return ret;
+}
+
+void TxOrphanage::SanityCheck() const
+{
+    std::set<Wtxid> orphans_in_peer_map;
+    for (const auto& [nodeid, peer_info] : m_peer_orphanage_info) {
+        unsigned int size_for_peer{0};
+        for (const auto& it_orphan : peer_info.m_iter_list) {
+            Assume(it_orphan != m_orphans.end());
+
+            // Orphan iter is present in peer info == the orphan entry must list this peer as an announcer.
+            Assume(it_orphan->second.announcers.contains(nodeid));
+
+            size_for_peer += it_orphan->second.GetSize();
+            orphans_in_peer_map.insert(it_orphan->second.tx->GetWitnessHash());
+        }
+        Assume(size_for_peer == peer_info.m_total_size);
+    }
+
+    // Ensure there are no missing orphans.
+    Assume(orphans_in_peer_map.size() == m_orphans.size());
 }

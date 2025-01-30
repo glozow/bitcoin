@@ -281,6 +281,8 @@ static bool HasRelayPermissions(NodeId peer) { return peer == 0; }
 
 static void CheckInvariants(const node::TxDownloadManagerImpl& txdownload_impl)
 {
+    txdownload_impl.m_orphanage.SanityCheck();
+
     // We should never have more than the maximum in-flight requests out for a peer.
     for (NodeId peer = 0; peer < NUM_PEERS; ++peer) {
         if (!HasRelayPermissions(peer)) {

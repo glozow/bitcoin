@@ -104,6 +104,10 @@ public:
         return peer_it == m_peer_orphanage_info.end() ? 0 : peer_it->second.m_total_size;
     }
 
+    /** Check consistency between PeerOrphanInfo::m_iter_list and m_orphans. Recalculate the total
+     * size of orphans per peer and ensure they match what is stored in the PeerOrphanInfo. */
+    void SanityCheck() const;
+
 protected:
     struct OrphanTx : public OrphanTxBase {
     };
