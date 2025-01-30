@@ -36,6 +36,11 @@ static constexpr auto NONPREF_PEER_TX_DELAY{2s};
 static constexpr auto OVERLOADED_PEER_TX_DELAY{2s};
 /** How long to wait before downloading a transaction from an additional peer */
 static constexpr auto GETDATA_TX_INTERVAL{60s};
+/** Maximum permitted bytes used by transactions in orphanage for a single peer. Equivalent to one
+ * maximally-sized transaction to ensure that each peer can "use" at least 1 orphan slot even in the
+ * presence of spammy peers. */
+static constexpr unsigned int MAX_ORPHAN_BYTES_PER_PEER{MAX_STANDARD_TX_WEIGHT};
+
 struct TxDownloadOptions {
     /** Read-only reference to mempool. */
     const CTxMemPool& m_mempool;

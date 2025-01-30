@@ -295,6 +295,12 @@ public:
                 tracked += m_announcements[txhash][peer].m_state != State::NOTHING;
                 inflight += m_announcements[txhash][peer].m_state == State::REQUESTED;
                 candidates += m_announcements[txhash][peer].m_state == State::CANDIDATE;
+
+                std::vector<NodeId> candidate_peers;
+                m_tracker.GetCandidatePeers(TXHASHES[txhash], candidate_peers);
+                for (const auto& peer : candidate_peers) {
+                    assert(m_announcements[txhash][peer].m_state == State::CANDIDATE || m_announcements[txhash][peer].m_state == State::REQUESTED);
+                }
             }
             assert(m_tracker.Count(peer) == tracked);
             assert(m_tracker.CountInFlight(peer) == inflight);
