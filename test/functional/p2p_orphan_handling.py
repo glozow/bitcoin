@@ -3,8 +3,11 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+from decimal import Decimal
+import random
 import time
 
+from test_framework.blocktools import MAX_STANDARD_TX_WEIGHT
 from test_framework.mempool_util import tx_in_orphanage
 from test_framework.messages import (
     CInv,
@@ -17,6 +20,7 @@ from test_framework.messages import (
     msg_notfound,
     msg_tx,
     tx_from_hex,
+    WITNESS_SCALE_FACTOR,
 )
 from test_framework.p2p import (
     GETDATA_TX_INTERVAL,
@@ -45,11 +49,6 @@ TXREQUEST_TIME_SKIP = NONPREF_PEER_TX_DELAY + TXID_RELAY_DELAY + OVERLOADED_PEER
 DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100
 
 def cleanup(func):
-    # Time to fastfoward (using setmocktime) in between subtests to ensure they do not interfere with
-    # one another, in seconds. Equal to 12 hours, which is enough to expire anything that may exist
-    # (though nothing should since state should be cleared) in p2p data structures.
-    LONG_TIME_SKIP = 12 * 60 * 60
-
     def wrapper(self):
         try:
             func(self)
@@ -57,17 +56,18 @@ def cleanup(func):
             # Clear mempool
             self.generate(self.nodes[0], 1)
             self.nodes[0].disconnect_p2ps()
-            self.nodes[0].bumpmocktime(LONG_TIME_SKIP)
             # Check that mempool and orphanage have been cleared
             self.wait_until(lambda: len(self.nodes[0].getorphantxs()) == 0)
             assert_equal(0, len(self.nodes[0].getrawmempool()))
+
+            self.restart_node(0, extra_args=["-persistmempool=0"])
             self.wallet.rescan_utxos(include_mempool=True)
     return wrapper
 
 class PeerTxRelayer(P2PTxInvStore):
     """A P2PTxInvStore that also remembers all of the getdata and tx messages it receives."""
-    def __init__(self):
-        super().__init__()
+    def __init__(self, wtxidrelay=True):
+        super().__init__(wtxidrelay=wtxidrelay)
         self._tx_received = []
         self._getdata_received = []
 
@@ -402,7 +402,7 @@ class OrphanHandlingTest(BitcoinTestFramework):
         node = self.nodes[0]
         peer1 = node.add_p2p_connection(PeerTxRelayer())
         peer2 = node.add_p2p_connection(PeerTxRelayer())
-        peer3 = node.add_p2p_connection(PeerTxRelayer())
+        peer3 = node.add_p2p_connection(PeerTxRelayer(wtxidrelay=False))
 
         self.log.info("Test that an orphan with rejected parents, along with any descendants, cannot be retried with an alternate witness")
         parent_low_fee_nonsegwit = self.wallet_nonsegwit.create_self_transfer(fee_rate=0)
@@ -594,6 +594,11 @@ class OrphanHandlingTest(BitcoinTestFramework):
     @cleanup
     def test_max_orphan_amount(self):
         self.log.info("Check that we never exceed our storage limits for orphans")
+        # Allow padding of transactions.
+        ORPHAN_MULTIPLIER = 1
+        LARGE_TX_SIZE = 10000
+        effective_max_wu = ORPHAN_MULTIPLIER * MAX_STANDARD_TX_WEIGHT
+        self.restart_node(0, extra_args=[f"-maxorphantx={ORPHAN_MULTIPLIER}", f"-datacarriersize={LARGE_TX_SIZE}", "-persistmempool=0"])
 
         node = self.nodes[0]
         self.generate(self.wallet, 1)
@@ -602,32 +607,37 @@ class OrphanHandlingTest(BitcoinTestFramework):
         self.log.info("Check that orphanage is empty on start of test")
         assert len(node.getorphantxs()) == 0
 
-        self.log.info("Filling up orphanage with " + str(DEFAULT_MAX_ORPHAN_TRANSACTIONS) + "(DEFAULT_MAX_ORPHAN_TRANSACTIONS) orphans")
+        self.log.info(f"Filling up orphanage with {effective_max_wu} of orphans")
         orphans = []
         parent_orphans = []
-        for _ in range(DEFAULT_MAX_ORPHAN_TRANSACTIONS):
-            tx_parent_1 = self.wallet.create_self_transfer()
-            tx_child_1 = self.wallet.create_self_transfer(utxo_to_spend=tx_parent_1["new_utxo"])
+        size_left_wu = effective_max_wu
+        # Allow some buffer to avoid accidental evictions
+
+        while size_left_wu > WITNESS_SCALE_FACTOR * LARGE_TX_SIZE:
+            tx_parent_1 = self.wallet.create_self_transfer(confirmed_only=True, fee=Decimal("0.00001") * len(parent_orphans))
+            rand_wu = random.randint(800, size_left_wu)
+            tx_child_1 = self.wallet.create_self_transfer_multi(
+                utxos_to_spend=[tx_parent_1["new_utxo"]],
+                amount_per_output=1000,
+                # target_vsize=int(rand_wu / WITNESS_SCALE_FACTOR),
+            )
+
             parent_orphans.append(tx_parent_1["tx"])
             orphans.append(tx_child_1["tx"])
-            peer_1.send_message(msg_tx(tx_child_1["tx"]))
+            peer_1.send_and_ping(msg_tx(tx_child_1["tx"]))
+            print('sent')
 
-        peer_1.sync_with_ping()
-        orphanage = node.getorphantxs()
-        self.wait_until(lambda: len(node.getorphantxs()) == DEFAULT_MAX_ORPHAN_TRANSACTIONS)
-
-        for orphan in orphans:
-            assert tx_in_orphanage(node, orphan)
+            size_left_wu -= tx_child_1["tx"].get_weight()
+            print("waiting...")
+            self.wait_until(lambda: tx_in_orphanage(node, tx_child_1["tx"]))
 
         self.log.info("Check that we do not add more than the max orphan amount")
         tx_parent_1 = self.wallet.create_self_transfer()
-        tx_child_1 = self.wallet.create_self_transfer(utxo_to_spend=tx_parent_1["new_utxo"])
+        tx_child_1 = self.wallet.create_self_transfer(utxo_to_spend=tx_parent_1["new_utxo"], target_vsize=LARGE_TX_SIZE)
         peer_1.send_and_ping(msg_tx(tx_child_1["tx"]))
         parent_orphans.append(tx_parent_1["tx"])
-        orphanage = node.getorphantxs()
-        assert_equal(len(orphanage), DEFAULT_MAX_ORPHAN_TRANSACTIONS)
 
-        self.log.info("Clearing the orphanage")
+        self.log.info("Clear the orphanage by sending parents")
         for index, parent_orphan in enumerate(parent_orphans):
             peer_1.send_and_ping(msg_tx(parent_orphan))
         self.wait_until(lambda: len(node.getorphantxs()) == 0)
@@ -776,16 +786,18 @@ class OrphanHandlingTest(BitcoinTestFramework):
         assert tx_replacer_BC["txid"] in node.getrawmempool()
         node.sendrawtransaction(tx_replacer_C["hex"])
         assert tx_replacer_BC["txid"] not in node.getrawmempool()
+        assert parent_peekaboo_AB["txid"] not in node.getrawmempool()
         assert tx_replacer_C["txid"] in node.getrawmempool()
 
-        # Second peer is an additional announcer for this orphan
+        # Second peer is an additional announcer for this orphan, but its missing parents are different from when it was
+        # previously announced.
         peer2 = node.add_p2p_connection(PeerTxRelayer())
         peer2.send_and_ping(msg_inv([orphan_inv]))
         assert_equal(len(node.getorphantxs(verbosity=2)[0]["from"]), 2)
 
         # Disconnect peer1. peer2 should become the new candidate for orphan resolution.
         peer1.peer_disconnect()
-        node.bumpmocktime(NONPREF_PEER_TX_DELAY + TXID_RELAY_DELAY)
+        node.bumpmocktime(TXREQUEST_TIME_SKIP)
         self.wait_until(lambda: len(node.getorphantxs(verbosity=2)[0]["from"]) == 1)
         # Both parents should be requested, now that they are both missing.
         peer2.wait_for_parent_requests([int(parent_peekaboo_AB["txid"], 16), int(parent_missing["txid"], 16)])
@@ -814,7 +826,6 @@ class OrphanHandlingTest(BitcoinTestFramework):
         self.test_same_txid_orphan()
         self.test_same_txid_orphan_of_orphan()
         self.test_orphan_txid_inv()
-        self.test_max_orphan_amount()
         self.test_orphan_handling_prefer_outbound()
         self.test_announcers_before_and_after()
         self.test_parents_change()

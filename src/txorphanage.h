@@ -5,6 +5,7 @@
 #ifndef BITCOIN_TXORPHANAGE_H
 #define BITCOIN_TXORPHANAGE_H
 
+#include <consensus/validation.h>
 #include <net.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
@@ -59,10 +60,10 @@ public:
     void EraseForBlock(const CBlock& block);
 
     /** Limit the orphanage to the given maximum */
-    void LimitOrphans(unsigned int max_orphans, FastRandomContext& rng);
+    void LimitOrphans(unsigned int max_orphan_size, FastRandomContext& rng);
 
     /** Add any orphans that list a particular tx as a parent into the from peer's work set */
-    void AddChildrenToWorkSet(const CTransaction& tx);
+    void AddChildrenToWorkSet(const CTransaction& tx, FastRandomContext& rng);
 
     /** Does this peer have any work to do? */
     bool HaveTxToReconsider(NodeId peer);
@@ -83,23 +84,62 @@ public:
         /** Peers added with AddTx or AddAnnouncer. */
         std::set<NodeId> announcers;
         NodeSeconds nTimeExpire;
+
+        unsigned int GetSize() const {
+            return GetTransactionWeight(*tx);
+        }
     };
 
     std::vector<OrphanTxBase> GetOrphanTransactions() const;
 
+    /** Get the total weight of all orphans. If an orphan has multiple announcers, its weight is
+     * only counted once within this total. */
+    unsigned int TotalOrphanBytes() const { return m_total_orphan_size; }
+
+    /** Total weight of orphans for which this peer is an announcer. If an orphan has multiple
+     * announcers, its weight will be accounted for in each PeerOrphanInfo, so the total of all
+     * peers' BytesFromPeer() may be larger than TotalOrphanBytes(). */
+    unsigned int BytesFromPeer(NodeId peer) const {
+        auto peer_it = m_peer_orphanage_info.find(peer);
+        return peer_it == m_peer_orphanage_info.end() ? 0 : peer_it->second.m_total_size;
+    }
+
+    /** Check consistency between PeerOrphanInfo::m_iter_list and m_orphans. Recalculate the total
+     * size of orphans per peer and ensure they match what is stored in the PeerOrphanInfo. */
+    void SanityCheck() const;
+
 protected:
     struct OrphanTx : public OrphanTxBase {
-        size_t list_pos;
     };
+
+    /** Total size of all entries in m_orphans. */
+    unsigned int m_total_orphan_size{0};
 
     /** Map from wtxid to orphan transaction record. Limited by
      *  -maxorphantx/DEFAULT_MAX_ORPHAN_TRANSACTIONS */
     std::map<Wtxid, OrphanTx> m_orphans;
 
-    /** Which peer provided the orphans that need to be reconsidered */
-    std::map<NodeId, std::set<Wtxid>> m_peer_work_set;
-
     using OrphanMap = decltype(m_orphans);
+
+    struct PeerOrphanInfo {
+        /** List of transactions that should be reconsidered: added to in AddChildrenToWorkSet,
+         * removed from one-by-one with each call to GetTxToReconsider. The wtxids may refer to
+         * transactions that are no longer present in orphanage; these are lazily removed in
+         * GetTxToReconsider. */
+        std::set<Wtxid> m_work_set;
+
+        /** Orphan transactions in vector for quick random eviction */
+        std::vector<OrphanMap::iterator> m_iter_list;
+
+        /** Total weight of orphans for which this peer is an announcer.
+         * If orphans are provided by different peers, its weight will be accounted for in each
+         * PeerOrphanInfo, so the total of all peers' m_total_size may be larger than
+         * m_total_orphan_size. If a peer is removed as an announcer, even if the orphan still
+         * remains in the orphanage, this number will be decremented. */
+        unsigned int m_total_size{0};
+    };
+
+    std::map<NodeId, PeerOrphanInfo> m_peer_orphanage_info;
 
     struct IteratorComparator
     {
@@ -113,9 +153,6 @@ protected:
     /** Index from the parents' COutPoint into the m_orphans. Used
      *  to remove orphan transactions from the m_orphans */
     std::map<COutPoint, std::set<OrphanMap::iterator, IteratorComparator>> m_outpoint_to_orphan_it;
-
-    /** Orphan transactions in vector for quick random eviction */
-    std::vector<OrphanMap::iterator> m_orphan_list;
 
     /** Timestamp for the next scheduled sweep of expired orphans */
     NodeSeconds m_next_sweep{0s};
