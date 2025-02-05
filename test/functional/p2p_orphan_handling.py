@@ -3,8 +3,11 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+from decimal import Decimal
+import random
 import time
 
+from test_framework.blocktools import MAX_STANDARD_TX_WEIGHT
 from test_framework.mempool_util import tx_in_orphanage
 from test_framework.messages import (
     CInv,
@@ -17,6 +20,7 @@ from test_framework.messages import (
     msg_notfound,
     msg_tx,
     tx_from_hex,
+    WITNESS_SCALE_FACTOR,
 )
 from test_framework.p2p import (
     GETDATA_TX_INTERVAL,
@@ -585,6 +589,57 @@ class OrphanHandlingTest(BitcoinTestFramework):
         assert tx_parent["txid"] in node_mempool
         assert tx_child["txid"] in node_mempool
         assert_equal(node.getmempoolentry(tx_child["txid"])["wtxid"], tx_child["wtxid"])
+        self.wait_until(lambda: len(node.getorphantxs()) == 0)
+
+    @cleanup
+    def test_max_orphan_amount(self):
+        self.log.info("Check that we never exceed our storage limits for orphans")
+        # Allow padding of transactions.
+        ORPHAN_MULTIPLIER = 1
+        LARGE_TX_SIZE = 10000
+        effective_max_wu = ORPHAN_MULTIPLIER * MAX_STANDARD_TX_WEIGHT
+        self.restart_node(0, extra_args=[f"-maxorphantx={ORPHAN_MULTIPLIER}", f"-datacarriersize={LARGE_TX_SIZE}", "-persistmempool=0"])
+
+        node = self.nodes[0]
+        self.generate(self.wallet, 1)
+        peer_1 = node.add_p2p_connection(P2PInterface())
+
+        self.log.info("Check that orphanage is empty on start of test")
+        assert len(node.getorphantxs()) == 0
+
+        self.log.info(f"Filling up orphanage with {effective_max_wu} of orphans")
+        orphans = []
+        parent_orphans = []
+        size_left_wu = effective_max_wu
+        # Allow some buffer to avoid accidental evictions
+
+        while size_left_wu > WITNESS_SCALE_FACTOR * LARGE_TX_SIZE:
+            tx_parent_1 = self.wallet.create_self_transfer(confirmed_only=True, fee=Decimal("0.00001") * len(parent_orphans))
+            rand_wu = random.randint(800, size_left_wu)
+            tx_child_1 = self.wallet.create_self_transfer_multi(
+                utxos_to_spend=[tx_parent_1["new_utxo"]],
+                amount_per_output=1000,
+                # target_vsize=int(rand_wu / WITNESS_SCALE_FACTOR),
+            )
+
+            parent_orphans.append(tx_parent_1["tx"])
+            orphans.append(tx_child_1["tx"])
+            peer_1.send_and_ping(msg_tx(tx_child_1["tx"]))
+            print('sent')
+
+            size_left_wu -= tx_child_1["tx"].get_weight()
+            print("waiting...")
+            self.wait_until(lambda: tx_in_orphanage(node, tx_child_1["tx"]))
+
+        self.log.info("Check that we do not add more than the max orphan amount")
+        tx_parent_1 = self.wallet.create_self_transfer()
+        tx_child_1 = self.wallet.create_self_transfer(utxo_to_spend=tx_parent_1["new_utxo"], target_vsize=LARGE_TX_SIZE)
+        peer_1.send_and_ping(msg_tx(tx_child_1["tx"]))
+        parent_orphans.append(tx_parent_1["tx"])
+
+        self.log.info("Clear the orphanage by sending parents")
+        for index, parent_orphan in enumerate(parent_orphans):
+            peer_1.send_and_ping(msg_tx(parent_orphan))
         self.wait_until(lambda: len(node.getorphantxs()) == 0)
 
     @cleanup
