@@ -184,7 +184,8 @@ protected:
          * If the peer is using more than the allowed for either resource, its DoS score is > 1.
          * A peer having a DoS score > 1 does not necessarily mean that something is wrong, since we
          * do not trim unless the orphanage exceeds global limits, but it means that this peer will
-         * be selected for trimming sooner. */
+         * be selected for trimming sooner. If the global announcement or global memory usage
+         * limits are exceeded, it must be that there is a peer whose DoS score > 1. */
         FeeFrac GetDoSScore(unsigned int peer_max_ann, unsigned int peer_max_mem) {
             FeeFrac cpu_score(m_iter_list.size(), peer_max_ann);
             FeeFrac mem_score(m_total_usage, peer_max_mem);
