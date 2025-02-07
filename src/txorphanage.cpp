@@ -54,11 +54,9 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
 
     auto& orphan_list = m_peer_orphanage_info.try_emplace(peer).first->second.m_iter_list;
     std::map<NodeId, size_t> announcer_list_pos{{peer, orphan_list.size()}};
-    auto ret = m_orphans.emplace(wtxid, OrphanTx{{tx, std::move(announcer_list_pos), Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME}, m_orphan_list.size()});
+    auto ret = m_orphans.emplace(wtxid, OrphanTx{{tx, std::move(announcer_list_pos), Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME}});
     assert(ret.second);
     orphan_list.push_back(ret.first);
-
-    m_orphan_list.push_back(ret.first);
     for (const CTxIn& txin : tx->vin) {
         m_outpoint_to_orphan_it[txin.prevout].insert(ret.first);
     }
@@ -117,22 +115,11 @@ int TxOrphanage::EraseTx(const Wtxid& wtxid)
         }
     }
 
-    size_t old_pos = it->second.list_pos;
-    assert(m_orphan_list[old_pos] == it);
-    if (old_pos + 1 != m_orphan_list.size()) {
-        // Unless we're deleting the last entry in m_orphan_list, move the last
-        // entry to the position we're deleting.
-        auto it_last = m_orphan_list.back();
-        m_orphan_list[old_pos] = it_last;
-        it_last->second.list_pos = old_pos;
-    }
-
     const auto& txid = it->second.tx->GetHash();
     // Time spent in orphanage = difference between current and entry time.
     // Entry time is equal to ORPHAN_TX_EXPIRE_TIME earlier than entry's expiry.
     LogDebug(BCLog::TXPACKAGES, "   removed orphan tx %s (wtxid=%s) after %ds\n", txid.ToString(), wtxid.ToString(),
              Ticks<std::chrono::seconds>(NodeClock::now() + ORPHAN_TX_EXPIRE_TIME - it->second.nTimeExpire));
-    m_orphan_list.pop_back();
 
     m_orphans.erase(it);
     return 1;
@@ -188,13 +175,65 @@ unsigned int TxOrphanage::MaybeExpireOrphans()
 
 unsigned int TxOrphanage::MaybeTrimOrphans(unsigned int max_orphans, FastRandomContext& rng)
 {
+    // Exit early to avoid building the heap unnecessarily
+    if (!NeedsTrim(max_orphans)) return 0;
+
+    std::vector<PeerMap::iterator> peer_it_heap;
+    peer_it_heap.reserve(m_peer_orphanage_info.size());
+    for (auto it = m_peer_orphanage_info.begin(); it != m_peer_orphanage_info.end(); ++it) peer_it_heap.push_back(it);
+
+    // Sort peers that have the highest ratio of DoSiness first
+    auto compare_peer = [this](PeerMap::iterator left, PeerMap::iterator right) {
+        const auto max_ann{GetPerPeerMaxAnnouncements()};
+        const auto max_mem{GetPerPeerMaxUsage()};
+        return left->second.GetDoSScore(max_ann, max_mem) < right->second.GetDoSScore(max_ann, max_mem);
+    };
+
+    std::make_heap(peer_it_heap.begin(), peer_it_heap.end(), compare_peer);
+
     unsigned int nEvicted = 0;
-    while (m_orphans.size() > max_orphans)
+
+    // Since each iteration should remove 1 announcement, this loop runs at most m_total_announcements times.
+    // Note that we don't necessarily delete an orphan on each iteration. We might only be deleting
+    // a peer from its announcers list.
+    while (NeedsTrim(max_orphans))
     {
-        // Evict a random orphan:
-        size_t randompos = rng.randrange(m_orphan_list.size());
-        EraseTx(m_orphan_list[randompos]->first);
-        ++nEvicted;
+        if (!Assume(!peer_it_heap.empty())) break;
+        // Find the peer with the highest DoS score, which is a fraction of {usage, announcements} used
+        // over the respective allowances. This metric causes us to naturally select peers who have
+        // exceeded their limits (i.e. a DoS score > 1) before peers who haven't. However, no matter
+        // what, we evict from the DoSiest peers first. We may choose the same peer as the last
+        // iteration of this loop.
+        // Note: if ratios are the same, FeeFrac tiebreaks by denominator. In practice, since
+        // announcements is always lower, this means that a peer with only high CPU DoS score will
+        // be targeted before a peer with only high memory DoS score, even if they have the same
+        // ratios.
+        std::pop_heap(peer_it_heap.begin(), peer_it_heap.end(), compare_peer);
+        auto it_worst_peer = peer_it_heap.back();
+        peer_it_heap.pop_back();
+
+        // Evict a random orphan from this peer.
+        size_t randompos = rng.randrange(it_worst_peer->second.m_iter_list.size());
+        auto it_to_evict = it_worst_peer->second.m_iter_list.at(randompos);
+
+        // Only erase this peer as an announcer, unless it is the only announcer. Otherwise peers
+        // can selectively delete orphan transactions by announcing a lot of them.
+        if (it_to_evict->second.announcers.size() > 1) {
+            Assume(it_to_evict->second.announcers.erase(it_worst_peer->first));
+            it_worst_peer->second.m_total_usage -= it_to_evict->second.GetUsage();
+            m_total_announcements -= 1;
+            RemoveIterAt(it_worst_peer->first, randompos);
+        } else {
+            EraseTx(it_to_evict->first);
+            ++nEvicted;
+        }
+
+        // Unless this peer is empty, put it back in the heap so we continue to consider evicting its orphans.
+        // It might still be the DoSiest peer.
+        if (!it_worst_peer->second.m_iter_list.empty()) {
+            peer_it_heap.push_back(it_worst_peer);
+            std::push_heap(peer_it_heap.begin(), peer_it_heap.end(), compare_peer);
+        }
     }
     return nEvicted;
 }
@@ -413,4 +452,11 @@ void TxOrphanage::SanityCheck() const
 
     Assert(wtxids_in_peer_map.size() == m_orphans.size());
     Assert(counted_total_announcements == 0);
+}
+
+bool TxOrphanage::NeedsTrim(unsigned int max_orphans) const
+{
+    return (m_orphans.size() > max_orphans) ||
+           (m_total_announcements > GetGlobalMaxAnnouncements()) ||
+           (m_total_orphan_usage > GetGlobalMaxUsage());
 }
