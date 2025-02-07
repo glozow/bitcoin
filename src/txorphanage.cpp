@@ -140,13 +140,12 @@ void TxOrphanage::EraseForPeer(NodeId peer)
     if (nErased > 0) LogDebug(BCLog::TXPACKAGES, "Erased %d orphan transaction(s) from peer=%d\n", nErased, peer);
 }
 
-void TxOrphanage::LimitOrphans(unsigned int max_orphans, FastRandomContext& rng)
+unsigned int TxOrphanage::MaybeExpireOrphans()
 {
-    unsigned int nEvicted = 0;
+    unsigned int nErased = 0;
     auto nNow{Now<NodeSeconds>()};
     if (m_next_sweep <= nNow) {
         // Sweep out expired orphan pool entries:
-        int nErased = 0;
         auto nMinExpTime{nNow + ORPHAN_TX_EXPIRE_TIME - ORPHAN_TX_EXPIRE_INTERVAL};
         std::map<Wtxid, OrphanTx>::iterator iter = m_orphans.begin();
         while (iter != m_orphans.end())
@@ -160,8 +159,13 @@ void TxOrphanage::LimitOrphans(unsigned int max_orphans, FastRandomContext& rng)
         }
         // Sweep again 5 minutes after the next entry that expires in order to batch the linear scan.
         m_next_sweep = nMinExpTime + ORPHAN_TX_EXPIRE_INTERVAL;
-        if (nErased > 0) LogDebug(BCLog::TXPACKAGES, "Erased %d orphan tx due to expiration\n", nErased);
     }
+    return nErased;
+}
+
+unsigned int TxOrphanage::MaybeTrimOrphans(unsigned int max_orphans, FastRandomContext& rng)
+{
+    unsigned int nEvicted = 0;
     while (m_orphans.size() > max_orphans)
     {
         // Evict a random orphan:
@@ -169,6 +173,15 @@ void TxOrphanage::LimitOrphans(unsigned int max_orphans, FastRandomContext& rng)
         EraseTx(m_orphan_list[randompos]->first);
         ++nEvicted;
     }
+    return nEvicted;
+}
+
+void TxOrphanage::LimitOrphans(unsigned int max_orphans, FastRandomContext& rng)
+{
+    const auto nErased{MaybeExpireOrphans()};
+    if (nErased > 0) LogDebug(BCLog::TXPACKAGES, "Erased %u orphan tx due to expiration\n", nErased);
+
+    const auto nEvicted{MaybeTrimOrphans(max_orphans, rng)};
     if (nEvicted > 0) LogDebug(BCLog::TXPACKAGES, "orphanage overflow, removed %u tx\n", nEvicted);
 }
 
