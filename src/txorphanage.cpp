@@ -397,7 +397,8 @@ std::vector<TxOrphanage::OrphanTxBase> TxOrphanage::GetOrphanTransactions() cons
 
 void TxOrphanage::SanityCheck() const
 {
-    // Check that cached m_total_announcements is correct
+    // Check that cached m_total_announcements is correct. First count when iterating through m_orphans (counting number
+    // of announcers each), then count when iterating through peers (counting number of orphans per peer).
     unsigned int counted_total_announcements{0};
     // Check that m_total_orphan_usage is correct
     int64_t counted_total_usage{0};
@@ -425,6 +426,8 @@ void TxOrphanage::SanityCheck() const
     // previously had orphans but no longer do.
     Assert(counted_size_per_peer.size() <= m_peer_orphanage_info.size());
 
+    // Collect set of unique wtxids found in all peers' m_iter_list to ensure nothing is missing.
+    std::set<Wtxid> wtxids_in_peer_map;
     for (const auto& [peerid, info] : m_peer_orphanage_info) {
         auto it_counted = counted_size_per_peer.find(peerid);
         if (it_counted == counted_size_per_peer.end()) {
@@ -432,7 +435,16 @@ void TxOrphanage::SanityCheck() const
         } else {
             Assert(it_counted->second == info.m_total_usage);
         }
+
+        counted_total_announcements -= info.m_iter_list.size();
+        for (const auto& orphan_it : info.m_iter_list) {
+            Assume(orphan_it->second.announcers.contains(peerid));
+            wtxids_in_peer_map.insert(orphan_it->second.tx->GetWitnessHash());
+        }
     }
+
+    Assume(wtxids_in_peer_map.size() == m_orphans.size());
+    Assume(counted_total_announcements == 0);
 }
 
 bool TxOrphanage::NeedsTrim() const
