@@ -220,6 +220,42 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
     BOOST_CHECK_EQUAL(orphanage.CountOrphans(), 0);
 }
 
+BOOST_AUTO_TEST_CASE(eviction)
+{
+    FastRandomContext det_rand{true};
+    TxOrphanage orphanage;
+
+    // Send 10 orphans from 15 other peers
+    NodeId max_peer{15};
+    std::vector<unsigned int> peer_usages;
+    for (NodeId peer{0}; peer < max_peer; ++peer) {
+        for (unsigned int i{0}; i < 10; ++i) {
+            auto ptx = MakeTransactionSpending(/*outpoints=*/{}, det_rand);
+            orphanage.AddTx(ptx, peer);
+        }
+        peer_usages.emplace_back(orphanage.UsageByPeer(peer));
+    }
+
+    NodeId dos_peer{max_peer};
+    // Send max orphans from 1 peer
+    for (unsigned int i{0}; i < DEFAULT_MAX_ORPHAN_ANNOUNCEMENTS; ++i) {
+        auto ptx = MakeTransactionSpending(/*outpoints=*/{}, det_rand);
+        orphanage.AddTx(ptx, dos_peer);
+    }
+    peer_usages.emplace_back(orphanage.UsageByPeer(dos_peer));
+
+    // Force an eviction. Note that no limiting has happened yet at this point. LimitOrphans may
+    // evict more than 1 transaction. All evictions will be from the dos_peer's transactions.
+    const auto prev_count = orphanage.Size();
+    orphanage.LimitOrphans(prev_count - 1, det_rand);
+    BOOST_CHECK(orphanage.Size() <= prev_count - 1);
+
+    // The DoS peer's orphans have been evicted, nobody else's have.
+    for (NodeId peer{0}; peer <= dos_peer; ++peer) {
+        BOOST_CHECK_EQUAL(peer == dos_peer, peer_usages.at(peer) != orphanage.UsageByPeer(peer));
+    }
+}
+
 BOOST_AUTO_TEST_CASE(same_txid_diff_witness)
 {
     FastRandomContext det_rand{true};
