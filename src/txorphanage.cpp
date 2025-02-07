@@ -36,9 +36,10 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
         return false;
     }
 
-    auto ret = m_orphans.emplace(wtxid, OrphanTx{{tx, {peer}, Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME}, m_orphan_list.size()});
+    auto ret = m_orphans.emplace(wtxid, OrphanTx{{tx, {peer}, Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME}});
     assert(ret.second);
-    m_orphan_list.push_back(ret.first);
+    auto& orphan_list = m_peer_orphanage_info.try_emplace(peer).first->second.m_iter_list;
+    orphan_list.push_back(ret.first);
     for (const CTxIn& txin : tx->vin) {
         m_outpoint_to_orphan_it[txin.prevout].insert(ret.first);
     }
@@ -61,6 +62,7 @@ bool TxOrphanage::AddAnnouncer(const Wtxid& wtxid, NodeId peer)
         if (ret.second) {
             auto& peer_info = m_peer_orphanage_info.try_emplace(peer).first->second;
             peer_info.m_total_usage += it->second.GetUsage();
+            peer_info.m_iter_list.push_back(it);
             m_total_announcements += 1;
             LogDebug(BCLog::TXPACKAGES, "added peer=%d as announcer of orphan tx %s\n", peer, wtxid.ToString());
             return true;
@@ -87,29 +89,32 @@ int TxOrphanage::EraseTx(const Wtxid& wtxid)
     const auto tx_size{it->second.GetUsage()};
     m_total_orphan_usage -= tx_size;
     m_total_announcements -= it->second.announcers.size();
-    // Decrement each announcer's m_total_usage
+    // Decrement each announcer's m_total_usage and remove orphan from all m_iter_list.
     for (const auto& peer : it->second.announcers) {
         auto peer_it = m_peer_orphanage_info.find(peer);
         if (Assume(peer_it != m_peer_orphanage_info.end())) {
             peer_it->second.m_total_usage -= tx_size;
         }
+
+        // Find this orphan iter's position in the list, and delete it.
+        auto& orphan_list = peer_it->second.m_iter_list;
+        size_t old_pos = std::distance(orphan_list.begin(), std::find(orphan_list.begin(), orphan_list.end(), it));
+
+        if (!Assume(old_pos < orphan_list.size())) continue;
+        if (old_pos + 1 != orphan_list.size()) {
+            // Unless we're deleting the last entry in orphan_list, move the last
+            // entry to the position we're deleting.
+            auto it_last = orphan_list.back();
+            orphan_list[old_pos] = it_last;
+        }
+        orphan_list.pop_back();
     }
 
-    size_t old_pos = it->second.list_pos;
-    assert(m_orphan_list[old_pos] == it);
-    if (old_pos + 1 != m_orphan_list.size()) {
-        // Unless we're deleting the last entry in m_orphan_list, move the last
-        // entry to the position we're deleting.
-        auto it_last = m_orphan_list.back();
-        m_orphan_list[old_pos] = it_last;
-        it_last->second.list_pos = old_pos;
-    }
     const auto& txid = it->second.tx->GetHash();
     // Time spent in orphanage = difference between current and entry time.
     // Entry time is equal to ORPHAN_TX_EXPIRE_TIME earlier than entry's expiry.
     LogDebug(BCLog::TXPACKAGES, "   removed orphan tx %s (wtxid=%s) after %ds\n", txid.ToString(), wtxid.ToString(),
              Ticks<std::chrono::seconds>(NodeClock::now() + ORPHAN_TX_EXPIRE_TIME - it->second.nTimeExpire));
-    m_orphan_list.pop_back();
 
     m_orphans.erase(it);
     return 1;
@@ -165,13 +170,68 @@ unsigned int TxOrphanage::MaybeExpireOrphans()
 
 unsigned int TxOrphanage::MaybeTrimOrphans(unsigned int max_orphans, FastRandomContext& rng)
 {
+    // Exit early to avoid building the heap unnecessarily
+    if (!NeedsTrim() && m_orphans.size() <= max_orphans) return 0;
+
+    std::vector<PeerMap::iterator> peer_it_heap;
+    for (auto it = m_peer_orphanage_info.begin(); it != m_peer_orphanage_info.end(); ++it) peer_it_heap.push_back(it);
+    peer_it_heap.reserve(m_peer_orphanage_info.size());
+
+    // Sort peers that have the highest ratio of DoSiness first
+    auto compare_peer = [this](PeerMap::iterator left, PeerMap::iterator right) {
+        const auto max_ann{GetPerPeerMaxAnnouncements()};
+        const auto max_mem{GetPerPeerMaxUsage()};
+        return left->second.GetDoSScore(max_ann, max_mem) < right->second.GetDoSScore(max_ann, max_mem);
+    };
+
+    std::make_heap(peer_it_heap.begin(), peer_it_heap.end(), compare_peer);
+
     unsigned int nEvicted = 0;
-    while (m_orphans.size() > max_orphans)
+
+    // Since each iteration should remove 1 announcement, this loop runs at most m_total_announcements times.
+    // Note that we don't necessarily delete an orphan on each iteration. We might only be deleting
+    // a peer from its announcers list.
+    while (NeedsTrim() || m_orphans.size() > max_orphans)
     {
-        // Evict a random orphan:
-        size_t randompos = rng.randrange(m_orphan_list.size());
-        EraseTx(m_orphan_list[randompos]->first);
-        ++nEvicted;
+        if (!Assume(!peer_it_heap.empty())) break;
+        // Find the peer with the highest DoS score, which is a fraction of {usage, announcements} used
+        // over the allowance. This metric causes us to naturally select peers who have exceeded
+        // their limits (i.e. a DoS score > 1) before peers who haven't. We may choose the same peer
+        // change since the last iteration of this loop.
+        std::pop_heap(peer_it_heap.begin(), peer_it_heap.end(), compare_peer);
+        auto it_worst_peer = peer_it_heap.back();
+        peer_it_heap.pop_back();
+
+        // Evict a random orphan from this peer.
+        size_t randompos = rng.randrange(it_worst_peer->second.m_iter_list.size());
+        auto it_to_evict = it_worst_peer->second.m_iter_list.at(randompos);
+
+        // Only erase this peer as an announcer, unless it is the only announcer. Otherwise peers
+        // can selectively delete orphan transactions by announcing a lot of them.
+        if (it_to_evict->second.announcers.size() > 1) {
+            Assume(it_to_evict->second.announcers.erase(it_worst_peer->first));
+            it_worst_peer->second.m_total_usage -= it_to_evict->second.GetUsage();
+            m_total_announcements -= 1;
+
+            auto& orphan_list = it_worst_peer->second.m_iter_list;
+            if (randompos + 1 != orphan_list.size()) {
+                // Unless we're deleting the last entry in orphan_list, move the last
+                // entry to the position we're deleting.
+                auto it_last = orphan_list.back();
+                orphan_list[randompos] = it_last;
+            }
+            orphan_list.pop_back();
+        } else {
+            EraseTx(it_to_evict->first);
+            ++nEvicted;
+        }
+
+        // Unless this peer is empty, put it back in the heap so we continue to consider evicting its orphans.
+        // It might still be the DoSiest peer.
+        if (!it_worst_peer->second.m_iter_list.empty()) {
+            peer_it_heap.push_back(it_worst_peer);
+            std::push_heap(peer_it_heap.begin(), peer_it_heap.end(), compare_peer);
+        }
     }
     return nEvicted;
 }
@@ -373,4 +433,9 @@ void TxOrphanage::SanityCheck() const
             Assert(it_counted->second == info.m_total_usage);
         }
     }
+}
+
+bool TxOrphanage::NeedsTrim() const
+{
+    return (m_total_announcements > GetGlobalMaxAnnouncements()) || (m_total_orphan_usage > GetGlobalMaxUsage());
 }
