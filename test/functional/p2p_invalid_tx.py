@@ -147,14 +147,14 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         self.wait_until(lambda: 1 == len(node.getpeerinfo()), timeout=12)  # p2ps[1] is no longer connected
         assert_equal(expected_mempool, set(node.getrawmempool()))
 
-        self.log.info('Test orphan pool overflow')
+        self.log.info('Test orphan pool can store more than 100 transactions')
         orphan_tx_pool = [CTransaction() for _ in range(101)]
         for i in range(len(orphan_tx_pool)):
             orphan_tx_pool[i].vin.append(CTxIn(outpoint=COutPoint(i, 333)))
             orphan_tx_pool[i].vout.append(CTxOut(nValue=11 * COIN, scriptPubKey=SCRIPT_PUB_KEY_OP_TRUE))
 
         node.p2ps[0].send_txs_and_test(orphan_tx_pool, node, success=False)
-        self.wait_until(lambda: len(node.getorphantxs()) <= 100)
+        self.wait_until(lambda: len(node.getorphantxs()) >= 101)
 
         self.log.info('Test orphan with rejected parents')
         rejected_parent = CTransaction()
