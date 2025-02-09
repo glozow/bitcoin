@@ -247,6 +247,8 @@ void TxOrphanage::LimitOrphans(unsigned int max_orphans, FastRandomContext& rng)
 
 void TxOrphanage::AddChildrenToWorkSet(const CTransaction& tx, FastRandomContext& rng)
 {
+    std::set<NodeId> peers_workset_trimmed;
+
     for (unsigned int i = 0; i < tx.vout.size(); i++) {
         const auto it_by_prev = m_outpoint_to_orphan_it.find(COutPoint(tx.GetHash(), i));
         if (it_by_prev != m_outpoint_to_orphan_it.end()) {
@@ -264,10 +266,24 @@ void TxOrphanage::AddChildrenToWorkSet(const CTransaction& tx, FastRandomContext
                 // Get this source peer's work set, emplacing an empty set if it didn't exist
                 // (note: if this peer wasn't still connected, we would have removed the orphan tx already)
                 std::set<Wtxid>& orphan_work_set = m_peer_orphanage_info.try_emplace(announcer).first->second.m_work_set;
-                // Add this tx to the work set
-                orphan_work_set.insert(elem->first);
-                LogDebug(BCLog::TXPACKAGES, "added %s (wtxid=%s) to peer %d workset\n",
-                         tx.GetHash().ToString(), tx.GetWitnessHash().ToString(), announcer);
+
+                // If this peer's work set would exceed the maximum allowed size, trim any work
+                // items that are no longer in the orphanage. We should only do this once per peer
+                // per call to AddChildrenToWorkSet, so keep track of which peers we have trimmed.
+                // We also never need to do it more than once since evictions don't happen in this
+                // function.
+                if (orphan_work_set.size() + 1 > MAX_ORPHAN_WORK_QUEUE && !peers_workset_trimmed.contains(announcer)) {
+                    std::erase_if(orphan_work_set, [&](const auto& wtxid) { return m_orphans.contains(wtxid); });
+                    peers_workset_trimmed.insert(announcer);
+                }
+
+                // Add this tx to the work set. If the workset is full, even after trimming, don't
+                // accept any new work items until the work queue has been flushed.
+                if (orphan_work_set.size() < MAX_ORPHAN_WORK_QUEUE) {
+                    orphan_work_set.insert(elem->first);
+                    LogDebug(BCLog::TXPACKAGES, "added %s (wtxid=%s) to peer %d workset\n",
+                             tx.GetHash().ToString(), tx.GetWitnessHash().ToString(), announcer);
+                }
             }
         }
     }

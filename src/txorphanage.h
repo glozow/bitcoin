@@ -26,6 +26,8 @@ static constexpr auto ORPHAN_TX_EXPIRE_INTERVAL{5min};
 static constexpr unsigned int DEFAULT_RESERVED_ORPHAN_WEIGHT_PER_PEER{404'000};
 /** Default value for TxOrphanage::m_max_global_announcements. */
 static constexpr unsigned int DEFAULT_MAX_ORPHAN_ANNOUNCEMENTS{3000};
+/** Most amount of orphans allowed per peer work set. */
+static constexpr unsigned int MAX_ORPHAN_WORK_QUEUE{100};
 
 /** A class to track orphan transactions (failed on TX_MISSING_INPUTS)
  * Since we cannot distinguish orphans from bad transactions with
