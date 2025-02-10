@@ -133,6 +133,11 @@ public:
         return peer_it == m_peer_orphanage_info.end() ? 0 : peer_it->second.m_total_usage;
     }
 
+    unsigned int AnnouncementsByPeer(NodeId peer) const {
+        auto peer_it = m_peer_orphanage_info.find(peer);
+        return peer_it == m_peer_orphanage_info.end() ? 0 : peer_it->second.m_iter_list.size();
+    }
+
     /** Check consistency between PeerOrphanInfo and m_orphans. Recalculate counters and ensure they
      * match what is cached. */
     void SanityCheck() const;
