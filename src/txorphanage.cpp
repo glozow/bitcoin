@@ -272,7 +272,7 @@ void TxOrphanage::AddChildrenToWorkSet(const CTransaction& tx, FastRandomContext
                 // We also never need to do it more than once since evictions don't happen in this
                 // function.
                 if (orphan_work_set.size() + 1 > MAX_ORPHAN_WORK_QUEUE && !peers_workset_trimmed.contains(announcer)) {
-                    std::erase_if(orphan_work_set, [&](const auto& wtxid) { return m_orphans.contains(wtxid); });
+                    std::erase_if(orphan_work_set, [&](const auto& wtxid) { return !m_orphans.contains(wtxid); });
                     peers_workset_trimmed.insert(announcer);
                 }
 
@@ -282,6 +282,9 @@ void TxOrphanage::AddChildrenToWorkSet(const CTransaction& tx, FastRandomContext
                     orphan_work_set.insert(elem->first);
                     LogDebug(BCLog::TXPACKAGES, "added %s (wtxid=%s) to peer %d workset\n",
                              tx.GetHash().ToString(), tx.GetWitnessHash().ToString(), announcer);
+                } else {
+                    LogDebug(BCLog::TXPACKAGES, "peer %d workset full, not adding %s (wtxid=%s)\n",
+                             announcer, tx.GetHash().ToString(), tx.GetWitnessHash().ToString());
                 }
             }
         }
@@ -456,6 +459,8 @@ void TxOrphanage::SanityCheck() const
             Assert(orphan_it->second.announcers.contains(peerid));
             wtxids_in_peer_map.insert(orphan_it->second.tx->GetWitnessHash());
         }
+
+        Assert(info.m_work_set.size() <= MAX_ORPHAN_WORK_QUEUE);
     }
 
     Assert(wtxids_in_peer_map.size() == m_orphans.size());
