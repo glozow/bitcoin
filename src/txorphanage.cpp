@@ -453,13 +453,13 @@ void TxOrphanage::SanityCheck() const
 
         counted_total_announcements -= info.m_iter_list.size();
         for (const auto& orphan_it : info.m_iter_list) {
-            Assume(orphan_it->second.announcers.contains(peerid));
+            Assert(orphan_it->second.announcers.contains(peerid));
             wtxids_in_peer_map.insert(orphan_it->second.tx->GetWitnessHash());
         }
     }
 
-    Assume(wtxids_in_peer_map.size() == m_orphans.size());
-    Assume(counted_total_announcements == 0);
+    Assert(wtxids_in_peer_map.size() == m_orphans.size());
+    Assert(counted_total_announcements == 0);
 }
 
 bool TxOrphanage::NeedsTrim() const
