@@ -100,7 +100,6 @@ int TxOrphanage::EraseTx(const Wtxid& wtxid)
         auto& orphan_list = peer_it->second.m_iter_list;
         size_t old_pos = std::distance(orphan_list.begin(), std::find(orphan_list.begin(), orphan_list.end(), it));
 
-        if (!Assume(old_pos < orphan_list.size())) continue;
         if (old_pos + 1 != orphan_list.size()) {
             // Unless we're deleting the last entry in orphan_list, move the last
             // entry to the position we're deleting.
@@ -197,7 +196,7 @@ unsigned int TxOrphanage::MaybeTrimOrphans(unsigned int max_orphans, FastRandomC
         // Find the peer with the highest DoS score, which is a fraction of {usage, announcements} used
         // over the allowance. This metric causes us to naturally select peers who have exceeded
         // their limits (i.e. a DoS score > 1) before peers who haven't. We may choose the same peer
-        // change since the last iteration of this loop.
+        // as the last iteration of this loop.
         std::pop_heap(peer_it_heap.begin(), peer_it_heap.end(), compare_peer);
         auto it_worst_peer = peer_it_heap.back();
         peer_it_heap.pop_back();

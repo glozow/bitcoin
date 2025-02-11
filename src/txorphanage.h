@@ -46,8 +46,8 @@ class TxOrphanage {
     /** The maximum number of announcements across all peers, representing a computational upper bound,
      * i.e. the maximum number of evictions we might do at a time. There is no per-peer announcement
      * limit until the global limit is reached. Also, this limit is constant regardless of how many
-     * peers we have: if we only have 1 peer, this is the number of orphans they may provide. As
-     * more peers are added, each peer's allocation is reduced. */
+     * peers we have: if we only have 1 peer, this is the number of orphans they may provide before
+     * triggering eviction. As more peers are added, each peer's protected allocation is reduced. */
     unsigned int m_max_global_announcements{DEFAULT_MAX_ORPHAN_ANNOUNCEMENTS};
 public:
     TxOrphanage() = default;
