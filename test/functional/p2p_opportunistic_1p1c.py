@@ -448,7 +448,11 @@ class PackageRelayTest(BitcoinTestFramework):
 
         self.log.info("Send an orphan from a non-DoSy peer. Its orphan should not be evicted.")
         low_fee_parent = self.create_tx_below_mempoolminfee(self.wallet)
-        high_fee_child = self.wallet.create_self_transfer(utxo_to_spend=low_fee_parent["new_utxo"], fee_rate=20*FEERATE_1SAT_VB)
+        high_fee_child = self.wallet.create_self_transfer(
+            utxo_to_spend=low_fee_parent["new_utxo"],
+            fee_rate=20*FEERATE_1SAT_VB,
+            target_vsize=100000
+        )
 
         # Announce
         orphan_wtxid = high_fee_child["wtxid"]
@@ -469,6 +473,9 @@ class PackageRelayTest(BitcoinTestFramework):
         self.log.info("Send another round of very large orphans from a DoSy peer")
         for large_orphan in large_orphans[60:]:
             peer_doser.send_and_ping(msg_tx(large_orphan))
+
+        # Something was evicted; the orphanage does not contain all large orphans + the 1p1c child
+        self.wait_until(lambda: len(node.getorphantxs()) < len(large_orphans) + 1)
 
         self.log.info("Provide the orphan's parent. This 1p1c package should be successfully accepted.")
         peer_normal.send_and_ping(msg_tx(low_fee_parent["tx"]))
@@ -495,9 +502,16 @@ class PackageRelayTest(BitcoinTestFramework):
                 # runtime of this test.
                 peer_doser_batch.send_message(msg_tx(tx))
 
+        # Something was evicted
+        self.wait_until(lambda: len(node.getorphantxs()) < batch_size * num_peers)
+
         self.log.info("Send an orphan from a non-DoSy peer. Its orphan should not be evicted.")
         low_fee_parent = self.create_tx_below_mempoolminfee(self.wallet)
-        high_fee_child = self.wallet.create_self_transfer(utxo_to_spend=low_fee_parent["new_utxo"], fee_rate=20*FEERATE_1SAT_VB)
+        high_fee_child = self.wallet.create_self_transfer(
+            utxo_to_spend=low_fee_parent["new_utxo"],
+            fee_rate=20*FEERATE_1SAT_VB,
+            target_vsize=100000
+        )
 
         # Announce
         orphan_wtxid = high_fee_child["wtxid"]
@@ -521,6 +535,9 @@ class PackageRelayTest(BitcoinTestFramework):
             peer_doser_shared = node.add_p2p_connection(P2PInterface())
             for orphan in shared_orphans:
                 peer_doser_shared.send_message(msg_tx(orphan))
+
+        # Something was evicted; the orphanage does not contain all DoS orphans + the 1p1c child
+        self.wait_until(lambda: len(node.getorphantxs()) < batch_size * num_peers + len(shared_orphans) + 1)
 
         self.log.info("Provide the orphan's parent. This 1p1c package should be successfully accepted.")
         peer_normal.send_and_ping(msg_tx(low_fee_parent["tx"]))
@@ -556,13 +573,13 @@ class PackageRelayTest(BitcoinTestFramework):
         self.log.info("Check opportunistic 1p1c logic when 2 candidate children exist (parent txid == wtxid)")
         self.test_low_and_high_child(self.wallet_nonsegwit)
 
-        self.test_orphanage_dos_large()
-        self.test_orphanage_dos_many()
-
         self.test_orphan_consensus_failure()
         self.test_parent_consensus_failure()
         self.test_multiple_parents()
         self.test_other_parent_in_mempool()
+
+        self.test_orphanage_dos_large()
+        self.test_orphanage_dos_many()
 
 
 if __name__ == '__main__':
