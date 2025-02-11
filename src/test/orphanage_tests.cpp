@@ -52,7 +52,7 @@ static void MakeNewKeyWithFastRandomContext(CKey& key, FastRandomContext& rand_c
 }
 
 // Creates a transaction with 2 outputs. Spends all outpoints. If outpoints is empty, spends a random one.
-static CTransactionRef MakeTransactionSpending(const std::vector<COutPoint>& outpoints, FastRandomContext& det_rand)
+static CTransactionRef MakeTransactionSpending(const std::vector<COutPoint>& outpoints, unsigned int num_outputs, FastRandomContext& det_rand)
 {
     CKey key;
     MakeNewKeyWithFastRandomContext(key, det_rand);
@@ -67,12 +67,20 @@ static CTransactionRef MakeTransactionSpending(const std::vector<COutPoint>& out
     }
     // Ensure txid != wtxid
     tx.vin[0].scriptWitness.stack.push_back({1});
-    tx.vout.resize(2);
-    tx.vout[0].nValue = CENT;
-    tx.vout[0].scriptPubKey = GetScriptForDestination(PKHash(key.GetPubKey()));
-    tx.vout[1].nValue = 3 * CENT;
-    tx.vout[1].scriptPubKey = GetScriptForDestination(WitnessV0KeyHash(key.GetPubKey()));
+
+    // Build vout
+    assert(num_outputs > 0);
+    tx.vout.resize(num_outputs);
+    for (unsigned int o = 0; o < num_outputs; ++o) {
+        tx.vout[o].nValue = det_rand.randrange(100) * CENT;
+        tx.vout[o].scriptPubKey = CScript() << CScriptNum(det_rand.randrange(o + 100)) << OP_EQUAL;
+    }
     return MakeTransactionRef(tx);
+}
+
+static CTransactionRef MakeTransactionSpending(const std::vector<COutPoint>& outpoints, FastRandomContext& det_rand)
+{
+    return MakeTransactionSpending(outpoints, /*num_outputs=*/1, det_rand);
 }
 
 // Make another (not necessarily valid) tx with the same txid but different wtxid.
@@ -549,6 +557,7 @@ BOOST_AUTO_TEST_CASE(multiple_announcers)
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
     }
 }
+
 BOOST_AUTO_TEST_CASE(peer_worksets)
 {
     const NodeId node0{0};
@@ -599,5 +608,27 @@ BOOST_AUTO_TEST_CASE(peer_worksets)
             BOOST_CHECK(!orphanage.HaveTxFromPeer(orphan_wtxid, node));
         }
     }
+	{
+		// We will fill the orphanage with a single parent and 101 children
+		// from that single transaction to cause potential deletion of work set
+		// from peer 0.
+		auto tx_missing_parent = MakeTransactionSpending({}, /*num_outputs=*/MAX_ORPHAN_WORK_QUEUE + 1, det_rand);
+		std::vector<CTransactionRef> tx_orphans;
+		for (unsigned int i{0}; i < MAX_ORPHAN_WORK_QUEUE + 1; i++) {
+			auto tx_orphan = MakeTransactionSpending({COutPoint{tx_missing_parent->GetHash(), i}}, det_rand);
+			BOOST_CHECK(orphanage.AddTx(tx_orphan, /*peer=*/node0));
+		}
+
+		// 101 transactions in the orphanage (no trimming of orphanage yet), now
+		// add parent to work set, which will all be allocated to peer 0.
+		// work set should get trimmed exactly once down to MAX_ORPHAN_WORK_QUEUE
+		orphanage.AddChildrenToWorkSet(*tx_missing_parent, det_rand);
+		for (unsigned int i{0}; i < MAX_ORPHAN_WORK_QUEUE; i++) {
+			BOOST_CHECK(orphanage.GetTxToReconsider(node0));
+		}
+
+		// We should have emptied the work queue in MAX_ORPHAN_WORK_QUEUE steps
+		BOOST_CHECK(!orphanage.HaveTxToReconsider(node0));
+	}
 }
 BOOST_AUTO_TEST_SUITE_END()
