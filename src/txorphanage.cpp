@@ -97,6 +97,8 @@ int TxOrphanage::EraseTx(const Wtxid& wtxid)
             peer_it->second.m_total_usage -= tx_size;
             auto swapped_it = peer_it->second.RemoveIterAt(old_pos);
             if (swapped_it) swapped_it.value()->second.announcers.at(peer) = old_pos;
+            // Clean up workset so it does not contain any wtxids of transactions no longer in m_orphans.
+            peer_it->second.m_work_set.erase(wtxid);
         }
     }
 
@@ -206,6 +208,7 @@ unsigned int TxOrphanage::MaybeTrimOrphans(unsigned int max_orphans, FastRandomC
         if (it_to_evict->second.announcers.size() > 1) {
             Assume(it_to_evict->second.announcers.erase(it_worst_peer->first));
             it_worst_peer->second.m_total_usage -= it_to_evict->second.GetUsage();
+            it_worst_peer->second.m_work_set.erase(it_to_evict->second.tx->GetWitnessHash());
             m_total_announcements -= 1;
             auto swapped_it = it_worst_peer->second.RemoveIterAt(randompos);
             if (swapped_it) swapped_it.value()->second.announcers.at(it_worst_peer->first) = randompos;
@@ -441,6 +444,12 @@ void TxOrphanage::SanityCheck() const
         for (const auto& orphan_it : info.m_iter_list) {
             Assert(orphan_it->second.announcers.contains(peerid));
             wtxids_in_peer_map.insert(orphan_it->second.tx->GetWitnessHash());
+        }
+        // The work set is always a subset of the announcements.
+        for (const auto& wtxid : info.m_work_set) {
+            Assert(std::find_if(info.m_iter_list.begin(), info.m_iter_list.end(), [&](const auto& orphan_it) {
+                return orphan_it->second.tx->GetWitnessHash() == wtxid;
+            }) != info.m_iter_list.end());
         }
     }
 
