@@ -81,8 +81,9 @@ public:
     /** Allows providing orphan information externally */
     struct OrphanTxBase {
         CTransactionRef tx;
-        /** Peers added with AddTx or AddAnnouncer. */
-        std::set<NodeId> announcers;
+        /** Peers added with AddTx or AddAnnouncer, mapping to the position in that
+         * peer's PeerOrphanInfo::m_iter_list. */
+        std::map<NodeId, size_t> announcers;
         NodeSeconds nTimeExpire;
 
         /** Get the weight of this transaction, an approximation of its memory usage. */
@@ -105,6 +106,14 @@ public:
         return peer_it == m_peer_orphanage_info.end() ? 0 : peer_it->second.m_total_usage;
     }
 
+    /** Number of orphans for which this peer is an announcer. If an orphan has multiple announcers,
+     * it is accounted for in each PeerOrphanInfo, so the total of all peers' AnnouncementsByPeer()
+     * may be larger than Size().. */
+    unsigned int AnnouncementsByPeer(NodeId peer) const {
+        auto peer_it = m_peer_orphanage_info.find(peer);
+        return peer_it == m_peer_orphanage_info.end() ? 0 : peer_it->second.m_iter_list.size();
+    }
+
     /** Check consistency between PeerOrphanInfo and m_orphans. Recalculate counters and ensure they
      * match what is cached. */
     void SanityCheck() const;
@@ -125,6 +134,8 @@ protected:
      *  -maxorphantx/DEFAULT_MAX_ORPHAN_TRANSACTIONS */
     std::map<Wtxid, OrphanTx> m_orphans;
 
+    using OrphanMap = decltype(m_orphans);
+
     struct PeerOrphanInfo {
         /** List of transactions that should be reconsidered: added to in AddChildrenToWorkSet,
          * removed from one-by-one with each call to GetTxToReconsider. The wtxids may refer to
@@ -138,10 +149,11 @@ protected:
          * m_total_orphan_size. If a peer is removed as an announcer, even if the orphan still
          * remains in the orphanage, this number will be decremented. */
         int64_t m_total_usage{0};
+
+        /** Orphan transactions announced by this peer. */
+        std::vector<OrphanMap::iterator> m_iter_list;
     };
     std::map<NodeId, PeerOrphanInfo> m_peer_orphanage_info;
-
-    using OrphanMap = decltype(m_orphans);
 
     struct IteratorComparator
     {
@@ -168,6 +180,10 @@ protected:
 
     /** If there are more than max_orphans total orphans, evict randomly until that is no longer the case. */
     unsigned int MaybeTrimOrphans(unsigned int max_orphans, FastRandomContext& rng);
+
+    /** Remove the element at list_pos in m_iter_list in O(1) time by swapping the last element
+     * with the one at list_pos and popping the back if there are multiple elements. */
+    void RemoveIterAt(NodeId peer, size_t list_pos);
 };
 
 #endif // BITCOIN_TXORPHANAGE_H
