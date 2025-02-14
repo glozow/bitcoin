@@ -36,8 +36,12 @@ bool TxOrphanage::AddTx(const CTransactionRef& tx, NodeId peer)
         return false;
     }
 
-    auto ret = m_orphans.emplace(wtxid, OrphanTx{{tx, {peer}, Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME}, m_orphan_list.size()});
+    auto& orphan_list = m_peer_orphanage_info.try_emplace(peer).first->second.m_iter_list;
+    std::map<NodeId, size_t> announcer_list_pos{{peer, orphan_list.size()}};
+    auto ret = m_orphans.emplace(wtxid, OrphanTx{{tx, announcer_list_pos, Now<NodeSeconds>() + ORPHAN_TX_EXPIRE_TIME}, m_orphan_list.size()});
     assert(ret.second);
+    orphan_list.push_back(ret.first);
+
     m_orphan_list.push_back(ret.first);
     for (const CTxIn& txin : tx->vin) {
         m_outpoint_to_orphan_it[txin.prevout].insert(ret.first);
@@ -57,10 +61,11 @@ bool TxOrphanage::AddAnnouncer(const Wtxid& wtxid, NodeId peer)
     const auto it = m_orphans.find(wtxid);
     if (it != m_orphans.end()) {
         Assume(!it->second.announcers.empty());
-        const auto ret = it->second.announcers.insert(peer);
+        auto& peer_info = m_peer_orphanage_info.try_emplace(peer).first->second;
+        const auto ret = it->second.announcers.emplace(peer, peer_info.m_iter_list.size());
         if (ret.second) {
-            auto& peer_info = m_peer_orphanage_info.try_emplace(peer).first->second;
             peer_info.m_total_usage += it->second.GetUsage();
+            peer_info.m_iter_list.push_back(it);
             m_total_announcements += 1;
             LogDebug(BCLog::TXPACKAGES, "added peer=%d as announcer of orphan tx %s\n", peer, wtxid.ToString());
             return true;
@@ -87,11 +92,13 @@ int TxOrphanage::EraseTx(const Wtxid& wtxid)
     const auto tx_size{it->second.GetUsage()};
     m_total_orphan_usage -= tx_size;
     m_total_announcements -= it->second.announcers.size();
-    // Decrement each announcer's m_total_usage
-    for (const auto& peer : it->second.announcers) {
+    // Decrement each announcer's m_total_usage and remove orphan from all m_iter_list.
+    for (const auto& [peer, old_pos] : it->second.announcers) {
         auto peer_it = m_peer_orphanage_info.find(peer);
         if (Assume(peer_it != m_peer_orphanage_info.end())) {
             peer_it->second.m_total_usage -= tx_size;
+            auto swapped_it = peer_it->second.RemoveIterAt(old_pos);
+            if (swapped_it) swapped_it.value()->second.announcers.at(peer) = old_pos;
         }
     }
 
@@ -104,6 +111,7 @@ int TxOrphanage::EraseTx(const Wtxid& wtxid)
         m_orphan_list[old_pos] = it_last;
         it_last->second.list_pos = old_pos;
     }
+
     const auto& txid = it->second.tx->GetHash();
     // Time spent in orphanage = difference between current and entry time.
     // Entry time is equal to ORPHAN_TX_EXPIRE_TIME earlier than entry's expiry.
@@ -199,7 +207,7 @@ void TxOrphanage::AddChildrenToWorkSet(const CTransaction& tx, FastRandomContext
                 // from processing the orphan by disconnecting.
                 auto announcer_iter = std::begin(elem->second.announcers);
                 std::advance(announcer_iter, rng.randrange(elem->second.announcers.size()));
-                auto announcer = *(announcer_iter);
+                auto announcer = announcer_iter->first;
 
                 // Get this source peer's work set, emplacing an empty set if it didn't exist
                 // (note: if this peer wasn't still connected, we would have removed the orphan tx already)
@@ -337,7 +345,8 @@ std::vector<TxOrphanage::OrphanTxBase> TxOrphanage::GetOrphanTransactions() cons
 
 void TxOrphanage::SanityCheck() const
 {
-    // Check that cached m_total_announcements is correct
+    // Check that cached m_total_announcements is correct. First count when iterating through m_orphans (counting number
+    // of announcers each), then count when iterating through peers (counting number of orphans per peer).
     unsigned int counted_total_announcements{0};
     // Check that m_total_orphan_usage is correct
     int64_t counted_total_usage{0};
@@ -350,9 +359,14 @@ void TxOrphanage::SanityCheck() const
         counted_total_usage += orphan.GetUsage();
 
         Assert(!orphan.announcers.empty());
-        for (const auto& peer : orphan.announcers) {
+        for (const auto& [peer, list_pos] : orphan.announcers) {
             auto& count_peer_entry = counted_size_per_peer.try_emplace(peer).first->second;
             count_peer_entry += orphan.GetUsage();
+
+            // Check that list_pos is accurate
+            auto peer_it = m_peer_orphanage_info.find(peer);
+            Assert(peer_it != m_peer_orphanage_info.end());
+            Assert(peer_it->second.m_iter_list.at(list_pos)->first == wtxid);
         }
     }
 
@@ -365,6 +379,8 @@ void TxOrphanage::SanityCheck() const
     // previously had orphans but no longer do.
     Assert(counted_size_per_peer.size() <= m_peer_orphanage_info.size());
 
+    // Collect set of unique wtxids found in all peers' m_iter_list to ensure nothing is missing.
+    std::set<Wtxid> wtxids_in_peer_map;
     for (const auto& [peerid, info] : m_peer_orphanage_info) {
         auto it_counted = counted_size_per_peer.find(peerid);
         if (it_counted == counted_size_per_peer.end()) {
@@ -372,5 +388,14 @@ void TxOrphanage::SanityCheck() const
         } else {
             Assert(it_counted->second == info.m_total_usage);
         }
+
+        counted_total_announcements -= info.m_iter_list.size();
+        for (const auto& orphan_it : info.m_iter_list) {
+            Assert(orphan_it->second.announcers.contains(peerid));
+            wtxids_in_peer_map.insert(orphan_it->second.tx->GetWitnessHash());
+        }
     }
+
+    Assert(wtxids_in_peer_map.size() == m_orphans.size());
+    Assert(counted_total_announcements == 0);
 }
