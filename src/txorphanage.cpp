@@ -307,7 +307,7 @@ bool TxOrphanage::HaveTxToReconsider(NodeId peer)
 
 void TxOrphanage::EraseForBlock(const CBlock& block)
 {
-    std::vector<Wtxid> vOrphanErase;
+    std::set<Wtxid> wtxids_to_erase;
 
     for (const CTransactionRef& ptx : block.vtx) {
         const CTransaction& tx = *ptx;
@@ -318,16 +318,16 @@ void TxOrphanage::EraseForBlock(const CBlock& block)
             if (itByPrev == m_outpoint_to_orphan_it.end()) continue;
             for (auto mi = itByPrev->second.begin(); mi != itByPrev->second.end(); ++mi) {
                 const CTransaction& orphanTx = *(*mi)->second.tx;
-                vOrphanErase.push_back(orphanTx.GetWitnessHash());
+                wtxids_to_erase.insert(orphanTx.GetWitnessHash());
             }
         }
     }
 
     // Erase orphan transactions included or precluded by this block
-    if (vOrphanErase.size()) {
+    if (wtxids_to_erase.size()) {
         int nErased = 0;
-        for (const auto& orphanHash : vOrphanErase) {
-            nErased += EraseTx(orphanHash);
+        for (const auto& wtxid : wtxids_to_erase) {
+            nErased += EraseTx(wtxid);
         }
         LogDebug(BCLog::TXPACKAGES, "Erased %d orphan transaction(s) included or conflicted by block\n", nErased);
     }
