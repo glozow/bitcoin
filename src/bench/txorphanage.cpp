@@ -87,6 +87,7 @@ static void OrphanageEraseForBlockSinglePeer(benchmark::Bench& bench)
         TxOrphanage orphanage;
 
         // Every orphan was provided by the same peer.
+        // This part takes significantly longer than EraseForBlock.
         NodeId peer{2};
         for (const auto& orphan : orphans) {
             Assert(orphanage.AddTx(orphan, peer));
@@ -95,7 +96,6 @@ static void OrphanageEraseForBlockSinglePeer(benchmark::Bench& bench)
 
         // Every orphan needs to be deleted because they all conflict with the block.
         orphanage.EraseForBlock(block);
-        Assert(orphanage.Size() == 0);
     });
 }
 

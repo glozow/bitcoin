@@ -8,6 +8,7 @@
 #include <logging.h>
 #include <policy/policy.h>
 #include <primitives/transaction.h>
+#include <util/hasher.h>
 #include <util/time.h>
 
 #include <cassert>
@@ -321,7 +322,7 @@ bool TxOrphanage::HaveTxToReconsider(NodeId peer)
 
 void TxOrphanage::EraseForBlock(const CBlock& block)
 {
-    std::vector<Wtxid> vOrphanErase;
+    std::unordered_set<Wtxid, SaltedTxidHasher> wtxids_to_erase;
 
     for (const CTransactionRef& ptx : block.vtx) {
         const CTransaction& tx = *ptx;
@@ -332,16 +333,19 @@ void TxOrphanage::EraseForBlock(const CBlock& block)
             if (itByPrev == m_outpoint_to_orphan_it.end()) continue;
             for (auto mi = itByPrev->second.begin(); mi != itByPrev->second.end(); ++mi) {
                 const CTransaction& orphanTx = *(*mi)->second.tx;
-                vOrphanErase.push_back(orphanTx.GetWitnessHash());
+                wtxids_to_erase.insert(orphanTx.GetWitnessHash());
+                // Stop to avoid doing too much work. If there are more orphans to erase, rely on
+                // expiration and evictions to clean up everything eventually.
+                if (wtxids_to_erase.size() >= 100) break;
             }
         }
     }
 
     // Erase orphan transactions included or precluded by this block
-    if (vOrphanErase.size()) {
+    if (wtxids_to_erase.size()) {
         int nErased = 0;
-        for (const auto& orphanHash : vOrphanErase) {
-            nErased += EraseTx(orphanHash);
+        for (const auto& wtxid : wtxids_to_erase) {
+            nErased += EraseTx(wtxid);
         }
         LogDebug(BCLog::TXPACKAGES, "Erased %d orphan transaction(s) included or conflicted by block\n", nErased);
     }
