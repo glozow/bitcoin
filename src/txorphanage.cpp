@@ -319,8 +319,16 @@ void TxOrphanage::EraseForBlock(const CBlock& block)
             for (auto mi = itByPrev->second.begin(); mi != itByPrev->second.end(); ++mi) {
                 const CTransaction& orphanTx = *(*mi)->second.tx;
                 wtxids_to_erase.insert(orphanTx.GetWitnessHash());
+                // Theoretically, every tx in the orphanage could be conflicting with this block.
+                // Allow 1 orphan per input, even if the orphan already exists in wtxids_to_erase.
+                // It should be uncommon for multiple orphans to spend the same outpoint or for a
+                // single orphan to spend multiple outputs from the same tx. If these scenarios
+                // occur, we rely on expiration and evictions to clean up everything eventually.
+                break;
             }
         }
+        // Stop at 1000 to avoid doing too much work.
+        if (wtxids_to_erase.size() >= 1000) break;
     }
 
     // Erase orphan transactions included or precluded by this block

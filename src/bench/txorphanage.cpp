@@ -47,7 +47,7 @@ static CTransactionRef MakeTransactionSpending(const std::vector<COutPoint>& out
 static void OrphanageEraseForBlockSinglePeer(benchmark::Bench& bench)
 {
     FastRandomContext det_rand{true};
-    unsigned int num_orphans{DEFAULT_MAX_ORPHAN_TRANSACTIONS};
+    unsigned int num_orphans{3000};
     unsigned int num_outputs{1500};
 
     // Create big parent with many outputs.
@@ -74,6 +74,7 @@ static void OrphanageEraseForBlockSinglePeer(benchmark::Bench& bench)
         TxOrphanage orphanage;
 
         // Every orphan was provided by the same peer.
+        // This part takes significantly longer than EraseForBlock.
         NodeId peer{2};
         for (const auto& orphan : child_txns) {
             Assert(orphanage.AddTx(orphan, peer));
@@ -82,7 +83,6 @@ static void OrphanageEraseForBlockSinglePeer(benchmark::Bench& bench)
 
         // Every orphan needs to be deleted because they all conflict with the block.
         orphanage.EraseForBlock(block);
-        Assert(orphanage.Size() == 0);
     });
 }
 
