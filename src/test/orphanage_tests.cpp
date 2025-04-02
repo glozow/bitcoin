@@ -4,6 +4,7 @@
 
 #include <arith_uint256.h>
 #include <consensus/validation.h>
+#include <node/txorphanage_impl.h>
 #include <policy/policy.h>
 #include <primitives/transaction.h>
 #include <pubkey.h>
@@ -262,6 +263,34 @@ BOOST_AUTO_TEST_CASE(same_txid_diff_witness)
     BOOST_CHECK_EQUAL(orphanage.EraseTx(normal_wtxid), 1);
     BOOST_CHECK(!orphanage.HaveTx(normal_wtxid));
     BOOST_CHECK(!orphanage.HaveTx(mutated_wtxid));
+
+    TxOrphanageImpl txorphanage_impl;
+
+    BOOST_CHECK(txorphanage_impl.AddTx(child_normal, peer));
+    // EraseTx fails as transaction by this wtxid doesn't exist.
+    BOOST_CHECK_EQUAL(txorphanage_impl.EraseTx(mutated_wtxid), 0);
+    BOOST_CHECK(txorphanage_impl.HaveTx(normal_wtxid));
+    BOOST_CHECK(txorphanage_impl.GetTx(normal_wtxid) == child_normal);
+    BOOST_CHECK(!txorphanage_impl.HaveTx(mutated_wtxid));
+    BOOST_CHECK(txorphanage_impl.GetTx(mutated_wtxid) == nullptr);
+
+    // Must succeed. Both transactions should be present in txorphanage_impl.
+    BOOST_CHECK(txorphanage_impl.AddTx(child_mutated, peer));
+    BOOST_CHECK(txorphanage_impl.HaveTx(normal_wtxid));
+    BOOST_CHECK(txorphanage_impl.HaveTx(mutated_wtxid));
+
+    // Outpoints map should track all entries: check that both are returned as children of the parent.
+    // std::set<CTransactionRef> expected_children{child_normal, child_mutated};
+    // BOOST_CHECK(EqualTxns(expected_children, txorphanage_impl.GetChildrenFromSamePeer(parent, peer)));
+
+    // Erase by wtxid: mutated first
+    BOOST_CHECK_EQUAL(txorphanage_impl.EraseTx(mutated_wtxid), 1);
+    BOOST_CHECK(txorphanage_impl.HaveTx(normal_wtxid));
+    BOOST_CHECK(!txorphanage_impl.HaveTx(mutated_wtxid));
+
+    BOOST_CHECK_EQUAL(txorphanage_impl.EraseTx(normal_wtxid), 1);
+    BOOST_CHECK(!txorphanage_impl.HaveTx(normal_wtxid));
+    BOOST_CHECK(!txorphanage_impl.HaveTx(mutated_wtxid));
 }
 
 
@@ -438,59 +467,81 @@ BOOST_AUTO_TEST_CASE(multiple_announcers)
     FastRandomContext det_rand{true};
     TxOrphanageTest orphanage{det_rand};
 
+    TxOrphanageImpl txorphanage_impl;
+    txorphanage_impl.SanityCheck();
+
     // Check accounting per peer.
     // Check that EraseForPeer works with multiple announcers.
     {
         auto ptx = MakeTransactionSpending({}, det_rand);
         const auto& wtxid = ptx->GetWitnessHash();
         BOOST_CHECK(orphanage.AddTx(ptx, node0));
+        BOOST_CHECK(txorphanage_impl.AddTx(ptx, node0));
         BOOST_CHECK(orphanage.HaveTx(wtxid));
         expected_total_count += 1;
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
 
         // Adding again should do nothing.
         BOOST_CHECK(!orphanage.AddTx(ptx, node0));
+        BOOST_CHECK(!txorphanage_impl.AddTx(ptx, node0));
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
 
         // We can add another tx with the same txid but different witness.
         auto ptx_mutated{MakeMutation(ptx)};
         BOOST_CHECK(orphanage.AddTx(ptx_mutated, node0));
+        BOOST_CHECK(txorphanage_impl.AddTx(ptx_mutated, node0));
         BOOST_CHECK(orphanage.HaveTx(ptx_mutated->GetWitnessHash()));
         expected_total_count += 1;
 
         BOOST_CHECK(!orphanage.AddTx(ptx, node0));
+        BOOST_CHECK(!txorphanage_impl.AddTx(ptx, node0));
 
         // Adding a new announcer should not change overall accounting.
         BOOST_CHECK(orphanage.AddAnnouncer(ptx->GetWitnessHash(), node2));
+        BOOST_CHECK(txorphanage_impl.AddAnnouncer(ptx->GetWitnessHash(), node2));
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
 
         // If we already have this announcer, AddAnnouncer returns false.
         BOOST_CHECK(orphanage.HaveTxFromPeer(ptx->GetWitnessHash(), node2));
         BOOST_CHECK(!orphanage.AddAnnouncer(ptx->GetWitnessHash(), node2));
+        BOOST_CHECK(txorphanage_impl.HaveTxFromPeer(ptx->GetWitnessHash(), node2));
+        BOOST_CHECK(!txorphanage_impl.AddAnnouncer(ptx->GetWitnessHash(), node2));
+        txorphanage_impl.SanityCheck();
 
         // Same with using AddTx for an existing tx, which is equivalent to using AddAnnouncer
         BOOST_CHECK(!orphanage.AddTx(ptx, node1));
+        BOOST_CHECK(!txorphanage_impl.AddTx(ptx, node1));
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
 
         // if EraseForPeer is called for an orphan with multiple announcers, the orphanage should only
         // erase that peer from the announcers set.
         orphanage.EraseForPeer(node0);
+        txorphanage_impl.EraseForPeer(node0);
         BOOST_CHECK(orphanage.HaveTx(ptx->GetWitnessHash()));
         BOOST_CHECK(!orphanage.HaveTxFromPeer(ptx->GetWitnessHash(), node0));
+        BOOST_CHECK(txorphanage_impl.HaveTx(ptx->GetWitnessHash()));
+        BOOST_CHECK(!txorphanage_impl.HaveTxFromPeer(ptx->GetWitnessHash(), node0));
         // node0 is the only one that announced ptx_mutated
         BOOST_CHECK(!orphanage.HaveTx(ptx_mutated->GetWitnessHash()));
+        BOOST_CHECK(!txorphanage_impl.HaveTx(ptx_mutated->GetWitnessHash()));
         expected_total_count -= 1;
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
 
         // EraseForPeer should delete the orphan if it's the only announcer left.
         orphanage.EraseForPeer(node1);
+        txorphanage_impl.EraseForPeer(node1);
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
         BOOST_CHECK(orphanage.HaveTx(ptx->GetWitnessHash()));
+        BOOST_CHECK(txorphanage_impl.HaveTx(ptx->GetWitnessHash()));
         orphanage.EraseForPeer(node2);
+        txorphanage_impl.EraseForPeer(node2);
         expected_total_count -= 1;
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
         BOOST_CHECK(!orphanage.HaveTx(ptx->GetWitnessHash()));
+        BOOST_CHECK(!txorphanage_impl.HaveTx(ptx->GetWitnessHash()));
     }
+
+    txorphanage_impl.SanityCheck();
 
     // Check that erasure for blocks removes for all peers.
     {
@@ -499,6 +550,8 @@ BOOST_AUTO_TEST_CASE(multiple_announcers)
         block.vtx.emplace_back(tx_block);
         BOOST_CHECK(orphanage.AddTx(tx_block, node0));
         BOOST_CHECK(!orphanage.AddTx(tx_block, node1));
+        BOOST_CHECK(txorphanage_impl.AddTx(tx_block, node0));
+        BOOST_CHECK(!txorphanage_impl.AddTx(tx_block, node1));
 
         expected_total_count += 1;
 
@@ -510,6 +563,7 @@ BOOST_AUTO_TEST_CASE(multiple_announcers)
 
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
     }
+    txorphanage_impl.SanityCheck();
 }
 BOOST_AUTO_TEST_CASE(peer_worksets)
 {
@@ -561,5 +615,10 @@ BOOST_AUTO_TEST_CASE(peer_worksets)
             BOOST_CHECK(!orphanage.HaveTxFromPeer(orphan_wtxid, node));
         }
     }
+}
+BOOST_AUTO_TEST_CASE(orphanage_impl)
+{
+    TxOrphanageImpl txorphanage_impl;
+    txorphanage_impl.SanityCheck();
 }
 BOOST_AUTO_TEST_SUITE_END()
