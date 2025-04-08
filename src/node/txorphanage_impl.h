@@ -247,5 +247,26 @@ public:
         }
         return num_erased;
     }
+
+    /** Return whether there is a tx that can be reconsidered. */
+    bool HaveTxToReconsider(NodeId peer) const
+    {
+        auto it = m_orphans.get<ByPeer>().lower_bound(ByPeerView{peer, true, 0});
+        return it != m_orphans.get<ByPeer>().end() && it->m_announcer == peer && it->m_reconsider;
+    }
+
+    /** If there is a tx that can be reconsidered, return it. Otherwise, return a nullptr. */
+    CTransactionRef GetTxToReconsider(NodeId peer)
+    {
+        auto it = m_orphans.get<ByPeer>().lower_bound(ByPeerView{peer, true, 0});
+        if (it != m_orphans.get<ByPeer>().end() && it->m_announcer == peer && it->m_reconsider) {
+            // Flip m_reconsider. Even if this transaction stays in orphanage, it shouldn't be
+            // reconsidered again until there is a new reason to do so.
+            auto mark_reconsidered_modifier = [](auto& ann) { ann.m_reconsider = false; };
+            m_orphans.get<ByPeer>().modify(it, mark_reconsidered_modifier);
+            return it->m_tx;
+        }
+        return nullptr;
+    }
 };
 #endif // BITCOIN_TXMEMPOOL_H
