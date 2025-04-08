@@ -478,20 +478,25 @@ BOOST_AUTO_TEST_CASE(multiple_announcers)
         BOOST_CHECK(orphanage.AddTx(ptx, node0));
         BOOST_CHECK(txorphanage_impl.AddTx(ptx, node0));
         BOOST_CHECK(orphanage.HaveTx(wtxid));
+        BOOST_CHECK(txorphanage_impl.HaveTx(wtxid));
         expected_total_count += 1;
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK_EQUAL(txorphanage_impl.CountAnnouncements(), 1);
 
         // Adding again should do nothing.
         BOOST_CHECK(!orphanage.AddTx(ptx, node0));
         BOOST_CHECK(!txorphanage_impl.AddTx(ptx, node0));
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK_EQUAL(txorphanage_impl.CountAnnouncements(), 1);
 
         // We can add another tx with the same txid but different witness.
         auto ptx_mutated{MakeMutation(ptx)};
         BOOST_CHECK(orphanage.AddTx(ptx_mutated, node0));
-        BOOST_CHECK(txorphanage_impl.AddTx(ptx_mutated, node0));
         BOOST_CHECK(orphanage.HaveTx(ptx_mutated->GetWitnessHash()));
         expected_total_count += 1;
+        BOOST_CHECK(txorphanage_impl.AddTx(ptx_mutated, node0));
+        BOOST_CHECK(txorphanage_impl.HaveTx(ptx_mutated->GetWitnessHash()));
+        BOOST_CHECK_EQUAL(txorphanage_impl.CountAnnouncements(), 2);
 
         BOOST_CHECK(!orphanage.AddTx(ptx, node0));
         BOOST_CHECK(!txorphanage_impl.AddTx(ptx, node0));
@@ -499,6 +504,7 @@ BOOST_AUTO_TEST_CASE(multiple_announcers)
         // Adding a new announcer should not change overall accounting.
         BOOST_CHECK(orphanage.AddAnnouncer(ptx->GetWitnessHash(), node2));
         BOOST_CHECK(txorphanage_impl.AddAnnouncer(ptx->GetWitnessHash(), node2));
+        BOOST_CHECK_EQUAL(txorphanage_impl.CountAnnouncements(), 3);
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
 
         // If we already have this announcer, AddAnnouncer returns false.
@@ -506,12 +512,14 @@ BOOST_AUTO_TEST_CASE(multiple_announcers)
         BOOST_CHECK(!orphanage.AddAnnouncer(ptx->GetWitnessHash(), node2));
         BOOST_CHECK(txorphanage_impl.HaveTxFromPeer(ptx->GetWitnessHash(), node2));
         BOOST_CHECK(!txorphanage_impl.AddAnnouncer(ptx->GetWitnessHash(), node2));
+        BOOST_CHECK_EQUAL(txorphanage_impl.CountAnnouncements(), 3);
         txorphanage_impl.SanityCheck();
 
         // Same with using AddTx for an existing tx, which is equivalent to using AddAnnouncer
         BOOST_CHECK(!orphanage.AddTx(ptx, node1));
         BOOST_CHECK(!txorphanage_impl.AddTx(ptx, node1));
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK_EQUAL(txorphanage_impl.CountAnnouncements(), 4);
 
         // if EraseForPeer is called for an orphan with multiple announcers, the orphanage should only
         // erase that peer from the announcers set.
@@ -541,6 +549,7 @@ BOOST_AUTO_TEST_CASE(multiple_announcers)
         BOOST_CHECK(!txorphanage_impl.HaveTx(ptx->GetWitnessHash()));
     }
 
+    BOOST_CHECK_EQUAL(orphanage.Size(), 0);
     txorphanage_impl.SanityCheck();
 
     // Check that erasure for blocks removes for all peers.
@@ -556,12 +565,16 @@ BOOST_AUTO_TEST_CASE(multiple_announcers)
         expected_total_count += 1;
 
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK_EQUAL(txorphanage_impl.CountAnnouncements(), 2);
 
         orphanage.EraseForBlock(block);
+        txorphanage_impl.SanityCheck();
+        BOOST_CHECK_EQUAL(txorphanage_impl.EraseForBlock(block), 1);
 
         expected_total_count -= 1;
 
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
+        BOOST_CHECK_EQUAL(txorphanage_impl.CountAnnouncements(), 0);
     }
     txorphanage_impl.SanityCheck();
 }

@@ -97,6 +97,10 @@ class TxOrphanageImpl
     using Iter = typename OrphanMap::index<Tag>::type::iterator;
     OrphanMap m_orphans;
 
+    /** Index from the parents' outputs to wtxids that exist in m_orphans. Used to find children of
+     * a transaction that can be reconsidered and to remove entries that conflict with a block.*/
+    std::map<COutPoint, std::set<Wtxid>> m_outpoint_to_orphan_it;
+
     struct PeerInfo {
         UsageBytes m_total_usage{0};
         int64_t m_count_announcements{0};
@@ -132,20 +136,50 @@ class TxOrphanageImpl
         return result;
     }
 
-    /** Erase from m_orphans and update m_peer_orphanage_info. */
+    /** Erase from m_orphans and update m_peer_orphanage_info.
+     * If cleanup_outpoints_map is true, removes this wtxid from the sets corresponding to each
+     * outpoint in m_outpoint_to_orphan_it. The caller must remember to set this to true when all
+     * announcements for a transaction are erased, otherwise m_outpoint_to_orphan_it will keep
+     * growing. Set it to false when other announcements for the same tx exist.
+     */
     template<typename Tag>
-    Iter<Tag> Erase(Iter<Tag> it)
+    void Erase(Iter<Tag> it, bool cleanup_outpoints_map)
     {
+        // Update m_peer_orphanage_info and clean up entries if they point to an empty struct.
+        // This means peers that are not storing any orphans do not have an entry in
+        // m_peer_orphanage_info (they can be added back later if they announce another orphan) and
+        // ensures disconnected peers are not tracked forever.
         auto peer_it = m_peer_orphanage_info.find(it->m_announcer);
-        // Clean up m_peer_orphanage_info entries if they become empty.
         if (peer_it->second.Subtract(*it)) m_peer_orphanage_info.erase(peer_it);
-        return m_orphans.get<Tag>().erase(it);
+
+        if (cleanup_outpoints_map) {
+            // Remove references in m_outpoint_to_orphan_it
+            const auto& wtxid{it->m_tx->GetWitnessHash()};
+            for (const auto& input : it->m_tx->vin) {
+                auto it_prev = m_outpoint_to_orphan_it.find(input.prevout);
+                if (it_prev != m_outpoint_to_orphan_it.end()) {
+                    it_prev->second.erase(wtxid);
+                    // Clean up keys if they point to an empty set.
+                    if (it_prev->second.empty()) {
+                        m_outpoint_to_orphan_it.erase(it_prev);
+                    }
+                }
+            }
+        }
+        m_orphans.get<Tag>().erase(it);
     }
 public:
+    /** Number of announcements ones for the same wtxid are not de-duplicated. */
+    unsigned int CountAnnouncements() const { return m_orphans.size(); }
+
     void SanityCheck() const
     {
         // Recalculate the per-peer stats from m_orphans and compare to m_peer_orphanage_info
         assert(RecomputePeerInfo() == m_peer_orphanage_info);
+
+        // TODO: replace with a check that every outpoint points to a tx that exists, and every
+        // input of each orphan is tracked properly
+        assert(m_orphans.empty() == m_outpoint_to_orphan_it.empty());
     }
 
     bool AddTx(const CTransactionRef& tx, NodeId peer)
@@ -163,6 +197,12 @@ public:
         ++m_current_sequence;
         auto& peer_info = m_peer_orphanage_info.try_emplace(peer).first->second;
         peer_info.Add(*ret.first);
+
+        // Add links in m_outpoint_to_orphan_it
+        for (const auto& input : tx->vin) {
+            auto& wtxids_for_prevout = m_outpoint_to_orphan_it.try_emplace(input.prevout).first->second;
+            wtxids_for_prevout.emplace(wtxid);
+        }
         return brand_new;
     }
 
@@ -187,6 +227,7 @@ public:
         ++m_current_sequence;
         auto& peer_info = m_peer_orphanage_info.try_emplace(peer).first->second;
         peer_info.Add(*ret.first);
+
         return true;
     }
 
@@ -208,6 +249,21 @@ public:
         return m_orphans.get<ByWtxid>().count(ByWtxidView{wtxid, peer}) > 0;
     }
 
+    /** Returns whether this wtxid exists and is unique. If there is no entry with this wtxid, or
+     * there are multiple announcements for the same wtxid, returns false. */
+    bool HaveUnique(const Wtxid& wtxid) const
+    {
+        auto it = m_orphans.get<ByWtxid>().lower_bound(ByWtxidView{wtxid, 0});
+        // Less than 1 instance?
+        if (it == m_orphans.end() || it->m_tx->GetWitnessHash() != wtxid) return false;
+
+        // More than 1 instance?
+        it = std::next(it);
+        if (it != m_orphans.end() && it->m_tx->GetWitnessHash() == wtxid) return false;
+
+        return true;
+    }
+
     /** Erase all entries by this peer. */
     void EraseForPeer(NodeId peer)
     {
@@ -218,8 +274,8 @@ public:
             const bool last_item{std::next(it) == index_by_peer.end() || std::next(it)->m_announcer != peer};
             auto it_next = last_item ? index_by_peer.end() : std::next(it);
 
-            // Delete item
-            Erase<ByPeer>(it);
+            // Delete item, cleaning up m_outpoint_to_orphan_it iff this entry is unique by wtxid.
+            Erase<ByPeer>(it, /*cleanup_outpoints_map=*/HaveUnique(it->m_tx->GetWitnessHash()));
 
             // Advance pointer
             it = it_next;
@@ -238,8 +294,8 @@ public:
             const bool last_item{std::next(it) == index_by_wtxid.end() || std::next(it)->m_tx->GetWitnessHash() != wtxid};
             auto it_next = last_item ? index_by_wtxid.end() : std::next(it);
 
-            // Delete item
-            Erase<ByWtxid>(it);
+            // Delete item. We only need to clean up m_outpoint_to_orphan_it the first time.
+            Erase<ByWtxid>(it, /*cleanup_outpoints_map=*/num_erased == 0);
 
             // Advance pointer
             it = it_next;
@@ -267,6 +323,33 @@ public:
             return it->m_tx;
         }
         return nullptr;
+    }
+
+    unsigned int EraseForBlock(const CBlock& block)
+    {
+        std::set<Wtxid> wtxids_to_erase;
+        for (const CTransactionRef& ptx : block.vtx) {
+            const CTransaction& block_tx = *ptx;
+
+            // Which orphan pool entries must we evict?
+            for (const auto& input : block_tx.vin) {
+                auto it_prev = m_outpoint_to_orphan_it.find(input.prevout);
+                if (it_prev != m_outpoint_to_orphan_it.end()) {
+                    // Copy all wtxids to wtxids_to_erase.
+                    std::copy(it_prev->second.cbegin(), it_prev->second.cend(), std::inserter(wtxids_to_erase, wtxids_to_erase.end()));
+                    for (const auto& wtxid : it_prev->second) {
+                        wtxids_to_erase.insert(wtxid);
+                    }
+                }
+            }
+        }
+
+        unsigned int num_erased{0};
+        for (const auto& wtxid : wtxids_to_erase) {
+            num_erased += EraseTx(wtxid);
+        }
+        // fixme: log that we erased %u announcements for %u transactions included or conflicted by block
+        return wtxids_to_erase.size();
     }
 };
 #endif // BITCOIN_TXMEMPOOL_H
