@@ -95,6 +95,15 @@ static bool EqualTxns(const std::set<CTransactionRef>& set_txns, const std::vect
     return true;
 }
 
+static bool ExactEqualTxns(const std::vector<CTransactionRef>& expected, const std::vector<CTransactionRef>& vec_txns)
+{
+    if (vec_txns.size() != expected.size()) return false;
+    for (size_t i{0}; i < expected.size(); ++i) {
+        if (expected.at(i) != vec_txns.at(i)) return false;
+    }
+    return true;
+}
+
 BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
 {
     // This test had non-deterministic coverage due to
@@ -315,8 +324,10 @@ BOOST_AUTO_TEST_CASE(get_children)
     // Spends the same outpoint as previous tx. Should still be returned; don't assume outpoints are unique.
     auto child_p1n0_p2n0 = MakeTransactionSpending({{parent1->GetHash(), 0}, {parent2->GetHash(), 0}}, det_rand);
 
+    const NodeId node0{0};
     const NodeId node1{1};
     const NodeId node2{2};
+    const NodeId node3{3};
 
     // All orphans provided by node1
     {
@@ -340,6 +351,34 @@ BOOST_AUTO_TEST_CASE(get_children)
         BOOST_CHECK(orphanage.GetChildrenFromSamePeer(child_p1n0_p2n0, node1).empty());
         BOOST_CHECK(orphanage.GetChildrenFromSamePeer(child_p1n0_p2n0, node2).empty());
     }
+    {
+        TxOrphanageImpl txorphanage_impl;
+        BOOST_CHECK(txorphanage_impl.AddTx(child_p1n0, node1));
+        BOOST_CHECK(txorphanage_impl.AddTx(child_p2n1, node1));
+        BOOST_CHECK(txorphanage_impl.AddTx(child_p1n0_p1n1, node1));
+        BOOST_CHECK(txorphanage_impl.AddTx(child_p1n0_p2n0, node1));
+
+        BOOST_CHECK(!txorphanage_impl.AddTx(child_p1n0_p1n1, node0));
+        BOOST_CHECK(!txorphanage_impl.AddTx(child_p2n1, node0));
+        BOOST_CHECK(!txorphanage_impl.AddTx(child_p1n0, node3));
+        BOOST_CHECK(!txorphanage_impl.AddTx(child_p1n0, node3));
+
+
+        std::vector<CTransactionRef> expected_parent1_children{child_p1n0_p2n0, child_p1n0_p1n1, child_p1n0};
+        std::vector<CTransactionRef> expected_parent2_children{child_p1n0_p2n0, child_p2n1};
+
+        BOOST_CHECK(ExactEqualTxns(expected_parent1_children, txorphanage_impl.GetChildrenFromSamePeer(parent1, node1)));
+        BOOST_CHECK(ExactEqualTxns(expected_parent2_children, txorphanage_impl.GetChildrenFromSamePeer(parent2, node1)));
+
+        // The peer must match
+        BOOST_CHECK(txorphanage_impl.GetChildrenFromSamePeer(parent1, node2).empty());
+        BOOST_CHECK(txorphanage_impl.GetChildrenFromSamePeer(parent2, node2).empty());
+
+        // There shouldn't be any children of this tx in the txorphanage_impl
+        BOOST_CHECK(txorphanage_impl.GetChildrenFromSamePeer(child_p1n0_p2n0, node1).empty());
+        BOOST_CHECK(txorphanage_impl.GetChildrenFromSamePeer(child_p1n0_p2n0, node2).empty());
+    }
+
 
     // Orphans provided by node1 and node2
     {
@@ -382,6 +421,56 @@ BOOST_AUTO_TEST_CASE(get_children)
             std::set<CTransactionRef> expected_parent2_node2{child_p1n0_p2n0};
 
             BOOST_CHECK(EqualTxns(expected_parent2_node2, orphanage.GetChildrenFromSamePeer(parent2, node2)));
+        }
+    }
+    {
+        TxOrphanageImpl txorphanage_impl;
+        txorphanage_impl.GetChildrenFromSamePeer(parent1, node1);
+        txorphanage_impl.GetChildrenFromSamePeer(parent1, 5);
+
+        BOOST_CHECK(txorphanage_impl.AddTx(child_p1n0, node1));
+        BOOST_CHECK(txorphanage_impl.AddTx(child_p2n1, node1));
+        BOOST_CHECK(txorphanage_impl.AddTx(child_p1n0_p1n1, node2));
+        BOOST_CHECK(txorphanage_impl.AddTx(child_p1n0_p2n0, node2));
+
+        // +----------------+---------------+----------------------------------+
+        // |                | sender=node1  |           sender=node2           |
+        // +----------------+---------------+----------------------------------+
+        // | spends parent1 | child_p1n0    | child_p1n0_p1n1, child_p1n0_p2n0 |
+        // | spends parent2 | child_p2n1    | child_p1n0_p2n0                  |
+        // +----------------+---------------+----------------------------------+
+
+        // Children of parent1 from node1:
+        {
+            std::set<CTransactionRef> expected_parent1_node1{child_p1n0};
+
+            BOOST_CHECK_EQUAL(txorphanage_impl.GetChildrenFromSamePeer(parent1, node1).size(), 1);
+            BOOST_CHECK(txorphanage_impl.HaveTxFromPeer(child_p1n0->GetWitnessHash(), node1));
+            BOOST_CHECK(EqualTxns(expected_parent1_node1, txorphanage_impl.GetChildrenFromSamePeer(parent1, node1)));
+        }
+
+        // Children of parent2 from node1:
+        {
+            std::set<CTransactionRef> expected_parent2_node1{child_p2n1};
+
+            BOOST_CHECK(EqualTxns(expected_parent2_node1, txorphanage_impl.GetChildrenFromSamePeer(parent2, node1)));
+        }
+
+        // Children of parent1 from node2:
+        {
+            std::vector<CTransactionRef> expected_parent1_node2{child_p1n0_p2n0, child_p1n0_p1n1};
+            BOOST_CHECK(txorphanage_impl.HaveTxFromPeer(child_p1n0_p1n1->GetWitnessHash(), node2));
+            BOOST_CHECK(txorphanage_impl.HaveTxFromPeer(child_p1n0_p2n0->GetWitnessHash(), node2));
+            BOOST_CHECK(ExactEqualTxns(expected_parent1_node2, txorphanage_impl.GetChildrenFromSamePeer(parent1, node2)));
+        }
+
+        // Children of parent2 from node2:
+        {
+            std::set<CTransactionRef> expected_parent2_node2{child_p1n0_p2n0};
+
+            BOOST_CHECK_EQUAL(1, txorphanage_impl.GetChildrenFromSamePeer(parent2, node2).size());
+            BOOST_CHECK(txorphanage_impl.HaveTxFromPeer(child_p1n0_p2n0->GetWitnessHash(), node2));
+            BOOST_CHECK(EqualTxns(expected_parent2_node2, txorphanage_impl.GetChildrenFromSamePeer(parent2, node2)));
         }
     }
 }

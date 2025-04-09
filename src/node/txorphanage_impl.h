@@ -351,5 +351,40 @@ public:
         // fixme: log that we erased %u announcements for %u transactions included or conflicted by block
         return wtxids_to_erase.size();
     }
+
+
+    /** Get all children that spend from this tx and were received from nodeid. Sorted from most
+     * recent to least recent. */
+    std::vector<CTransactionRef> GetChildrenFromSamePeer(const CTransactionRef& parent, NodeId peer) const
+    {
+        std::vector<CTransactionRef> children_found;
+        const auto& parent_txid{parent->GetHash()};
+
+        // Iterate through all orphans from this peer, in reverse order, so that more recent
+        // transactions are added first. Doing so helps avoid work when one of the orphans replaced
+        // an earlier one. Since we require the NodeId to match, one peer's announcement order does
+        // not bias how we process other peer's orphans.
+        auto& index_by_peer = m_orphans.get<ByPeer>();
+        auto it_upper = index_by_peer.upper_bound(ByPeerView{peer, true, std::numeric_limits<uint64_t>::max()});
+        auto it_lower = index_by_peer.lower_bound(ByPeerView{peer, false, 0});
+
+        if (it_upper != index_by_peer.begin()) {
+            auto rit = std::make_reverse_iterator(it_upper);
+            auto rit_end = std::make_reverse_iterator(it_lower);
+            while (rit != rit_end) {
+                if (rit->m_announcer != peer) continue;
+                // Check if this tx spends from parent.
+                for (const auto& input : rit->m_tx->vin) {
+                    if (input.prevout.hash == parent_txid) {
+                        children_found.emplace_back(rit->m_tx);
+                        break;
+                    }
+                }
+                ++rit;
+            }
+
+        }
+        return children_found;
+    }
 };
 #endif // BITCOIN_TXMEMPOOL_H
