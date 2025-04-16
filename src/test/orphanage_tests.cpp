@@ -214,7 +214,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
 BOOST_AUTO_TEST_CASE(same_txid_diff_witness)
 {
     FastRandomContext det_rand{true};
-    TxOrphanage orphanage;
+    TxOrphanageTest orphanage;
     NodeId peer{0};
 
     std::vector<COutPoint> empty_outpoints;
@@ -282,7 +282,7 @@ BOOST_AUTO_TEST_CASE(get_children)
 
     // All orphans provided by node1
     {
-        TxOrphanage orphanage;
+        TxOrphanageTest orphanage;
         BOOST_CHECK(orphanage.AddTx(child_p1n0, node1));
         BOOST_CHECK(orphanage.AddTx(child_p2n1, node1));
         BOOST_CHECK(orphanage.AddTx(child_p1n0_p1n1, node1));
@@ -305,7 +305,7 @@ BOOST_AUTO_TEST_CASE(get_children)
 
     // Orphans provided by node1 and node2
     {
-        TxOrphanage orphanage;
+        TxOrphanageTest orphanage;
         BOOST_CHECK(orphanage.AddTx(child_p1n0, node1));
         BOOST_CHECK(orphanage.AddTx(child_p2n1, node1));
         BOOST_CHECK(orphanage.AddTx(child_p1n0_p1n1, node2));
@@ -350,7 +350,8 @@ BOOST_AUTO_TEST_CASE(get_children)
 
 BOOST_AUTO_TEST_CASE(too_large_orphan_tx)
 {
-    TxOrphanage orphanage;
+    FastRandomContext det_rand{true};
+    TxOrphanageTest orphanage;
     CMutableTransaction tx;
     tx.vin.resize(1);
 
