@@ -21,6 +21,7 @@
 
 BOOST_FIXTURE_TEST_SUITE(orphanage_tests, TestingSetup)
 
+template<typename OrphanageImpl>
 class TxOrphanageTest : public TxOrphanage
 { };
 
@@ -88,7 +89,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
     // A copy of the orphan transactions to make it easy to select a random one.
     std::vector<CTransactionRef> orphan_txns_copy;
 
-    TxOrphanageTest orphanage;
+    TxOrphanageTest<TxOrphanage> orphanage;
     CKey key;
     MakeNewKeyWithFastRandomContext(key, m_rng);
     FillableSigningProvider keystore;
@@ -214,7 +215,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
 BOOST_AUTO_TEST_CASE(same_txid_diff_witness)
 {
     FastRandomContext det_rand{true};
-    TxOrphanageTest orphanage;
+    TxOrphanageTest<TxOrphanage> orphanage;
     NodeId peer{0};
 
     std::vector<COutPoint> empty_outpoints;
@@ -282,7 +283,7 @@ BOOST_AUTO_TEST_CASE(get_children)
 
     // All orphans provided by node1
     {
-        TxOrphanageTest orphanage;
+        TxOrphanageTest<TxOrphanage> orphanage;
         BOOST_CHECK(orphanage.AddTx(child_p1n0, node1));
         BOOST_CHECK(orphanage.AddTx(child_p2n1, node1));
         BOOST_CHECK(orphanage.AddTx(child_p1n0_p1n1, node1));
@@ -305,7 +306,7 @@ BOOST_AUTO_TEST_CASE(get_children)
 
     // Orphans provided by node1 and node2
     {
-        TxOrphanageTest orphanage;
+        TxOrphanageTest<TxOrphanage> orphanage;
         BOOST_CHECK(orphanage.AddTx(child_p1n0, node1));
         BOOST_CHECK(orphanage.AddTx(child_p2n1, node1));
         BOOST_CHECK(orphanage.AddTx(child_p1n0_p1n1, node2));
@@ -351,7 +352,7 @@ BOOST_AUTO_TEST_CASE(get_children)
 BOOST_AUTO_TEST_CASE(too_large_orphan_tx)
 {
     FastRandomContext det_rand{true};
-    TxOrphanageTest orphanage;
+    TxOrphanageTest<TxOrphanage> orphanage;
     CMutableTransaction tx;
     tx.vin.resize(1);
 
@@ -369,7 +370,7 @@ BOOST_AUTO_TEST_CASE(too_large_orphan_tx)
 BOOST_AUTO_TEST_CASE(process_block)
 {
     FastRandomContext det_rand{true};
-    TxOrphanageTest orphanage;
+    TxOrphanageTest<TxOrphanage> orphanage;
 
     // Create outpoints that will be spent by transactions in the block
     std::vector<COutPoint> outpoints;
@@ -428,7 +429,7 @@ BOOST_AUTO_TEST_CASE(multiple_announcers)
     const NodeId node2{2};
     size_t expected_total_count{0};
     FastRandomContext det_rand{true};
-    TxOrphanageTest orphanage;
+    TxOrphanageTest<TxOrphanage> orphanage;
 
     // Check accounting per peer.
     // Check that EraseForPeer works with multiple announcers.
@@ -509,7 +510,7 @@ BOOST_AUTO_TEST_CASE(peer_worksets)
     const NodeId node1{1};
     const NodeId node2{2};
     FastRandomContext det_rand{true};
-    TxOrphanageTest orphanage;
+    TxOrphanageTest<TxOrphanage> orphanage;
     // AddChildrenToWorkSet should pick an announcer randomly
     {
         auto tx_missing_parent = MakeTransactionSpending({}, det_rand);
