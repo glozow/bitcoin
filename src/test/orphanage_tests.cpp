@@ -31,15 +31,6 @@ public:
         return m_orphans.size();
     }
 
-    CTransactionRef RandomOrphan()
-    {
-        std::map<Wtxid, OrphanTx>::iterator it;
-        it = m_orphans.lower_bound(Wtxid::FromUint256(m_rng.rand256()));
-        if (it == m_orphans.end())
-            it = m_orphans.begin();
-        return it->second.tx;
-    }
-
     FastRandomContext& m_rng;
 };
 
@@ -104,6 +95,9 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
     // signature's R and S values have leading zeros.
     m_rng.Reseed(uint256{33});
 
+    // A copy of the orphan transactions to make it easy to select a random one.
+    std::vector<CTransactionRef> orphan_txns_copy;
+
     TxOrphanageTest orphanage{m_rng};
     CKey key;
     MakeNewKeyWithFastRandomContext(key, m_rng);
@@ -126,13 +120,16 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
         tx.vout[0].nValue = i*CENT;
         tx.vout[0].scriptPubKey = GetScriptForDestination(PKHash(key.GetPubKey()));
 
-        orphanage.AddTx(MakeTransactionRef(tx), i);
+        auto ptx = MakeTransactionRef(tx);
+        orphanage.AddTx(ptx, i);
+        orphan_txns_copy.emplace_back(ptx);
     }
 
     // ... and 50 that depend on other orphans:
     for (int i = 0; i < 50; i++)
     {
-        CTransactionRef txPrev = orphanage.RandomOrphan();
+        // Get a random orphan
+        CTransactionRef txPrev = orphan_txns_copy.at(m_rng.randrange(orphan_txns_copy.size()));
 
         CMutableTransaction tx;
         tx.vin.resize(1);
@@ -144,13 +141,16 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
         SignatureData empty;
         BOOST_CHECK(SignSignature(keystore, *txPrev, tx, 0, SIGHASH_ALL, empty));
 
-        orphanage.AddTx(MakeTransactionRef(tx), i);
+        auto ptx = MakeTransactionRef(tx);
+        orphanage.AddTx(ptx, i);
+        orphan_txns_copy.emplace_back(ptx);
     }
 
     // This really-big orphan should be ignored:
     for (int i = 0; i < 10; i++)
     {
-        CTransactionRef txPrev = orphanage.RandomOrphan();
+        // Get a random orphan
+        CTransactionRef txPrev = orphan_txns_copy.at(m_rng.randrange(orphan_txns_copy.size()));
 
         CMutableTransaction tx;
         tx.vout.resize(1);
@@ -173,6 +173,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
     }
 
     size_t expected_num_orphans = orphanage.CountOrphans();
+    orphan_txns_copy.clear();
 
     // Non-existent peer; nothing should be deleted
     orphanage.EraseForPeer(/*peer=*/-1);
