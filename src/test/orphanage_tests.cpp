@@ -4,6 +4,7 @@
 
 #include <arith_uint256.h>
 #include <consensus/validation.h>
+#include <node/txorphanage_impl.h>
 #include <policy/policy.h>
 #include <primitives/transaction.h>
 #include <pubkey.h>
@@ -24,6 +25,8 @@ BOOST_FIXTURE_TEST_SUITE(orphanage_tests, TestingSetup)
 template<typename OrphanageImpl>
 class TxOrphanageTest : public TxOrphanage
 { };
+
+typedef std::tuple<TxOrphanage, TxOrphanageImpl> orphanage_impls;
 
 static void MakeNewKeyWithFastRandomContext(CKey& key, FastRandomContext& rand_ctx)
 {
@@ -76,7 +79,7 @@ static bool EqualTxns(const std::set<CTransactionRef>& set_txns, const std::vect
     return true;
 }
 
-BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
+BOOST_AUTO_TEST_CASE_TEMPLATE(DoS_mapOrphans, Impl, orphanage_impls)
 {
     // This test had non-deterministic coverage due to
     // randomly selected seeds.
@@ -212,10 +215,10 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
     BOOST_CHECK_EQUAL(orphanage.Size(), 0);
 }
 
-BOOST_AUTO_TEST_CASE(same_txid_diff_witness)
+BOOST_AUTO_TEST_CASE_TEMPLATE(same_txid_diff_witness, Impl, orphanage_impls)
 {
     FastRandomContext det_rand{true};
-    TxOrphanageTest<TxOrphanage> orphanage;
+    TxOrphanageTest<Impl> orphanage;
     NodeId peer{0};
 
     std::vector<COutPoint> empty_outpoints;
@@ -257,7 +260,7 @@ BOOST_AUTO_TEST_CASE(same_txid_diff_witness)
 }
 
 
-BOOST_AUTO_TEST_CASE(get_children)
+BOOST_AUTO_TEST_CASE_TEMPLATE(get_children, Impl, orphanage_impls)
 {
     FastRandomContext det_rand{true};
     std::vector<COutPoint> empty_outpoints;
@@ -349,7 +352,7 @@ BOOST_AUTO_TEST_CASE(get_children)
     }
 }
 
-BOOST_AUTO_TEST_CASE(too_large_orphan_tx)
+BOOST_AUTO_TEST_CASE_TEMPLATE(too_large_orphan_tx, Impl, orphanage_impls)
 {
     FastRandomContext det_rand{true};
     TxOrphanageTest<TxOrphanage> orphanage;
@@ -367,7 +370,7 @@ BOOST_AUTO_TEST_CASE(too_large_orphan_tx)
     BOOST_CHECK(orphanage.AddTx(MakeTransactionRef(tx), 0));
 }
 
-BOOST_AUTO_TEST_CASE(process_block)
+BOOST_AUTO_TEST_CASE_TEMPLATE(process_block, Impl, orphanage_impls)
 {
     FastRandomContext det_rand{true};
     TxOrphanageTest<TxOrphanage> orphanage;
@@ -422,7 +425,7 @@ BOOST_AUTO_TEST_CASE(process_block)
     BOOST_CHECK(orphanage.HaveTx(control_tx->GetWitnessHash()));
 }
 
-BOOST_AUTO_TEST_CASE(multiple_announcers)
+BOOST_AUTO_TEST_CASE_TEMPLATE(multiple_announcers, Impl, orphanage_impls)
 {
     const NodeId node0{0};
     const NodeId node1{1};
@@ -504,7 +507,7 @@ BOOST_AUTO_TEST_CASE(multiple_announcers)
         BOOST_CHECK_EQUAL(orphanage.Size(), expected_total_count);
     }
 }
-BOOST_AUTO_TEST_CASE(peer_worksets)
+BOOST_AUTO_TEST_CASE_TEMPLATE(peer_worksets, Impl, orphanage_impls)
 {
     const NodeId node0{0};
     const NodeId node1{1};
