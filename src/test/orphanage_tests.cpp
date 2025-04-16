@@ -22,11 +22,7 @@
 BOOST_FIXTURE_TEST_SUITE(orphanage_tests, TestingSetup)
 
 class TxOrphanageTest : public TxOrphanage
-{
-public:
-    TxOrphanageTest(FastRandomContext& rng) : m_rng{rng} {}
-    FastRandomContext& m_rng;
-};
+{ };
 
 static void MakeNewKeyWithFastRandomContext(CKey& key, FastRandomContext& rand_ctx)
 {
@@ -92,7 +88,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
     // A copy of the orphan transactions to make it easy to select a random one.
     std::vector<CTransactionRef> orphan_txns_copy;
 
-    TxOrphanageTest orphanage{m_rng};
+    TxOrphanageTest orphanage;
     CKey key;
     MakeNewKeyWithFastRandomContext(key, m_rng);
     FillableSigningProvider keystore;
@@ -372,7 +368,7 @@ BOOST_AUTO_TEST_CASE(too_large_orphan_tx)
 BOOST_AUTO_TEST_CASE(process_block)
 {
     FastRandomContext det_rand{true};
-    TxOrphanageTest orphanage{det_rand};
+    TxOrphanageTest orphanage;
 
     // Create outpoints that will be spent by transactions in the block
     std::vector<COutPoint> outpoints;
@@ -431,7 +427,7 @@ BOOST_AUTO_TEST_CASE(multiple_announcers)
     const NodeId node2{2};
     size_t expected_total_count{0};
     FastRandomContext det_rand{true};
-    TxOrphanageTest orphanage{det_rand};
+    TxOrphanageTest orphanage;
 
     // Check accounting per peer.
     // Check that EraseForPeer works with multiple announcers.
@@ -512,7 +508,7 @@ BOOST_AUTO_TEST_CASE(peer_worksets)
     const NodeId node1{1};
     const NodeId node2{2};
     FastRandomContext det_rand{true};
-    TxOrphanageTest orphanage{det_rand};
+    TxOrphanageTest orphanage;
     // AddChildrenToWorkSet should pick an announcer randomly
     {
         auto tx_missing_parent = MakeTransactionSpending({}, det_rand);
