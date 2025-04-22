@@ -9,9 +9,11 @@
 #include <consensus/validation.h>
 #include <policy/policy.h>
 #include <primitives/transaction.h>
+#include <txgraph.h>
 #include <util/hasher.h>
 
 #include <cstdint>
+#include <optional>
 #include <unordered_set>
 #include <vector>
 
@@ -48,6 +50,66 @@ enum class PackageValidationResult {
 /** A package is an ordered list of transactions. The transactions cannot conflict with (spend the
  * same inputs as) one another. */
 using Package = std::vector<CTransactionRef>;
+
+/** Represents a package that is being validated. Tracks the transactions' dependencies, feerate
+ * information, and its validation status (some might be skipped because they are already in mempool
+ * or invalid and not eligible for reconsideration). Uses a TxGraph to determine the schedule in
+ * which subpackages should be validated. */
+class MiniGraph
+{
+    // Copy of the transactions provided in the constructor. These must be sorted.
+    const std::vector<CTransactionRef> m_txns;
+
+    enum class TxStatus {
+        UNKNOWN = 0,
+        REJECTED,
+        REGISTERED,
+        VALID,
+    };
+
+    struct Tx {
+        CTransactionRef m_tx;
+        unsigned int m_index;
+        int32_t m_size{0};
+        CAmount m_fee{0};
+        TxStatus m_status;
+        TxGraph::Ref m_ref;
+
+        Tx(const CTransactionRef& tx, unsigned int index) : m_tx{tx}, m_index{index} {}
+    };
+
+    /** Main data structure. */
+    std::map<Wtxid, Tx> m_info;
+
+    /** Used to construct validation schedule. */
+    std::unique_ptr<TxGraph> m_graph;
+    std::unique_ptr<TxGraph::BlockBuilder> m_builder;
+
+public:
+    MiniGraph(const std::vector<CTransactionRef>& txns_in);
+
+    /** Register feerate information for a transaction. Overwrites previous data if called
+     * multiple times for the same transaction. */
+    void RegisterInfo(const CTransactionRef& tx, CAmount fee, int64_t size);
+
+    /** Schedule validation of transactions. Each transaction must either be valid, rejected, or
+     * registered. */
+    void ScheduleValidation();
+
+    /** Get the next subpackage to validate. ScheduleValidation must have already been called.
+     * Returns nullopt if there is nothing left to validate. Call MarkValid or MarkRejected before
+     * next call to GetCurrentSubpackage.
+     */
+    std::optional<std::pair<std::vector<CTransactionRef>, FeePerWeight>> GetCurrentSubpackage();
+
+    /** Call for transactions accepted to mempool or already found there. */
+    void MarkValid(const std::vector<CTransactionRef>& subpackage);
+
+    /** Call for transactions rejected from mempool. These transactions will not be included in the
+     * validation schedule. If validation schedule has already been created, these transactions'
+     * cluster will be excluded from further calls to GetCurrentSubpackage. */
+    void MarkRejected(const std::vector<CTransactionRef>& subpackage);
+};
 
 class PackageValidationState : public ValidationState<PackageValidationResult> {};
 
