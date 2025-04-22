@@ -8,10 +8,13 @@
 #include <consensus/consensus.h>
 #include <consensus/validation.h>
 #include <policy/policy.h>
+#include <policy/feerate.h>
 #include <primitives/transaction.h>
+#include <txgraph.h>
 #include <util/hasher.h>
 
 #include <cstdint>
+#include <optional>
 #include <unordered_set>
 #include <vector>
 
@@ -93,5 +96,8 @@ bool IsChildWithParentsTree(const Package& package);
  * treated as a little-endian numbers and sorted in ascending numeric order.
  */
 uint256 GetPackageHash(const std::vector<CTransactionRef>& transactions);
+
+/** Sort transactions (doesn't need to be topologically sorted) into packages. */
+std::vector<Package> SortTransactions(const std::vector<CTransactionRef>& txns);
 
 #endif // BITCOIN_POLICY_PACKAGES_H

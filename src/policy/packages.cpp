@@ -5,14 +5,16 @@
 #include <policy/packages.h>
 #include <policy/policy.h>
 #include <primitives/transaction.h>
+#include <txmempool.h>
 #include <uint256.h>
 #include <util/check.h>
-
 #include <algorithm>
 #include <cassert>
 #include <iterator>
 #include <memory>
 #include <numeric>
+#include <span>
+#include <utility>
 
 /** IsTopoSortedPackage where a set of txids has been pre-populated. The set is assumed to be correct and
  * is mutated within this function (even if return value is false). */
@@ -167,4 +169,49 @@ uint256 GetPackageHash(const std::vector<CTransactionRef>& transactions)
         hashwriter << wtxid;
     }
     return hashwriter.GetSHA256();
+}
+
+std::vector<Package> SortTransactions(const std::vector<CTransactionRef>& txns)
+{
+    std::vector<Package> result;
+
+    struct RefWithIndex : public TxGraph::Ref {
+        size_t index;
+        RefWithIndex(TxGraph::Ref&& ref, size_t index) : TxGraph::Ref(std::move(ref)), index(index) {}
+    };
+    std::map<Txid, RefWithIndex> txid_to_ref;
+
+    // Throw them all into a txgraph.
+    std::unique_ptr<TxGraph> graph = MakeTxGraph(txns.size(), txns.size() * MAX_STANDARD_TX_WEIGHT, ACCEPTABLE_ITERS);
+
+    // Create all refs. Have them track the index of the transaction in the original vector.
+    for (size_t i = 0; i < txns.size(); ++i) {
+        // Use ascending feerates so every cluster is 1 chunk.
+        auto ref = graph->AddTransaction(FeePerWeight{static_cast<int64_t>(i), 1});
+        txid_to_ref.emplace(txns.at(i)->GetHash(), RefWithIndex(std::move(ref), i));
+    }
+
+    // Now add all dependencies.
+    for (size_t i = 0; i < txns.size(); ++i) {
+        const auto& my_ref = txid_to_ref.at(txns.at(i)->GetHash());
+        for (const auto& input : txns.at(i)->vin) {
+            if (auto it = txid_to_ref.find(input.prevout.hash); it != txid_to_ref.end()) {
+                graph->AddDependency(it->second, my_ref);
+            }
+        }
+    }
+
+    Assume(graph->GetTransactionCount(TxGraph::Level::MAIN) == txns.size());
+    auto all_clusters = graph->GetAllClusters();
+
+    for (const auto& cluster : all_clusters) {
+        Package package;
+        for (auto ref : cluster) {
+            const auto index = static_cast<const RefWithIndex*>(ref)->index;
+            package.emplace_back(txns.at(index));
+        }
+        result.emplace_back(std::move(package));
+        Assume(IsTopoSortedPackage(package));
+    }
+    return result;
 }
