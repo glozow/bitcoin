@@ -168,3 +168,122 @@ uint256 GetPackageHash(const std::vector<CTransactionRef>& transactions)
     }
     return hashwriter.GetSHA256();
 }
+
+MiniGraph::MiniGraph(const std::vector<CTransactionRef>& txns_in) : m_txns{txns_in} {
+    for (unsigned int i{0}; i < txns_in.size(); ++i) {
+        m_info.emplace(txns_in.at(i)->GetWitnessHash(), Tx(txns_in.at(i), i));
+    }
+    m_graph = MakeTxGraph(txns_in.size(), MAX_PACKAGE_WEIGHT, 1000000);
+}
+
+/** Register feerate information for a transaction. Overwrites previous data if called
+ * multiple times for the same transaction. */
+void MiniGraph::RegisterInfo(const CTransactionRef& tx, CAmount fee, int64_t size) {
+    // If builder exists, that means we already linearized the transactions. Changing any
+    // transaction's feerate would change the linearization, so we don't permit this action
+    // after Linearize() has been called.
+    if (!Assume(m_builder == nullptr)) return;
+
+    auto it = m_info.find(tx->GetWitnessHash());
+    if (it != m_info.end()) {
+        it->second.m_fee = fee;
+        it->second.m_size = size;
+        it->second.m_status = TxStatus::REGISTERED;
+    }
+}
+
+/** Schedule validation of transactions. Each transaction must either be valid, rejected, or
+ * registered. */
+void MiniGraph::ScheduleValidation() {
+    if (!Assume(m_builder == nullptr)) return;
+    // Temporary map to easily look up refs of parents by prevout, discarded at the end of this
+    // function. This is populated as transactions are processed, which works because the
+    // package is required to be topological.
+    std::map<Txid, TxGraph::Ref*> ref_index;
+
+    // Populate TxGraph
+    for (const auto& tx : m_txns) {
+        auto& info = m_info.at(tx->GetWitnessHash());
+        switch (info.m_status) {
+            case TxStatus::REGISTERED:
+            {
+                // Caller should have registered feerate
+                Assume(info.m_size != 0);
+                info.m_ref = m_graph->AddTransaction(FeePerWeight{info.m_fee, info.m_size});
+
+                // Add dependencies with previous transactions.
+                for (const auto& input : info.m_tx->vin) {
+                    if (auto it_parent = ref_index.find(input.prevout.hash); it_parent != ref_index.end()) {
+                        m_graph->AddDependency(*it_parent->second, info.m_ref);
+                    }
+                }
+
+                // Add ref to index so subsequent dependencies can be added
+                ref_index.emplace(info.m_tx->GetHash(), &info.m_ref);
+                break;
+            }
+            case TxStatus::REJECTED:
+            case TxStatus::VALID:
+            {
+                break;
+            }
+            case TxStatus::UNKNOWN:
+            {
+                // Bug! We forgot to RegisterInfo for this transaction, or somehow
+                // set a tranasction to VALID before ever running ScheduleValidation.
+                Assume(false);
+                break;
+            }
+        }
+    }
+
+    // Determine the validation schedule building a "block" out of its transactions.
+    m_builder = m_graph->GetBlockBuilder();
+    m_graph->SanityCheck();
+}
+
+/** Get the next subpackage to validate. ScheduleValidation must have already been called.
+ * Returns nullopt if there is nothing left to validate. Call MarkValid or MarkRejected before
+ * next call to GetCurrentSubpackage.
+ */
+std::optional<std::pair<std::vector<CTransactionRef>, FeePerWeight>> MiniGraph::GetCurrentSubpackage() {
+    auto curr_chunk{m_builder->GetCurrentChunk()};
+    if (curr_chunk) {
+        // If there is a next chunk, translate it to a vector of transactions and return.
+        std::pair<std::vector<CTransactionRef>, FeePerWeight> result;
+        result.first.reserve(curr_chunk->first.size());
+        for (const auto& ref : curr_chunk->first) {
+            auto it = std::find_if(m_info.begin(), m_info.end(), [&ref](const auto& pair) { return &pair.second.m_ref == ref; });
+            if (Assume(it != m_info.end())) result.first.emplace_back(it->second.m_tx);
+        }
+        result.second = curr_chunk->second;
+        return result;
+    }
+    // Otherwise, there are no more transactions left to validate.
+    return std::nullopt;
+}
+
+/** Call for transactions accepted to mempool or already found there. */
+void MiniGraph::MarkValid(const std::vector<CTransactionRef>& subpackage) {
+    for (const auto& tx : subpackage) {
+        auto it = m_info.find(tx->GetWitnessHash());
+        if (Assume(it != m_info.end())) {
+            it->second.m_status = TxStatus::VALID;
+        }
+    }
+    if (m_builder) m_builder->Include();
+}
+
+/** Call for transactions rejected from mempool. These transactions will not be included in the
+ * validation schedule (descendants are not tracked, so it is assumed the caller will call
+ * MarkRejected for any that exist). If validation schedule has already been created, these
+ * transactions' cluster will be excluded from further calls to GetCurrentSubpackage. */
+void MiniGraph::MarkRejected(const std::vector<CTransactionRef>& subpackage) {
+    for (const auto& tx : subpackage) {
+        auto it = m_info.find(tx->GetWitnessHash());
+        if (Assume(it != m_info.end())) {
+            it->second.m_status = TxStatus::REJECTED;
+        }
+    }
+    if (m_builder) m_builder->Skip();
+}
