@@ -980,12 +980,11 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
         if (auto err_package_too_low{CheckPackageMempoolAcceptResult(package_still_too_low, submit_package_too_low, /*expect_valid=*/false, m_node.mempool.get())}) {
             BOOST_ERROR(err_package_too_low.value());
         } else {
-            // Individual feerate of parent is too low.
+            // Package feerate of parent + child is too low.
             BOOST_CHECK_EQUAL(submit_package_too_low.m_tx_results.at(tx_parent_cheap->GetWitnessHash()).m_state.GetResult(),
                               TxValidationResult::TX_RECONSIDERABLE);
             BOOST_CHECK(submit_package_too_low.m_tx_results.at(tx_parent_cheap->GetWitnessHash()).m_effective_feerate.value() ==
-                        CFeeRate(parent_fee, GetVirtualTransactionSize(*tx_parent_cheap)));
-            // Package feerate of parent + child is too low.
+                        CFeeRate(parent_fee + child_fee, GetVirtualTransactionSize(*tx_parent_cheap) + GetVirtualTransactionSize(*tx_child_cheap)));
             BOOST_CHECK_EQUAL(submit_package_too_low.m_tx_results.at(tx_child_cheap->GetWitnessHash()).m_state.GetResult(),
                               TxValidationResult::TX_RECONSIDERABLE);
             BOOST_CHECK(submit_package_too_low.m_tx_results.at(tx_child_cheap->GetWitnessHash()).m_effective_feerate.value() ==
