@@ -6,6 +6,7 @@
 #include <node/context.h>
 #include <node/mempool_args.h>
 #include <node/miner.h>
+#include <policy/policy.h>
 #include <policy/truc_policy.h>
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
@@ -538,5 +539,181 @@ FUZZ_TARGET(tx_package_eval, .init = initialize_tx_pool)
     node.validation_signals->UnregisterSharedValidationInterface(outpoints_updater);
 
     WITH_LOCK(::cs_main, tx_pool.check(chainstate.CoinsTip(), chainstate.m_chain.Height() + 1));
+}
+
+bool AllInputsAvailable(const std::vector<CTransactionRef>& txns, const std::set<COutPoint>& utxo_set)
+{
+    std::set<COutPoint> copy_utxo_set(utxo_set.begin(), utxo_set.end());
+    for (const auto& tx : txns) {
+        // "spend" all inputs from the utxo set
+        for (const auto& input : tx->vin) {
+            if (!copy_utxo_set.erase(input.prevout)) return false;
+        }
+
+        // Add outputs to utxo set
+        for (uint32_t i = 0; i < tx->vout.size(); ++i) {
+            copy_utxo_set.insert({tx->GetHash(), i});
+        }
+    }
+    return true;
+}
+
+void ResetUTXOSet(std::set<COutPoint>& mut_set, const std::vector<COutPoint>& copied_set)
+{
+    mut_set.clear();
+    mut_set.insert(copied_set.begin(), copied_set.end());
+}
+
+FUZZ_TARGET(tx_package_sort, .init = initialize_tx_pool)
+{
+    SeedRandomStateForTest(SeedRand::ZEROS);
+    FuzzedDataProvider fuzzed_data_provider(buffer.data(), buffer.size());
+
+    // Make a copy for making the package transactions
+    std::vector<COutPoint> outpoints_for_construction(g_outpoints_coinbase_init_mature.begin(), g_outpoints_coinbase_init_mature.end());
+    Assert(!outpoints_for_construction.empty());
+
+    std::vector<CTransactionRef> txns;
+
+    // Create transactions with arbitrary topology. What matters here is dependency relationships.
+    // The input and output amounts are not used to determine fees (we use Register instead), so
+    // just fill them all in with 0.
+    const auto num_txs = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(1, 64);
+    while (!outpoints_for_construction.empty() && txns.size() < num_txs) {
+        txns.emplace_back([&] {
+            CMutableTransaction tx_mut;
+            const auto num_in = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(1, outpoints_for_construction.size());
+            auto num_out = fuzzed_data_provider.ConsumeIntegralInRange<size_t>(1, outpoints_for_construction.size() * 2);
+
+            // Add Inputs
+            for (size_t i = 0; i < num_in; ++i) {
+                // Get outpoint
+                auto pop = outpoints_for_construction.begin();
+                std::advance(pop, fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, outpoints_for_construction.size() - 1));
+                const auto outpoint = *pop;
+                outpoints_for_construction.erase(pop);
+
+                // Construct input
+                CTxIn in;
+                in.prevout = outpoint;
+                in.scriptSig = CScript{};
+                tx_mut.vin.emplace_back(in);
+
+            }
+
+            // Outputs
+            for (size_t i = 0; i < num_out; ++i) {
+                tx_mut.vout.emplace_back(0, P2WSH_EMPTY);
+            }
+            auto tx = MakeTransactionRef(tx_mut);
+
+            // Make in-package outpoints available to spend.
+            for (uint32_t i = 0; i < tx->vout.size(); ++i) {
+                outpoints_for_construction.emplace_back(tx->GetHash(), i);
+            }
+            return tx;
+        }());
+    }
+
+    std::set<COutPoint> utxo_set(g_outpoints_coinbase_init_mature.begin(), g_outpoints_coinbase_init_mature.end());
+    std::map<Wtxid, FeePerWeight> tx_feerates;
+
+    // We must have made a topological and consistent.package
+    Assert(IsTopoSortedPackage(txns));
+    Assert(IsConsistentPackage(txns));
+    Assert(AllInputsAvailable(txns, utxo_set));
+
+    // Transactions added to mempool, either in the initial loop or during subpackage validation.
+    std::vector<CTransactionRef> added_to_mempool;
+    added_to_mempool.reserve(txns.size());
+    // Txids of transactions rejected in the first loop, before ScheduleValidation
+    std::set<Txid> rejected_immediately;
+
+    CFeeRate min_feerate(fuzzed_data_provider.ConsumeIntegralInRange<CAmount>(0, 100000), fuzzed_data_provider.ConsumeIntegralInRange<int>(1, MAX_STANDARD_TX_WEIGHT));
+    MiniGraph package_sorter(txns, min_feerate);
+
+    // 1. Initial (PreChecks) loop. Add to mempool (deduplicate), reject, or register
+    for (const auto& tx : txns) {
+        // First calculate constraints on possibilities. The default is registering feerate info.
+        // If parent was rejected, this must be rejected too (MISSING_INPUTS).
+        bool missing_inputs{false};
+        // It's only possible for this transaction to already be in mempool if all its inputs are
+        // available in utxo_set (which simulates chainstate + mempool). This is not the opposite
+        // of missing_inputs because we only add outputs to utxo_set if we add them to mempool.
+        bool no_package_deps{true};
+
+        for (const auto& input : tx->vin) {
+            if (rejected_immediately.contains(input.prevout.hash)) {
+                missing_inputs = true;
+            }
+            if (!utxo_set.contains(input.prevout)) {
+                no_package_deps = false;
+            }
+        }
+
+        if (no_package_deps && fuzzed_data_provider.ConsumeBool()) {
+            // Already added to mempool. Can be excluded from the schedule.
+            package_sorter.MarkValid({tx});
+            added_to_mempool.emplace_back(tx);
+            for (uint32_t i = 0; i < tx->vout.size(); ++i) {
+                utxo_set.insert({tx->GetHash(), i});
+            }
+        } else if (missing_inputs || fuzzed_data_provider.ConsumeBool()) {
+            // Already rejected. Must be excluded from the schedule. Descendants will also be immediately rejected.
+            package_sorter.MarkRejected({tx});
+            rejected_immediately.insert(tx->GetHash());
+        } else {
+            // Ok to validate. Register feerate info.
+            const auto amount_fee = fuzzed_data_provider.ConsumeIntegralInRange<CAmount>(0, 100000);
+            const auto size = fuzzed_data_provider.ConsumeIntegralInRange<int>(1, 1000000);
+            package_sorter.RegisterInfo(tx, amount_fee, size, /*needs_package_rbf=*/fuzzed_data_provider.ConsumeBool());
+            tx_feerates.emplace(tx->GetWitnessHash(), FeePerWeight{amount_fee, size});
+        }
+    }
+    ResetUTXOSet(utxo_set, g_outpoints_coinbase_init_mature);
+
+    // 2. ScheduleValidation for all registered transactions
+    package_sorter.ScheduleValidation();
+
+    bool accept_all{true};
+
+    // 3. Subpackage validation
+    auto chunk = package_sorter.GetCurrentSubpackage();
+    while (chunk) {
+        // Chunk feerates don't necessarily monotonously decrease, because MiniGraph can return subchunks.
+        // Check that reported feerate is equal to the sum of the registered feerates.
+        const auto sum_feerate = std::accumulate(chunk->first.begin(), chunk->first.end(), FeeFrac{0, 0}, [&](FeeFrac sum, const auto& tx) {
+            return sum + tx_feerates.at(tx->GetWitnessHash());
+        });
+        Assert(chunk->second == sum_feerate);
+
+        // Should never return transactions already marked as valid or rejected.
+        for (const auto& tx : chunk->first) {
+            Assert(!rejected_immediately.contains(tx->GetHash()));
+            Assert(std::find(added_to_mempool.begin(), added_to_mempool.end(), tx) == added_to_mempool.end());
+        }
+
+        // Decide to include or skip
+        if (fuzzed_data_provider.ConsumeBool()) {
+            package_sorter.MarkValid(chunk->first);
+            for (const auto& tx : chunk->first) {
+                added_to_mempool.emplace_back(tx);
+            }
+        } else {
+            package_sorter.MarkRejected(chunk->first);
+            accept_all = false;
+        }
+
+        chunk = package_sorter.GetCurrentSubpackage();
+    }
+
+    // 4. Sanity checks
+    Assert(IsTopoSortedPackage(added_to_mempool));
+    Assert(IsConsistentPackage(added_to_mempool));
+    Assert(AllInputsAvailable(added_to_mempool, utxo_set));
+
+    if (accept_all) {
+        Assert(rejected_immediately.size() + added_to_mempool.size() == txns.size());
+    }
 }
 } // namespace
