@@ -447,7 +447,8 @@ class RPCPackagesTest(BitcoinTestFramework):
         assert_equal(pkg_result["package_msg"], "transaction failed")
         assert_equal(pkg_result["error_code"], 4)
         assert_equal(pkg_result["tx-results"][chained_txns[0]["wtxid"]]["error"], "max feerate exceeded")
-        assert_equal(pkg_result["tx-results"][chained_txns[1]["wtxid"]]["error"], "bad-txns-inputs-missingorspent")
+        # Validation halts when error occurs, so no information about the second tx.
+        assert_equal(pkg_result["tx-results"][chained_txns[1]["wtxid"]]["error"], "unknown-not-validated")
         assert_equal(node.getrawmempool(), [])
 
         # Make chain of two transactions where parent doesn't make minfee threshold
