@@ -178,9 +178,12 @@ class PackageRBFTest(BitcoinTestFramework):
         package_hex4, package_txns4 = self.create_simple_package(coin, parent_fee=DEFAULT_FEE, child_fee=DEFAULT_CHILD_FEE)
         node.submitpackage(package_hex4)
         self.assert_mempool_contents(expected=package_txns4)
-        package_hex5, _package_txns5 = self.create_simple_package(coin, parent_fee=DEFAULT_CHILD_FEE, child_fee=DEFAULT_CHILD_FEE)
+        package_hex5, package_txns5 = self.create_simple_package(coin, parent_fee=DEFAULT_CHILD_FEE, child_fee=DEFAULT_CHILD_FEE)
+        # Since this child's feerate is not strictly higher than parent's, it is not a chunk. They will not be grouped together for package RBF.
         pkg_results5 = node.submitpackage(package_hex5)
-        assert 'package RBF failed: package feerate is less than or equal to parent feerate' in pkg_results5["package_msg"]
+        # We get the failure of the first transaction which could not replace package_txns4 on its own
+        assert_equal(pkg_results5["package_msg"], "transaction failed")
+        assert "insufficient fee, rejecting replacement" in pkg_results5["tx-results"][package_txns5[0].wtxid_hex]["error"]
         self.assert_mempool_contents(expected=package_txns4)
 
         package_hex5_1, package_txns5_1 = self.create_simple_package(coin, parent_fee=DEFAULT_CHILD_FEE, child_fee=DEFAULT_CHILD_FEE + Decimal("0.00000001"))
@@ -264,10 +267,10 @@ class PackageRBFTest(BitcoinTestFramework):
         coin2 = self.coins.pop()
 
         # Added to make package too large for package RBF;
-        # it will enter mempool individually
+        # it will enter mempool individually since its feerate is higher than the child and other parent's
         self.ctr += 1
         parent_result2 = self.wallet.create_self_transfer(
-            fee=DEFAULT_FEE,
+            fee=DEFAULT_FEE*3,
             utxo_to_spend=coin2,
             sequence=MAX_BIP125_RBF_SEQUENCE - self.ctr,
         )
