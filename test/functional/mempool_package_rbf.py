@@ -12,6 +12,7 @@ from test_framework.messages import (
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.mempool_util import fill_mempool
 from test_framework.util import (
+    assert_greater_than,
     assert_greater_than_or_equal,
     assert_equal,
 )
@@ -173,19 +174,27 @@ class PackageRBFTest(BitcoinTestFramework):
         self.assert_mempool_contents(expected=success_package_txns3)
         self.generate(node, 1)
 
-        self.log.info("Check Package RBF must have strict cpfp structure")
+        self.log.info("Check Package RBF does not require parent's feerate to be lower than child's")
+        # This is allowed as long as the child's feerate is not lower than the mempool minimum feerate.
         coin = self.coins.pop()
         package_hex4, package_txns4 = self.create_simple_package(coin, parent_fee=DEFAULT_FEE, child_fee=DEFAULT_CHILD_FEE)
         node.submitpackage(package_hex4)
         self.assert_mempool_contents(expected=package_txns4)
-        package_hex5, _package_txns5 = self.create_simple_package(coin, parent_fee=DEFAULT_CHILD_FEE, child_fee=DEFAULT_CHILD_FEE)
-        pkg_results5 = node.submitpackage(package_hex5)
-        assert 'package RBF failed: package feerate is less than or equal to parent feerate' in pkg_results5["package_msg"]
-        self.assert_mempool_contents(expected=package_txns4)
 
-        package_hex5_1, package_txns5_1 = self.create_simple_package(coin, parent_fee=DEFAULT_CHILD_FEE, child_fee=DEFAULT_CHILD_FEE + Decimal("0.00000001"))
-        node.submitpackage(package_hex5_1)
-        self.assert_mempool_contents(expected=package_txns5_1)
+        # Parent fees are just a little too low to replace package_txns4. Child fees help.
+        package_hex5, package_txns5 = self.create_simple_package(coin, parent_fee=DEFAULT_CHILD_FEE + Decimal("0.000002"), child_fee=DEFAULT_FEE + Decimal("0.000001"))
+        testres_parent5 = node.testmempoolaccept([package_hex5[0]])
+        assert_equal(testres_parent5[0]["reject-reason"], "insufficient fee")
+
+        pkg_results5 = node.submitpackage(package_hex5)
+        # The parent's feerate is actually higher than its package effective feerate.
+        parent_result = pkg_results5["tx-results"][package_txns5[0].wtxid_hex]
+        # Feerates are in BTC/kvB
+        parent_feerate = parent_result["fees"]["base"] / parent_result["vsize"] * 1000
+        package_feerate = parent_result["fees"]["effective-feerate"]
+        assert_greater_than(parent_feerate, package_feerate)
+        assert_equal(pkg_results5["package_msg"], "success")
+        self.assert_mempool_contents(expected=package_txns5)
         self.generate(node, 1)
 
     def test_package_rbf_max_conflicts(self):
@@ -264,10 +273,10 @@ class PackageRBFTest(BitcoinTestFramework):
         coin2 = self.coins.pop()
 
         # Added to make package too large for package RBF;
-        # it will enter mempool individually
+        # it will enter mempool individually since its feerate is higher than the child and other parent's
         self.ctr += 1
         parent_result2 = self.wallet.create_self_transfer(
-            fee=DEFAULT_FEE,
+            fee=DEFAULT_FEE*3,
             utxo_to_spend=coin2,
             sequence=MAX_BIP125_RBF_SEQUENCE - self.ctr,
         )
