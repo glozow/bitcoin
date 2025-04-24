@@ -355,6 +355,7 @@ class MempoolTRUC(BitcoinTestFramework):
 
         # Allowed when tx is submitted in a package and evaluated individually.
         # Note that the child failed since it would be the 3rd generation.
+        self.check_mempool([tx_mempool_parent["txid"], tx_mempool_sibling["txid"]])
         result_package_indiv = node.submitpackage([tx_sibling_1["hex"], tx_has_mempool_uncle["hex"]])
         self.check_mempool([tx_mempool_parent["txid"], tx_sibling_1["txid"]])
         expected_error_gen3 = f"TRUC-violation, tx {tx_has_mempool_uncle['txid']} (wtxid={tx_has_mempool_uncle['wtxid']}) would have too many ancestors"

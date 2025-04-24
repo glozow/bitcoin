@@ -943,7 +943,6 @@ CTxMemPool::ChangeSet::TxHandle CTxMemPool::ChangeSet::StageAddition(const CTran
 {
     LOCK(m_pool->cs);
     Assume(m_to_add.find(tx->GetHash()) == m_to_add.end());
-    Assume(!m_dependencies_processed);
 
     // We need to reprocess dependencies after adding a new transaction.
     m_dependencies_processed = false;
@@ -985,7 +984,6 @@ void CTxMemPool::ChangeSet::Apply()
 void CTxMemPool::ChangeSet::ProcessDependencies()
 {
     LOCK(m_pool->cs);
-    Assume(!m_dependencies_processed); // should only call this once.
     for (const auto& entryptr : m_entry_vec) {
         for (const auto &txin : entryptr->GetSharedTx()->vin) {
             std::optional<txiter> piter = m_pool->GetIter(txin.prevout.hash);
