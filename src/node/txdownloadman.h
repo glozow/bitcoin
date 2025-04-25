@@ -34,6 +34,8 @@ static constexpr auto TXID_RELAY_DELAY{2s};
 static constexpr auto NONPREF_PEER_TX_DELAY{2s};
 /** How long to delay requesting transactions from overloaded peers (see MAX_PEER_TX_REQUEST_IN_FLIGHT). */
 static constexpr auto OVERLOADED_PEER_TX_DELAY{2s};
+/** How long to delay processing unsolicited transactions. */
+static constexpr auto UNREQUESTED_TX_DELAY{2s};
 /** How long to wait before downloading a transaction from an additional peer */
 static constexpr auto GETDATA_TX_INTERVAL{60s};
 struct TxDownloadOptions {
@@ -88,6 +90,11 @@ struct PackageToValidate {
                          m_txns.back()->GetWitnessHash().ToString(),
                          m_senders.back());
     }
+};
+struct ValidationTodo {
+    /** If this is a nullptr, it means wait. */
+    CTransactionRef m_tx_to_validate;
+    bool m_first_time;
 };
 struct RejectedTxTodo
 {
@@ -157,13 +164,13 @@ public:
     /** Marks a tx as ReceivedResponse in txrequest and checks whether AlreadyHaveTx.
      * Return a bool indicating whether this tx should be validated. If false, optionally, a
      * PackageToValidate. */
-    std::pair<bool, std::optional<PackageToValidate>> ReceivedTx(NodeId nodeid, const CTransactionRef& ptx);
+    std::pair<bool, std::optional<PackageToValidate>> ReceivedTx(NodeId nodeid, const CTransactionRef& ptx, std::chrono::microseconds now);
 
     /** Whether there are any orphans to reconsider for this peer. */
-    bool HaveMoreWork(NodeId nodeid) const;
+    bool HaveMoreWork(NodeId nodeid, std::chrono::microseconds now) const;
 
     /** Returns next orphan tx to consider, or nullptr if none exist. */
-    CTransactionRef GetTxToReconsider(NodeId nodeid);
+    std::optional<ValidationTodo> GetTxToReconsider(NodeId nodeid, std::chrono::microseconds now);
 
     /** Check that all data structures are empty. */
     void CheckIsEmpty() const;

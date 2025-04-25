@@ -134,6 +134,12 @@ public:
         /** Information relevant to scheduling tx requests. */
         const TxDownloadConnectionInfo m_connection_info;
 
+        /** Work "queue" of transactions to validate, with a maximum length of 1. This work queue is separate from the
+         * TxOrphanage work queue, but also returned in GetTxToReconsider. */
+        CTransactionRef m_validation_queue{nullptr};
+        /** Timer for when validation is scheduled. */
+        std::chrono::microseconds m_validation_time{0s};
+
         PeerInfo(const TxDownloadConnectionInfo& info) : m_connection_info{info} {}
     };
 
@@ -180,10 +186,10 @@ public:
     RejectedTxTodo MempoolRejectedTx(const CTransactionRef& ptx, const TxValidationState& state, NodeId nodeid, bool first_time_failure);
     void MempoolRejectedPackage(const Package& package);
 
-    std::pair<bool, std::optional<PackageToValidate>> ReceivedTx(NodeId nodeid, const CTransactionRef& ptx);
+    std::pair<bool, std::optional<PackageToValidate>> ReceivedTx(NodeId nodeid, const CTransactionRef& ptx, std::chrono::microseconds now);
 
-    bool HaveMoreWork(NodeId nodeid);
-    CTransactionRef GetTxToReconsider(NodeId nodeid);
+    bool HaveMoreWork(NodeId nodeid, std::chrono::microseconds now);
+    std::optional<ValidationTodo> GetTxToReconsider(NodeId nodeid, std::chrono::microseconds now);
 
     void CheckIsEmpty();
     void CheckIsEmpty(NodeId nodeid);

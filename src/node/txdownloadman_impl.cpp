@@ -63,17 +63,17 @@ void TxDownloadManager::MempoolRejectedPackage(const Package& package)
 {
     m_impl->MempoolRejectedPackage(package);
 }
-std::pair<bool, std::optional<PackageToValidate>> TxDownloadManager::ReceivedTx(NodeId nodeid, const CTransactionRef& ptx)
+std::pair<bool, std::optional<PackageToValidate>> TxDownloadManager::ReceivedTx(NodeId nodeid, const CTransactionRef& ptx, std::chrono::microseconds now)
 {
-    return m_impl->ReceivedTx(nodeid, ptx);
+    return m_impl->ReceivedTx(nodeid, ptx, now);
 }
-bool TxDownloadManager::HaveMoreWork(NodeId nodeid) const
+bool TxDownloadManager::HaveMoreWork(NodeId nodeid, std::chrono::microseconds now) const
 {
-    return m_impl->HaveMoreWork(nodeid);
+    return m_impl->HaveMoreWork(nodeid, now);
 }
-CTransactionRef TxDownloadManager::GetTxToReconsider(NodeId nodeid)
+std::optional<ValidationTodo> TxDownloadManager::GetTxToReconsider(NodeId nodeid, std::chrono::microseconds now)
 {
-    return m_impl->GetTxToReconsider(nodeid);
+    return m_impl->GetTxToReconsider(nodeid, now);
 }
 void TxDownloadManager::CheckIsEmpty() const
 {
@@ -513,14 +513,14 @@ void TxDownloadManagerImpl::MempoolRejectedPackage(const Package& package)
     RecentRejectsReconsiderableFilter().insert(GetPackageHash(package));
 }
 
-std::pair<bool, std::optional<PackageToValidate>> TxDownloadManagerImpl::ReceivedTx(NodeId nodeid, const CTransactionRef& ptx)
+std::pair<bool, std::optional<PackageToValidate>> TxDownloadManagerImpl::ReceivedTx(NodeId nodeid, const CTransactionRef& ptx, std::chrono::microseconds now)
 {
     const uint256& txid = ptx->GetHash();
     const uint256& wtxid = ptx->GetWitnessHash();
 
     // Mark that we have received a response
-    m_txrequest.ReceivedResponse(nodeid, txid);
-    if (ptx->HasWitness()) m_txrequest.ReceivedResponse(nodeid, wtxid);
+    bool solicited = m_txrequest.ReceivedResponse(nodeid, txid);
+    if (ptx->HasWitness()) solicited |= m_txrequest.ReceivedResponse(nodeid, wtxid);
 
     // First check if we should drop this tx.
     // We do the AlreadyHaveTx() check using wtxid, rather than txid - in the
@@ -561,18 +561,53 @@ std::pair<bool, std::optional<PackageToValidate>> TxDownloadManagerImpl::Receive
         return {false, Find1P1CPackage(ptx, nodeid)};
     }
 
+    // If the transaction was unsolicited, add it to the work queue and schedule it for processing later.
+    if (!solicited) {
+        if (auto it = m_peer_info.find(nodeid); it != m_peer_info.end()) {
+            // Outbounds and nodes with Relay permissions can bypass
+            if (it->second.m_connection_info.m_relay_permissions || it->second.m_connection_info.m_preferred) {
+                return {true, std::nullopt};
+            }
+
+            // Overwriting is fine because we wouldn't be processing TX messages if there were a work queue.
+            it->second.m_validation_queue = ptx;
+            it->second.m_validation_time = now + UNREQUESTED_TX_DELAY;
+        }
+        return {false, std::nullopt};
+    }
 
     return {true, std::nullopt};
 }
 
-bool TxDownloadManagerImpl::HaveMoreWork(NodeId nodeid)
+bool TxDownloadManagerImpl::HaveMoreWork(NodeId nodeid, std::chrono::microseconds now)
 {
+    if (auto it = m_peer_info.find(nodeid); it != m_peer_info.end()) {
+        // If the timer has not popped, even though there is work to do, return false.
+        // It is appropriate for the message processing thread to wait a while before coming back to
+        // thsi peer.
+        if (it->second.m_validation_queue && now >= it->second.m_validation_time) return true;
+    }
     return m_orphanage.HaveTxToReconsider(nodeid);
 }
 
-CTransactionRef TxDownloadManagerImpl::GetTxToReconsider(NodeId nodeid)
+std::optional<ValidationTodo> TxDownloadManagerImpl::GetTxToReconsider(NodeId nodeid, std::chrono::microseconds now)
 {
-    return m_orphanage.GetTxToReconsider(nodeid);
+    if (auto it = m_peer_info.find(nodeid); it != m_peer_info.end()) {
+        if (it->second.m_validation_queue) {
+
+            // If the timer has popped, return the transaction. Otherwise, return a nullptr.
+            if (now >= it->second.m_validation_time) {
+                CTransactionRef tx_to_return(it->second.m_validation_queue);
+                it->second.m_validation_queue.reset();
+                return ValidationTodo{tx_to_return, true};
+            } else {
+                // There is no transaction to validate, the 'todo' is to wait.
+                return ValidationTodo{nullptr, true};
+            }
+        }
+    }
+    if (auto maybe_orphan = m_orphanage.GetTxToReconsider(nodeid)) return ValidationTodo{maybe_orphan, false};
+    return std::nullopt;
 }
 
 void TxDownloadManagerImpl::CheckIsEmpty(NodeId nodeid)

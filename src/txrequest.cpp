@@ -677,14 +677,19 @@ public:
         });
     }
 
-    void ReceivedResponse(NodeId peer, const uint256& txhash)
+    bool ReceivedResponse(NodeId peer, const uint256& txhash)
     {
         // We need to search the ByPeer index for both (peer, false, txhash) and (peer, true, txhash).
         auto it = m_index.get<ByPeer>().find(ByPeerView{peer, false, txhash});
         if (it == m_index.get<ByPeer>().end()) {
             it = m_index.get<ByPeer>().find(ByPeerView{peer, true, txhash});
         }
-        if (it != m_index.get<ByPeer>().end()) MakeCompleted(m_index.project<ByTxHash>(it));
+        if (it != m_index.get<ByPeer>().end()) {
+            const bool requested = it->m_state == State::REQUESTED;
+            MakeCompleted(m_index.project<ByTxHash>(it));
+            return requested;
+        }
+        return false;
     }
 
     size_t CountInFlight(NodeId peer) const
@@ -749,9 +754,9 @@ void TxRequestTracker::RequestedTx(NodeId peer, const uint256& txhash, std::chro
     m_impl->RequestedTx(peer, txhash, expiry);
 }
 
-void TxRequestTracker::ReceivedResponse(NodeId peer, const uint256& txhash)
+bool TxRequestTracker::ReceivedResponse(NodeId peer, const uint256& txhash)
 {
-    m_impl->ReceivedResponse(peer, txhash);
+    return m_impl->ReceivedResponse(peer, txhash);
 }
 
 std::vector<GenTxid> TxRequestTracker::GetRequestable(NodeId peer, std::chrono::microseconds now,

@@ -182,8 +182,9 @@ public:
      *
      * It should be called whenever a transaction or NOTFOUND was received from a peer. When the transaction is
      * not needed entirely anymore, ForgetTxhash should be called instead of, or in addition to, this call.
+     * @returns whether there was an entry for this peer and txhash with state = REQUESTED.
      */
-    void ReceivedResponse(NodeId peer, const uint256& txhash);
+    bool ReceivedResponse(NodeId peer, const uint256& txhash);
 
     // The operations below inspect the data structure.
 

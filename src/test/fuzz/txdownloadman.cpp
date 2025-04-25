@@ -236,8 +236,8 @@ FUZZ_TARGET(txdownloadman, .init = initialize)
                 txdownloadman.GetRequestsToSend(rand_peer, time);
             },
             [&] {
-                txdownloadman.ReceivedTx(rand_peer, rand_tx);
-                const auto& [should_validate, maybe_package] = txdownloadman.ReceivedTx(rand_peer, rand_tx);
+                txdownloadman.ReceivedTx(rand_peer, rand_tx, time);
+                const auto& [should_validate, maybe_package] = txdownloadman.ReceivedTx(rand_peer, rand_tx, time);
                 // The only possible results should be:
                 // - Don't validate the tx, no package.
                 // - Don't validate the tx, package.
@@ -250,12 +250,12 @@ FUZZ_TARGET(txdownloadman, .init = initialize)
                 txdownloadman.ReceivedNotFound(rand_peer, {rand_tx->GetWitnessHash()});
             },
             [&] {
-                const bool expect_work{txdownloadman.HaveMoreWork(rand_peer)};
-                const auto ptx = txdownloadman.GetTxToReconsider(rand_peer);
+                const bool expect_work{txdownloadman.HaveMoreWork(rand_peer, time)};
+                const auto work = txdownloadman.GetTxToReconsider(rand_peer, time);
                 // expect_work=true doesn't necessarily mean the next item from the workset isn't a
                 // nullptr, as the transaction could have been removed from orphanage without being
                 // removed from the peer's workset.
-                if (ptx) {
+                if (work) {
                     // However, if there was a non-null tx in the workset, HaveMoreWork should have
                     // returned true.
                     Assert(expect_work);
@@ -387,7 +387,7 @@ FUZZ_TARGET(txdownloadman_impl, .init = initialize)
                 }
             },
             [&] {
-                const auto& [should_validate, maybe_package] = txdownload_impl.ReceivedTx(rand_peer, rand_tx);
+                const auto& [should_validate, maybe_package] = txdownload_impl.ReceivedTx(rand_peer, rand_tx, time);
                 // The only possible results should be:
                 // - Don't validate the tx, no package.
                 // - Don't validate the tx, package.
@@ -415,12 +415,13 @@ FUZZ_TARGET(txdownloadman_impl, .init = initialize)
                 txdownload_impl.ReceivedNotFound(rand_peer, {rand_tx->GetWitnessHash()});
             },
             [&] {
-                const bool expect_work{txdownload_impl.HaveMoreWork(rand_peer)};
-                const auto ptx{txdownload_impl.GetTxToReconsider(rand_peer)};
+                const bool expect_work{txdownload_impl.HaveMoreWork(rand_peer, time)};
+                const auto work{txdownload_impl.GetTxToReconsider(rand_peer, time)};
                 // expect_work=true doesn't necessarily mean the next item from the workset isn't a
                 // nullptr, as the transaction could have been removed from orphanage without being
                 // removed from the peer's workset.
-                if (ptx) {
+                if (work) {
+                    auto ptx = work->m_tx_to_validate;
                     // However, if there was a non-null tx in the workset, HaveMoreWork should have
                     // returned true.
                     Assert(expect_work);
