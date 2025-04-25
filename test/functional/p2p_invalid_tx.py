@@ -26,6 +26,8 @@ class InvalidTxRequestTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.extra_args = [[
             "-acceptnonstdtxn=1",
+            # Give nodes Relay permissions so that transactions can arrive unsolicited
+            "-whitelist=relay@127.0.0.1",
         ]]
         self.setup_clean_chain = True
 

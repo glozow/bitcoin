@@ -19,6 +19,9 @@ from test_framework.blocktools import (
     create_coinbase,
 )
 from test_framework.messages import (
+    CInv,
+    MSG_WTX,
+    msg_inv,
     msg_pong,
     msg_tx,
 )
@@ -82,6 +85,9 @@ class P2PEvict(BitcoinTestFramework):
             txpeer.sync_with_ping()
 
             tx = self.wallet.create_self_transfer()['tx']
+            inv_int = int(tx.getwtxid(), 16)
+            txpeer.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=inv_int)]))
+            txpeer.wait_for_getdata([inv_int])
             txpeer.send_without_ping(msg_tx(tx))
             protected_peers.add(current_peer)
 

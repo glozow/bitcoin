@@ -60,7 +60,7 @@ class P2PIBDTxRelayTest(BitcoinTestFramework):
             assert txid not in peer_inver.getdata_requests
         self.nodes[0].disconnect_p2ps()
 
-        self.log.info("Check that nodes don't process unsolicited transactions while still in IBD")
+        self.log.info("Check that nodes don't process transaction invs while still in IBD")
         # A transaction hex pulled from tx_valid.json. There are no valid transactions since no UTXOs
         # exist yet, but it should be a well-formed transaction.
         rawhex = "0100000001b14bdcbc3e01bdaad36cc08e81e69c82e1060bc14e518db2b49aa43ad90ba260000000004a01ff473" + \
@@ -70,6 +70,17 @@ class P2PIBDTxRelayTest(BitcoinTestFramework):
         assert self.nodes[1].decoderawtransaction(rawhex) # returns a dict, should not throw
         tx = from_hex(CTransaction(), rawhex)
         peer_txer = self.nodes[0].add_p2p_connection(P2PInterface())
+        inv_int = int(tx.getwtxid(), 16)
+        peer_txer.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=inv_int)]))
+        self.nodes[0].bumpmocktime(NONPREF_PEER_TX_DELAY)
+
+        # Check that the node didn't request this tx
+        peer_txer.sync_with_ping()
+        if "getdata" in peer_txer.last_message:
+            for request in last_message["getdata"].inv:
+                assert_not_equal(request.hash, inv_int)
+
+        self.log.info("Check that nodes don't process unsolicited transactions while still in IBD")
         with self.nodes[0].assert_debug_log(expected_msgs=["received: tx"], unexpected_msgs=["was not accepted"]):
             peer_txer.send_and_ping(msg_tx(tx))
         self.nodes[0].disconnect_p2ps()
@@ -82,8 +93,11 @@ class P2PIBDTxRelayTest(BitcoinTestFramework):
             assert not node.getblockchaininfo()['initialblockdownload']
             self.wait_until(lambda: all(peer['minfeefilter'] == NORMAL_FEE_FILTER for peer in node.getpeerinfo()))
 
-        self.log.info("Check that nodes process the same transaction, even when unsolicited, when no longer in IBD")
+        self.log.info("Check that nodes process the same transaction when no longer in IBD")
         peer_txer = self.nodes[0].add_p2p_connection(P2PInterface())
+        peer_txer.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=inv_int)]))
+        self.nodes[0].bumpmocktime(NONPREF_PEER_TX_DELAY)
+        peer_txer.wait_for_getdata([inv_int])
         with self.nodes[0].assert_debug_log(expected_msgs=["was not accepted"]):
             peer_txer.send_and_ping(msg_tx(tx))
 

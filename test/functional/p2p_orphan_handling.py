@@ -167,7 +167,17 @@ class OrphanHandlingTest(BitcoinTestFramework):
         ])
 
         peer_spy = node.add_p2p_connection(PeerTxRelayer())
-        peer_normal = node.add_p2p_connection(PeerTxRelayer())
+        peer_normal = node.add_outbound_p2p_connection(PeerTxRelayer(), p2p_idx=5)
+
+        # Send invs together first so we don't need to bumpmocktime twice
+        fake_orphan_wtxid_int = int(tx_fake_orphan["wtxid"], 16)
+        peer_spy.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=fake_orphan_wtxid_int)]))
+        parent_wtxid_int = int(tx_parent_arrives["wtxid"], 16)
+        peer_normal.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=parent_wtxid_int)]))
+        node.bumpmocktime(NONPREF_PEER_TX_DELAY)
+        peer_spy.wait_for_getdata([fake_orphan_wtxid_int])
+        peer_normal.wait_for_getdata([parent_wtxid_int])
+
         # This transaction is an orphan because it is missing inputs. It is a "fake" orphan that the
         # spy peer has crafted to learn information about tx_parent_arrives even though it isn't
         # able to spend a real output of it, but it could also just be a normal, real child tx.
@@ -455,6 +465,10 @@ class OrphanHandlingTest(BitcoinTestFramework):
         honest_peer = node.add_p2p_connection(P2PInterface())
 
         # 1. Fake orphan is received first. It is missing an input.
+        orphan_bad_int = int(tx_orphan_bad_wit.getwtxid(), 16)
+        bad_peer.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=orphan_bad_int)]))
+        node.bumpmocktime(NONPREF_PEER_TX_DELAY)
+        bad_peer.wait_for_getdata([orphan_bad_int])
         bad_peer.send_and_ping(msg_tx(tx_orphan_bad_wit))
         assert tx_in_orphanage(node, tx_orphan_bad_wit)
 
@@ -465,8 +479,11 @@ class OrphanHandlingTest(BitcoinTestFramework):
 
         # 3. Honest peer relays the real child, which is also missing parents and should be placed
         # in the orphanage.
-        with node.assert_debug_log(["missingorspent"]):
-            honest_peer.send_and_ping(msg_tx(tx_child["tx"]))
+        child_wtxid_int = int(tx_child["wtxid"], 16)
+        honest_peer.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=child_wtxid_int)]))
+        node.bumpmocktime(NONPREF_PEER_TX_DELAY)
+        honest_peer.wait_for_getdata([child_wtxid_int])
+        honest_peer.send_and_ping(msg_tx(tx_child["tx"]))
         assert tx_in_orphanage(node, tx_child["tx"])
 
         # Time out the previous request for the parent (node will not request the same transaction
@@ -506,6 +523,10 @@ class OrphanHandlingTest(BitcoinTestFramework):
         honest_peer = node.add_p2p_connection(P2PInterface())
 
         # 1. Fake orphan is received first. It is missing an input.
+        orphan_bad_int = int(tx_orphan_bad_wit.getwtxid(), 16)
+        bad_peer.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=orphan_bad_int)]))
+        node.bumpmocktime(NONPREF_PEER_TX_DELAY)
+        bad_peer.wait_for_getdata([orphan_bad_int])
         bad_peer.send_and_ping(msg_tx(tx_orphan_bad_wit))
         assert tx_in_orphanage(node, tx_orphan_bad_wit)
 
@@ -517,6 +538,11 @@ class OrphanHandlingTest(BitcoinTestFramework):
         # 3. Honest peer relays the grandchild, which is missing a parent. The parent by txid already
         # exists in orphanage, but should be re-requested because the node shouldn't assume that the
         # witness data is the same. In this case, a same-txid-different-witness transaction exists!
+        grandchild_wtxid_int = int(tx_grandchild["wtxid"], 16)
+        honest_peer.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=grandchild_wtxid_int)]))
+        node.bumpmocktime(NONPREF_PEER_TX_DELAY)
+        honest_peer.wait_for_getdata([grandchild_wtxid_int])
+
         honest_peer.send_and_ping(msg_tx(tx_grandchild["tx"]))
         assert tx_in_orphanage(node, tx_grandchild["tx"])
         middle_txid_int = int(tx_middle["txid"], 16)
@@ -525,11 +551,20 @@ class OrphanHandlingTest(BitcoinTestFramework):
 
         # 4. Honest peer relays the real child, which is also missing parents and should be placed
         # in the orphanage.
+        middle_wtxid_int = int(tx_middle["wtxid"], 16)
+        honest_peer.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=middle_wtxid_int)]))
+        node.bumpmocktime(NONPREF_PEER_TX_DELAY)
+        honest_peer.wait_for_getdata([middle_wtxid_int])
+
         honest_peer.send_and_ping(msg_tx(tx_middle["tx"]))
         assert tx_in_orphanage(node, tx_middle["tx"])
         assert_equal(len(node.getrawmempool()), 0)
 
         # 5. Honest peer sends tx_grandparent
+        grandparent_wtxid_int = int(tx_grandparent["wtxid"], 16)
+        honest_peer.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=grandparent_wtxid_int)]))
+        node.bumpmocktime(NONPREF_PEER_TX_DELAY)
+        honest_peer.wait_for_getdata([grandparent_wtxid_int])
         honest_peer.send_and_ping(msg_tx(tx_grandparent["tx"]))
 
         # 6. After parent is accepted, orphans should be reconsidered.
@@ -557,6 +592,10 @@ class OrphanHandlingTest(BitcoinTestFramework):
         honest_peer = node.add_p2p_connection(P2PInterface(wtxidrelay=False))
 
         # 1. Fake orphan is received first. It is missing an input.
+        orphan_bad_int = int(tx_orphan_bad_wit.getwtxid(), 16)
+        bad_peer.send_and_ping(msg_inv([CInv(t=MSG_WTX, h=orphan_bad_int)]))
+        node.bumpmocktime(NONPREF_PEER_TX_DELAY)
+        bad_peer.wait_for_getdata([orphan_bad_int])
         bad_peer.send_and_ping(msg_tx(tx_orphan_bad_wit))
         assert tx_in_orphanage(node, tx_orphan_bad_wit)
 
@@ -599,7 +638,7 @@ class OrphanHandlingTest(BitcoinTestFramework):
 
         node = self.nodes[0]
         self.generate(self.wallet, 1)
-        peer_1 = node.add_p2p_connection(P2PInterface())
+        peer_1 = node.add_outbound_p2p_connection(P2PInterface(), p2p_idx=6)
 
         self.log.info("Check that orphanage is empty on start of test")
         assert len(node.getorphantxs()) == 0
