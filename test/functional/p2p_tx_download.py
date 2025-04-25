@@ -375,6 +375,48 @@ class TxDownloadTest(BitcoinTestFramework):
         node.bumpmocktime(MAX_GETDATA_INBOUND_WAIT)
         wtxidrelay_on_peer.wait_for_getdata([int(random_tx['wtxid'], 16)])
 
+    def test_unsolicited_inbound(self):
+        self.log.info("Test unsolicited transactions from inbound peers are scheduled for proessing later")
+        node = self.nodes[0]
+        peer = node.add_p2p_connection(TestP2PConn())
+        random_tx = self.wallet.create_self_transfer()
+
+        node.setmocktime(int(time.time()))
+        # A race is possible but this test should always pass because the delay must elapse before processing happens.
+        # We can't sync_with_ping because no messages are processed until after the work queue is complete.
+        peer.send_without_ping(msg_tx(random_tx["tx"]))
+        assert not random_tx["txid"] in node.getrawmempool()
+        node.bumpmocktime(1)
+        assert not random_tx["txid"] in node.getrawmempool()
+        node.bumpmocktime(1)
+
+        # Timer pops, node completes peer's work queue before processing ping.
+        peer.sync_with_ping()
+        assert random_tx["txid"] in node.getrawmempool()
+
+    def test_unsolicited_special(self):
+        node = self.nodes[0]
+
+        self.log.info("Test unsolicited transactions from peers with relay permission are processed immediately")
+        self.restart_node(0, extra_args=['-whitelist=relay@127.0.0.1'])
+        # Set mock time to ensure there are no delays
+        node.setmocktime(int(time.time()))
+        peer_relay_perms = self.nodes[0].add_p2p_connection(TestP2PConn())
+
+        random_tx = self.wallet.create_self_transfer()
+        peer_relay_perms.send_and_ping(msg_tx(random_tx["tx"]))
+        assert random_tx["txid"] in node.getrawmempool()
+
+        self.log.info("Test unsolicited transactions from outbound peers are processed immediately")
+        self.restart_node(0)
+        # Set mock time to ensure there are no delays
+        node.setmocktime(int(time.time()))
+        peer_outbound = node.add_outbound_p2p_connection(TestP2PConn(), p2p_idx=5)
+
+        random_tx = self.wallet.create_self_transfer()
+        peer_outbound.send_and_ping(msg_tx(random_tx["tx"]))
+        assert random_tx["txid"] in node.getrawmempool()
+
     def run_test(self):
         self.wallet = MiniWallet(self.nodes[0])
 
@@ -394,6 +436,8 @@ class TxDownloadTest(BitcoinTestFramework):
         # Run each test against new bitcoind instances, as setting mocktimes has long-term effects on when
         # the next trickle relay event happens.
         for test, with_inbounds in [
+            (self.test_unsolicited_inbound, False),
+            (self.test_unsolicited_special, False),
             (self.test_in_flight_max, True),
             (self.test_inv_block, True),
             (self.test_tx_requests, True),
