@@ -50,7 +50,10 @@ enum class State : uint8_t {
     CANDIDATE_BEST,
     /** A REQUESTED announcement. */
     REQUESTED,
-    /** A COMPLETED announcement. */
+    /** A previously-REQUESTED announcement that we want to remember for some time. */
+    LINGERING,
+    /** A COMPLETED announcement. If new States are added, ensure COMPLETED is last, as some code
+     * relies on this ordering to only search in one direction. */
     COMPLETED,
 };
 
@@ -570,7 +573,13 @@ public:
     {
         auto it = m_index.get<ByTxHash>().lower_bound(ByTxHashView{txhash, State::CANDIDATE_DELAYED, 0});
         while (it != m_index.get<ByTxHash>().end() && it->m_txhash == txhash) {
-            it = Erase<ByTxHash>(it);
+            if (it->m_state == State::REQUESTED) {
+                // Move all outstanding REQUESTED announcements to LINGERING
+                Modify<ByTxHash>(it, [](Announcement& ann){ ann.SetState(State::LINGERING); });
+                it = std::next(it);
+            } else {
+                it = Erase<ByTxHash>(it);
+            }
         }
     }
 
@@ -583,6 +592,12 @@ public:
         }
     }
 
+    bool HaveLingering(const uint256& txhash) const
+    {
+        auto it = m_index.get<ByTxHash>().lower_bound(ByTxHashView{txhash, State::LINGERING, 0});
+        return it->m_txhash == txhash && it->m_state == State::LINGERING;
+    }
+
     void ReceivedInv(NodeId peer, const GenTxid& gtxid, bool preferred,
         std::chrono::microseconds reqtime)
     {
@@ -590,6 +605,11 @@ public:
         // where there is a non-CANDIDATE_BEST announcement already will be caught by the uniqueness property of the
         // ByPeer index when we try to emplace the new object below.
         if (m_index.get<ByPeer>().count(ByPeerView{peer, true, gtxid.GetHash()})) return;
+
+        // If there are any LINGERING entries for this tx, drop on the floor. ForgetTxHash was already called.
+        // This doesn't preclude adding another announcement for this txhash in the future, after these
+        // LINGERING ones expire or are otherwise erased.
+        if (HaveLingering(gtxid.GetHash())) return;
 
         // Try creating the announcement with CANDIDATE_DELAYED state (which will fail due to the uniqueness
         // of the ByPeer index if a non-CANDIDATE_BEST announcement already exists with the same txhash and peer).
@@ -685,7 +705,8 @@ public:
             it = m_index.get<ByPeer>().find(ByPeerView{peer, true, txhash});
         }
         if (it != m_index.get<ByPeer>().end()) {
-            const bool requested = it->m_state == State::REQUESTED;
+            const bool requested = (it->m_state == State::REQUESTED || it->m_state == State::LINGERING);
+            // MakeCompleted, even if requested is false.
             MakeCompleted(m_index.project<ByTxHash>(it));
             return requested;
         }
