@@ -374,15 +374,13 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
             // the same parent txid more than once down below.
             unique_parents = GetUniqueParents(tx);
 
-            // Distinguish between parents in m_lazy_recent_rejects and m_lazy_recent_rejects_reconsiderable.
             // We can tolerate having up to 1 parent in m_lazy_recent_rejects_reconsiderable since we
-            // submit 1p1c packages. However, fail immediately if any are in m_lazy_recent_rejects.
+            // submit 1p1c packages. Previously, we quit whenever we found a parent in m_lazy_recent_rejects, but doing
+            // so creates a 1p1c censorship problem: an attacker can cause us to reject the parent by sending a
+            // witness-stripped version. See https://github.com/bitcoin/bitcoin/pull/32379
             std::optional<uint256> rejected_parent_reconsiderable;
             for (const uint256& parent_txid : unique_parents) {
-                if (RecentRejectsFilter().contains(parent_txid)) {
-                    fRejectedParents = true;
-                    break;
-                } else if (RecentRejectsReconsiderableFilter().contains(parent_txid) &&
+                if (RecentRejectsReconsiderableFilter().contains(parent_txid) &&
                            !m_opts.m_mempool.exists(GenTxid::Txid(parent_txid))) {
                     // More than 1 parent in m_lazy_recent_rejects_reconsiderable: 1p1c will not be
                     // sufficient to accept this package, so just give up here.
