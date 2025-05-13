@@ -5,6 +5,7 @@
 #include <arith_uint256.h>
 #include <consensus/validation.h>
 #include <node/txorphanage.h>
+#include <node/txorphanage_impl.h>
 #include <policy/policy.h>
 #include <primitives/transaction.h>
 #include <pubkey.h>
@@ -89,6 +90,173 @@ static bool EqualTxns(const std::set<CTransactionRef>& set_txns, const std::vect
     return true;
 }
 
+unsigned int CheckNumEvictions(node::TxOrphanageImpl& orphanage)
+{
+    const auto original_total_count{orphanage.CountAnnouncements()};
+    orphanage.LimitOrphans();
+    return original_total_count - orphanage.CountAnnouncements();
+}
+
+BOOST_AUTO_TEST_CASE(peer_dos_limits)
+{
+    FastRandomContext det_rand{true};
+
+    // Construct transactions to use
+    unsigned int NUM_TXNS_CREATED = 100;
+    std::vector<CTransactionRef> TXNS;
+    TXNS.reserve(NUM_TXNS_CREATED);
+    // All transactions are the same size.
+    int64_t TX_SIZE{0};
+    for (unsigned int i{0}; i < NUM_TXNS_CREATED; ++i) {
+        auto ptx = MakeTransactionSpending({}, det_rand);
+        TXNS.emplace_back(ptx);
+        if (TX_SIZE) {
+            BOOST_CHECK_EQUAL(TX_SIZE, GetTransactionWeight(*ptx));
+        } else {
+            TX_SIZE = GetTransactionWeight(*ptx);
+        }
+    }
+    int64_t USAGE_TXNS_CREATED = NUM_TXNS_CREATED * TX_SIZE;
+
+    // Single peer: eviction is triggered if either limit is hit
+    {
+        // Test announcement limits
+        NodeId peer{8};
+        node::TxOrphanageImpl orphanage_low_ann(/*max_global_ann=*/1, /*reserved_peer_usage=*/TX_SIZE * 10);
+        node::TxOrphanageImpl orphanage_low_mem(/*max_global_ann=*/10, /*reserved_peer_usage=*/TX_SIZE + 1);
+
+        // Add the first transaction
+        orphanage_low_ann.AddTx(TXNS.at(0), peer);
+        orphanage_low_mem.AddTx(TXNS.at(0), peer);
+
+        // Add more. One of the limits is exceeded, so LimitOrphans evicts 1.
+        orphanage_low_ann.AddTx(TXNS.at(1), peer);
+        BOOST_CHECK(orphanage_low_ann.CountAnnouncements() > orphanage_low_ann.MaxGlobalAnnouncements());
+        BOOST_CHECK(orphanage_low_ann.TotalOrphanUsage() <= orphanage_low_ann.MaxGlobalUsage());
+        BOOST_CHECK(orphanage_low_ann.NeedsTrim());
+
+        orphanage_low_mem.AddTx(TXNS.at(1), peer);
+        BOOST_CHECK(orphanage_low_mem.CountAnnouncements() <= orphanage_low_mem.MaxGlobalAnnouncements());
+        BOOST_CHECK(orphanage_low_mem.TotalOrphanUsage() > orphanage_low_mem.MaxGlobalUsage());
+        BOOST_CHECK(orphanage_low_mem.NeedsTrim());
+
+        BOOST_CHECK_EQUAL(CheckNumEvictions(orphanage_low_mem), 1);
+        BOOST_CHECK_EQUAL(CheckNumEvictions(orphanage_low_ann), 1);
+
+        // The older transaction is evicted.
+        BOOST_CHECK(!orphanage_low_ann.HaveTx(TXNS.at(0)->GetWitnessHash()));
+        BOOST_CHECK(!orphanage_low_mem.HaveTx(TXNS.at(0)->GetWitnessHash()));
+        BOOST_CHECK(orphanage_low_ann.HaveTx(TXNS.at(1)->GetWitnessHash()));
+        BOOST_CHECK(orphanage_low_mem.HaveTx(TXNS.at(1)->GetWitnessHash()));
+    }
+
+    // Multiple peers: when limit is exceeded, we choose the DoSiest peer and evict their oldest transaction.
+    {
+        NodeId peer0{0};
+        NodeId peer1{1};
+        NodeId peer2{2};
+
+        unsigned int max_announcements = 60;
+        // Set a high per-peer reservation so announcement limit is always hit first.
+        node::TxOrphanageImpl orphanage(max_announcements, USAGE_TXNS_CREATED * 10);
+
+        // No evictions happen before the global limit is reached.
+        for (unsigned int i{0}; i < max_announcements; ++i) {
+            orphanage.AddTx(TXNS.at(i), peer0);
+            BOOST_CHECK_EQUAL(CheckNumEvictions(orphanage), 0);
+        }
+        BOOST_CHECK_EQUAL(orphanage.AnnouncementsFromPeer(peer0), max_announcements);
+        BOOST_CHECK_EQUAL(orphanage.AnnouncementsFromPeer(peer1), 0);
+
+        // Add 10 unique transactions from peer1.
+        // LimitOrphans should evict from peer0, because that's the one exceeding announcement limits.
+        unsigned int num_from_peer1 = 10;
+        for (unsigned int i{0}; i < num_from_peer1; ++i) {
+            orphanage.AddTx(TXNS.at(max_announcements + i), peer1);
+            // The announcement limit per peer has halved, but LimitOrphans does not evict beyond what is necessary to
+            // bring the total announcements within its global limit.
+            BOOST_CHECK_EQUAL(CheckNumEvictions(orphanage), 1);
+            BOOST_CHECK(orphanage.AnnouncementsFromPeer(peer0) > orphanage.MaxPeerAnnouncements());
+
+            BOOST_CHECK_EQUAL(orphanage.AnnouncementsFromPeer(peer1), i + 1);
+            BOOST_CHECK_EQUAL(orphanage.AnnouncementsFromPeer(peer0), max_announcements - i - 1);
+
+            // Evictions are FIFO within a peer, so the ith transaction sent by peer0 is the one that was evicted.
+            BOOST_CHECK(!orphanage.HaveTx(TXNS.at(i)->GetWitnessHash()));
+        }
+        // Add 10 transactions that are duplicates of the ones sent by peer0. We need to add 10 because the first 10
+        // were just evicted in the previous block additions.
+        for (unsigned int i{num_from_peer1}; i < num_from_peer1 + 10; ++i) {
+            // Tx has already been sent by peer0
+            BOOST_CHECK(orphanage.HaveTxFromPeer(TXNS.at(i)->GetWitnessHash(), peer0));
+            orphanage.AddTx(TXNS.at(i), peer2);
+
+            // Announcement limit is by entry, not by unique orphans
+            BOOST_CHECK_EQUAL(CheckNumEvictions(orphanage), 1);
+
+            // peer0 is still the only one getting evicted
+            BOOST_CHECK_EQUAL(orphanage.AnnouncementsFromPeer(peer0), max_announcements - i - 1);
+            BOOST_CHECK_EQUAL(orphanage.AnnouncementsFromPeer(peer1), num_from_peer1);
+            BOOST_CHECK_EQUAL(orphanage.AnnouncementsFromPeer(peer2), i + 1 - num_from_peer1);
+
+            // Evictions are FIFO within a peer, so the ith transaction sent by peer0 is the one that was evicted.
+            BOOST_CHECK(!orphanage.HaveTxFromPeer(TXNS.at(i)->GetWitnessHash(), peer0));
+            BOOST_CHECK(orphanage.HaveTx(TXNS.at(i)->GetWitnessHash()));
+        }
+
+        // With 6 peers, each can add 10, and still only peer0's orphans are evicted.
+        const unsigned int max_per_peer{max_announcements / 6};
+        for (NodeId peer{3}; peer < 6; ++peer) {
+            for (unsigned int i{0}; i < max_per_peer; ++i) {
+                orphanage.AddTx(TXNS.at(peer * max_per_peer + i), peer);
+                BOOST_CHECK_EQUAL(CheckNumEvictions(orphanage), 1);
+            }
+        }
+        for (NodeId peer{0}; peer < 6; ++peer) {
+            BOOST_CHECK_EQUAL(orphanage.AnnouncementsFromPeer(peer), max_per_peer);
+        }
+    }
+
+    // Limits change as more peers are added.
+    {
+        node::TxOrphanageImpl orphanage;
+        // These stay the same regardless of number of peers
+        BOOST_CHECK_EQUAL(orphanage.MaxGlobalAnnouncements(), node::DEFAULT_MAX_ORPHAN_ANNOUNCEMENTS);
+        BOOST_CHECK_EQUAL(orphanage.ReservedPeerUsage(), node::DEFAULT_RESERVED_ORPHAN_WEIGHT_PER_PEER);
+
+        // These change with number of peers
+        BOOST_CHECK_EQUAL(orphanage.MaxGlobalUsage(), node::DEFAULT_RESERVED_ORPHAN_WEIGHT_PER_PEER);
+        BOOST_CHECK_EQUAL(orphanage.MaxPeerAnnouncements(), node::DEFAULT_MAX_ORPHAN_ANNOUNCEMENTS);
+
+        // Number of peers = 1
+        orphanage.AddTx(TXNS.at(0), 0);
+        BOOST_CHECK_EQUAL(orphanage.MaxGlobalAnnouncements(), node::DEFAULT_MAX_ORPHAN_ANNOUNCEMENTS);
+        BOOST_CHECK_EQUAL(orphanage.ReservedPeerUsage(), node::DEFAULT_RESERVED_ORPHAN_WEIGHT_PER_PEER);
+        BOOST_CHECK_EQUAL(orphanage.MaxGlobalUsage(), node::DEFAULT_RESERVED_ORPHAN_WEIGHT_PER_PEER);
+        BOOST_CHECK_EQUAL(orphanage.MaxPeerAnnouncements(), node::DEFAULT_MAX_ORPHAN_ANNOUNCEMENTS);
+
+        // Number of peers = 2
+        orphanage.AddTx(TXNS.at(1), 1);
+        BOOST_CHECK_EQUAL(orphanage.MaxGlobalAnnouncements(), node::DEFAULT_MAX_ORPHAN_ANNOUNCEMENTS);
+        BOOST_CHECK_EQUAL(orphanage.ReservedPeerUsage(), node::DEFAULT_RESERVED_ORPHAN_WEIGHT_PER_PEER);
+        BOOST_CHECK_EQUAL(orphanage.MaxGlobalUsage(), node::DEFAULT_RESERVED_ORPHAN_WEIGHT_PER_PEER * 2);
+        BOOST_CHECK_EQUAL(orphanage.MaxPeerAnnouncements(), node::DEFAULT_MAX_ORPHAN_ANNOUNCEMENTS / 2);
+
+        // Number of peers = 3
+        orphanage.AddTx(TXNS.at(2), 2);
+        BOOST_CHECK_EQUAL(orphanage.MaxGlobalAnnouncements(), node::DEFAULT_MAX_ORPHAN_ANNOUNCEMENTS);
+        BOOST_CHECK_EQUAL(orphanage.ReservedPeerUsage(), node::DEFAULT_RESERVED_ORPHAN_WEIGHT_PER_PEER);
+        BOOST_CHECK_EQUAL(orphanage.MaxGlobalUsage(), node::DEFAULT_RESERVED_ORPHAN_WEIGHT_PER_PEER * 3);
+        BOOST_CHECK_EQUAL(orphanage.MaxPeerAnnouncements(), node::DEFAULT_MAX_ORPHAN_ANNOUNCEMENTS / 3);
+
+        // Number of peers didn't change.
+        orphanage.AddTx(TXNS.at(3), 2);
+        BOOST_CHECK_EQUAL(orphanage.MaxGlobalAnnouncements(), node::DEFAULT_MAX_ORPHAN_ANNOUNCEMENTS);
+        BOOST_CHECK_EQUAL(orphanage.ReservedPeerUsage(), node::DEFAULT_RESERVED_ORPHAN_WEIGHT_PER_PEER);
+        BOOST_CHECK_EQUAL(orphanage.MaxGlobalUsage(), node::DEFAULT_RESERVED_ORPHAN_WEIGHT_PER_PEER * 3);
+        BOOST_CHECK_EQUAL(orphanage.MaxPeerAnnouncements(), node::DEFAULT_MAX_ORPHAN_ANNOUNCEMENTS / 3);
+    }
+}
 BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
 {
     // This test had non-deterministic coverage due to
