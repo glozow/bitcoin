@@ -276,6 +276,7 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   node/timeoffsets.cpp
   node/transaction.cpp
   node/txdownloadman_impl.cpp
+  node/txorphanage.cpp
   node/txreconciliation.cpp
   node/utxo_snapshot.cpp
   node/warnings.cpp
@@ -307,7 +308,6 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   txdb.cpp
   txgraph.cpp
   txmempool.cpp
-  txorphanage.cpp
   txrequest.cpp
   validation.cpp
   validationinterface.cpp

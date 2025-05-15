@@ -15,6 +15,7 @@
 #include <map>
 #include <set>
 
+namespace node{
 /** Expiration time for orphan transactions */
 static constexpr auto ORPHAN_TX_EXPIRE_TIME{20min};
 /** Minimum time between orphan transactions expire time checks */
@@ -162,5 +163,5 @@ protected:
     /** Timestamp for the next scheduled sweep of expired orphans */
     NodeSeconds m_next_sweep{0s};
 };
-
+} // namespace node
 #endif // BITCOIN_TXORPHANAGE_H
