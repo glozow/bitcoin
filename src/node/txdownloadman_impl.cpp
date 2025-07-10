@@ -126,9 +126,14 @@ bool TxDownloadManagerImpl::AlreadyHaveTx(const GenTxid& gtxid, bool include_rec
 {
     const uint256& hash = gtxid.GetHash();
 
+    // Never query the rejection filters by txid.
     if (gtxid.IsWtxid()) {
         // Normal query by wtxid.
         if (m_orphanage.HaveTx(Wtxid::FromUint256(hash))) return true;
+
+        if (include_reconsiderable && RecentRejectsReconsiderableFilter().contains(hash)) return true;
+
+        if (RecentRejectsFilter().contains(hash)) return true;
     } else {
         // Never query by txid: it is possible that the transaction in the orphanage has the same
         // txid but a different witness, which would give us a false positive result. If we decided
@@ -144,11 +149,9 @@ bool TxDownloadManagerImpl::AlreadyHaveTx(const GenTxid& gtxid, bool include_rec
         if (m_orphanage.HaveTx(Wtxid::FromUint256(hash))) return true;
     }
 
-    if (include_reconsiderable && RecentRejectsReconsiderableFilter().contains(hash)) return true;
-
     if (RecentConfirmedTransactionsFilter().contains(hash)) return true;
 
-    return RecentRejectsFilter().contains(hash) || m_opts.m_mempool.exists(gtxid);
+    return m_opts.m_mempool.exists(gtxid);
 }
 
 void TxDownloadManagerImpl::ConnectedPeer(NodeId nodeid, const TxDownloadConnectionInfo& info)
@@ -366,18 +369,19 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
 
     if (state.GetResult() == TxValidationResult::TX_MISSING_INPUTS) {
         // Only process a new orphan if this is a first time failure, as otherwise it must be either
-        // already in orphanage or from 1p1c processing.
+        // already in orphanage or from 1p1c processing. Also, we are unable to process orphans that are too low feerate
+        // right now, as package validation only permits one generation of CPFP.
         if (first_time_failure && !RecentRejectsFilter().contains(ptx->GetWitnessHash().ToUint256())) {
             // Deduplicate parent txids, so that we don't have to loop over
             // the same parent txid more than once down below.
             unique_parents = GetUniqueParents(tx);
 
+            // We do not check for parents in rejection filters because we only know their txids.
             // Previously, we quit whenever we found a parent in m_lazy_recent_rejects, but doing
             // so creates a 1p1c censorship problem: an attacker can cause us to reject the parent by sending a
             // witness-stripped version. See https://github.com/bitcoin/bitcoin/pull/32379
-            // Filter parents that we already have.
-            // Exclude m_lazy_recent_rejects_reconsiderable: the missing parent may have been
-            // previously rejected for being too low feerate. This orphan might CPFP it.
+            // Filter parents that we already have. AlreadyHaveTx excludes the rejection filters because they are txid type.
+            // TODO: add comment about bandwidth
             std::erase_if(unique_parents, [&](const auto& txid){
                 return AlreadyHaveTx(GenTxid::Txid(txid), /*include_reconsiderable=*/false);
             });
