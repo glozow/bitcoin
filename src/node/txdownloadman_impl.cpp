@@ -218,12 +218,14 @@ bool TxDownloadManagerImpl::AddTxAnnouncement(NodeId peer, const GenTxid& gtxid,
     // - "preferred": if fPreferredDownload is set (= outbound, or NetPermissionFlags::NoBan permission)
     // - "reqtime": current time plus delays for:
     //   - NONPREF_PEER_TX_DELAY for announcements from non-preferred connections
-    //   - TXID_RELAY_DELAY for txid announcements while wtxid peers are available
+    //   - TXID_RELAY_DELAY for txid announcements (which can include orphan resolution to peers that support wtxid relay) while wtxid peers are available
+    //   - TXID_ONLY_PEER_RELAY_DELAY for txid announcements from peers that only support txid relay while wtxid peers are available
     //   - OVERLOADED_PEER_TX_DELAY for announcements from peers which have at least
     //     MAX_PEER_TX_REQUEST_IN_FLIGHT requests in flight (and don't have NetPermissionFlags::Relay).
     auto delay{0us};
     if (!info.m_preferred) delay += NONPREF_PEER_TX_DELAY;
     if (!gtxid.IsWtxid() && m_num_wtxid_peers > 0) delay += TXID_RELAY_DELAY;
+    if (!info.m_wtxid_relay && m_num_wtxid_peers > 0) delay += TXID_ONLY_PEER_RELAY_DELAY;
     const bool overloaded = !info.m_relay_permissions && m_txrequest.CountInFlight(peer) >= MAX_PEER_TX_REQUEST_IN_FLIGHT;
     if (overloaded) delay += OVERLOADED_PEER_TX_DELAY;
 

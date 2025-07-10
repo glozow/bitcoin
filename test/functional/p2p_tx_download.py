@@ -27,6 +27,7 @@ from test_framework.p2p import (
     NONPREF_PEER_TX_DELAY,
     GETDATA_TX_INTERVAL,
     TXID_RELAY_DELAY,
+    TXID_ONLY_PEER_RELAY_DELAY,
     OVERLOADED_PEER_TX_DELAY
 )
 from test_framework.test_framework import BitcoinTestFramework
@@ -289,7 +290,7 @@ class TxDownloadTest(BitcoinTestFramework):
                 assert_equal(non_pref_peer.tx_getdata_count, 0)
 
     def test_txid_inv_delay(self, glob_wtxid=False):
-        self.log.info('Check that inv from a txid-relay peers are delayed by {} s, with a wtxid peer {}'.format(TXID_RELAY_DELAY, glob_wtxid))
+        self.log.info('Check that inv from a txid-relay peers are delayed by {} s, with a wtxid peer {}'.format(TXID_RELAY_DELAY + TXID_ONLY_PEER_RELAY_DELAY, glob_wtxid))
         self.restart_node(0, extra_args=['-whitelist=noban@127.0.0.1'])
         mock_time = int(time.time() + 1)
         self.nodes[0].setmocktime(mock_time)
@@ -301,7 +302,7 @@ class TxDownloadTest(BitcoinTestFramework):
         peer.send_and_ping(msg_inv([CInv(t=MSG_TX, h=0xff11ff11)]))
         with p2p_lock:
             assert_equal(peer.tx_getdata_count, 0 if glob_wtxid else 1)
-        self.nodes[0].setmocktime(mock_time + TXID_RELAY_DELAY)
+        self.nodes[0].setmocktime(mock_time + TXID_RELAY_DELAY + TXID_ONLY_PEER_RELAY_DELAY)
         peer.wait_until(lambda: peer.tx_getdata_count >= 1, timeout=1)
 
     def test_large_inv_batch(self):

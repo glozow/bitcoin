@@ -103,6 +103,8 @@ P2P_SUBVERSION = "/python-p2p-tester:0.0.3/"
 P2P_VERSION_RELAY = 1
 # Delay after receiving a tx inv before requesting transactions from non-preferred peers, in seconds
 NONPREF_PEER_TX_DELAY = 2
+# Delay for requesting transactions from peers that only support txid relay, in seconds
+TXID_ONLY_PEER_RELAY_DELAY = 2
 # Delay for requesting transactions via txids if we have wtxid-relaying peers, in seconds
 TXID_RELAY_DELAY = 2
 # Delay for requesting transactions if the peer has MAX_PEER_TX_REQUEST_IN_FLIGHT or more requests
