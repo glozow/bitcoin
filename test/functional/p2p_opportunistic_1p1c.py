@@ -372,6 +372,7 @@ class PackageRelayTest(BitcoinTestFramework):
         self.test_orphan_consensus_failure()
         self.test_parent_consensus_failure()
         self.test_other_parent_in_mempool()
+        assert False
 
 
 if __name__ == '__main__':

@@ -106,6 +106,10 @@ void TxDownloadManagerImpl::BlockConnected(const std::shared_ptr<const CBlock>& 
         }
         m_txrequest.ForgetTxHash(ptx->GetHash());
         m_txrequest.ForgetTxHash(ptx->GetWitnessHash());
+
+        // Q: What percentage of mined transactions are segwit?
+        LogDebug(BCLog::TXPACKAGES, "@@@ BLOCKCONNECTED txid=%s, wtxid=%s, bytes=%u, %s",
+            ptx->GetHash().ToString(), ptx->GetWitnessHash().ToString(), ptx->GetTotalSize(), ptx->HasWitness() ? "segwit" : "nonsegwit");
     }
 }
 
@@ -161,6 +165,8 @@ void TxDownloadManagerImpl::ConnectedPeer(NodeId nodeid, const TxDownloadConnect
 
     m_peer_info.try_emplace(nodeid, info);
     if (info.m_wtxid_relay) m_num_wtxid_peers += 1;
+    // Q: How many wtxidrelay peers do we have?
+    LogDebug(BCLog::TXPACKAGES, "@@@ CONNECTEDPEER %s peerid=%d\n", m_num_wtxid_peers ? "YES339" : "NO339", nodeid);
 }
 
 void TxDownloadManagerImpl::DisconnectedPeer(NodeId nodeid)
@@ -281,12 +287,22 @@ std::vector<GenTxid> TxDownloadManagerImpl::GetRequestsToSend(NodeId nodeid, std
         LogDebug(BCLog::NET, "timeout of inflight %s %s from peer=%d\n", entry.second.IsWtxid() ? "wtx" : "tx",
             entry.second.GetHash().ToString(), entry.first);
     }
+    const auto& peer_entry = m_peer_info.at(nodeid);
+    const auto& info = peer_entry.m_connection_info;
+
     for (const GenTxid& gtxid : requestable) {
+        // Q: How many txid requests could we have skipped using rejected txid?
+        if (!gtxid.IsWtxid() && RecentRejectsFilter().contains(gtxid.GetHash())) {
+            LogDebug(BCLog::TXPACKAGES, "@@@ GETDATANOSKIP REJECTED TXID: %s\n", gtxid.GetHash().ToString());
+        }
         if (!AlreadyHaveTx(gtxid, /*include_reconsiderable=*/false)) {
             LogDebug(BCLog::NET, "Requesting %s %s peer=%d\n", gtxid.IsWtxid() ? "wtx" : "tx",
                 gtxid.GetHash().ToString(), nodeid);
             requests.emplace_back(gtxid);
             m_txrequest.RequestedTx(nodeid, gtxid.GetHash(), current_time + GETDATA_TX_INTERVAL);
+            // Q: How many requests of {wtxid, txid} type do we make to {wtxidrelay, txidrelay} peers?
+            LogDebug(BCLog::TXPACKAGES, "@@@ GETDATA %s=%s from %s peer=%d\n",
+                gtxid.IsWtxid() ? "wtxid" : "txid", gtxid.GetHash().ToString(), info.m_wtxid_relay ? "wtxidrelay" : "txidrelay", nodeid);
         } else {
             // We have already seen this transaction, no need to download. This is just a belt-and-suspenders, as
             // this should already be called whenever a transaction becomes AlreadyHaveTx().
@@ -341,6 +357,9 @@ void TxDownloadManagerImpl::MempoolAcceptedTx(const CTransactionRef& tx)
     m_orphanage.AddChildrenToWorkSet(*tx, m_opts.m_rng);
     // If it came from the orphanage, remove it. No-op if the tx is not in txorphanage.
     m_orphanage.EraseTx(tx->GetWitnessHash());
+
+    // Q: What percentage of accepted transactions are segwit?
+    LogDebug(BCLog::TXPACKAGES, "@@@ ACCEPTEDTX txid=%s, wtxid=%s, bytes=%u, %s", tx->GetHash().ToString(), tx->GetWitnessHash().ToString(), tx->GetTotalSize(), tx->HasWitness() ? "segwit" : "nonsegwit");
 }
 
 std::vector<Txid> TxDownloadManagerImpl::GetUniqueParents(const CTransaction& tx)
@@ -377,6 +396,20 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
             // Deduplicate parent txids, so that we don't have to loop over
             // the same parent txid more than once down below.
             unique_parents = GetUniqueParents(tx);
+
+            const unsigned int num_rejected_parents = std::count_if(unique_parents.begin(), unique_parents.end(), [&](const auto& txid){
+                return RecentRejectsFilter().contains(txid.ToUint256());
+            });
+            const unsigned int num_reconsiderable_parents = std::count_if(unique_parents.begin(), unique_parents.end(), [&](const auto& txid){
+                return RecentRejectsReconsiderableFilter().contains(txid.ToUint256());
+            });
+            // Q: How many orphans could we have skipped using fRejectedParents?
+            if (num_rejected_parents >= 1 || num_reconsiderable_parents > 1) {
+                LogDebug(BCLog::TXPACKAGES, "@@@ NOSKIPORPHAN with %u rejected or %u reconsiderable parents: %s (wtxid=%s)\n",
+                    num_rejected_parents, num_reconsiderable_parents, ptx->GetHash().ToString(), ptx->GetWitnessHash().ToString());
+            } else {
+                LogDebug(BCLog::TXPACKAGES, "@@@ KEEPORPHAN: %s (wtxid=%s)\n", ptx->GetHash().ToString(), ptx->GetWitnessHash().ToString());
+            }
 
             // We do not check for parents in rejection filters because we only know their txids.
             // Previously, we quit whenever we found a parent in m_lazy_recent_rejects, but doing
@@ -488,6 +521,24 @@ std::pair<bool, std::optional<PackageToValidate>> TxDownloadManagerImpl::Receive
 {
     const uint256& txid = ptx->GetHash();
     const uint256& wtxid = ptx->GetWitnessHash();
+    // Q: For each transaction, segwit, wtxid, txid, bytes, and whether in each filter?
+    const auto bytes = ptx->GetTotalSize();
+    const bool is_segwit = ptx->HasWitness();
+    LogDebug(BCLog::TXPACKAGES, "@@@ RECEIVEDTX txid=%s, wtxid=%s, bytes=%u, %s", txid.ToString(), wtxid.ToString(), bytes, is_segwit ? "segwit" : "nonsegwit");
+
+    const bool txid_rejected = RecentRejectsFilter().contains(txid);
+    const bool txid_reconsiderable = RecentRejectsReconsiderableFilter().contains(txid);
+    if (m_opts.m_mempool.exists(GenTxid::Txid(txid))) {
+        LogDebug(BCLog::TXPACKAGES, "@@@ TXSKIP txid=%s, wtxid=%s, bytes=%u, %s, TXID IN MEMPOOL", txid.ToString(), wtxid.ToString(), bytes, is_segwit ? "segwit" : "nonsegwit");
+    } else if (RecentConfirmedTransactionsFilter().contains(wtxid)) {
+        LogDebug(BCLog::TXPACKAGES, "@@@ TXSKIP wtxid=%s, txid=%s, bytes=%u, %s, WTXID RECENTLY CONFIRMED", wtxid.ToString(), txid.ToString(), bytes, is_segwit ? "segwit" : "nonsegwit");
+    } else if (RecentRejectsReconsiderableFilter().contains(wtxid) || RecentRejectsFilter().contains(wtxid)) {
+        LogDebug(BCLog::TXPACKAGES, "@@@ TXSKIP wtxid=%s, txid=%s, bytes=%u, %s, WTXID REJECTED OR RECON", wtxid.ToString(), txid.ToString(), bytes, is_segwit ? "segwit" : "nonsegwit");
+    } else if (txid_rejected || txid_reconsiderable) {
+        // Last else if branch because otherwise it's not a noskip
+        LogDebug(BCLog::TXPACKAGES, "@@@ TXNOSKIP txid=%s, wtxid=%s, bytes=%u, %s, TXID REJECTED", txid.ToString(), wtxid.ToString(), bytes, is_segwit ? "segwit" : "nonsegwit");
+    }
+
 
     // Mark that we have received a response
     m_txrequest.ReceivedResponse(nodeid, txid);
