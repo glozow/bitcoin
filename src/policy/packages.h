@@ -146,11 +146,6 @@ bool IsWellFormedPackage(const Package& txns, PackageValidationState& state, boo
  */
 bool IsChildWithParents(const Package& package);
 
-/** Context-free check that a package IsChildWithParents() and none of the parents depend on each
- * other (the package is a "tree").
- */
-bool IsChildWithParentsTree(const Package& package);
-
 /** Get the hash of the concatenated wtxids of transactions, with wtxids
  * treated as a little-endian numbers and sorted in ascending numeric order.
  */

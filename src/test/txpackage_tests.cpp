@@ -279,12 +279,10 @@ BOOST_AUTO_TEST_CASE(noncontextual_package_tests)
         BOOST_CHECK_EQUAL(state.GetResult(), PackageValidationResult::PCKG_POLICY);
         BOOST_CHECK_EQUAL(state.GetRejectReason(), "package-not-sorted");
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_child}));
-        BOOST_CHECK(IsChildWithParentsTree({tx_parent, tx_child}));
         BOOST_CHECK(GetPackageHash({tx_parent}) != GetPackageHash({tx_child}));
         BOOST_CHECK(GetPackageHash({tx_child, tx_child}) != GetPackageHash({tx_child}));
         BOOST_CHECK(GetPackageHash({tx_child, tx_parent}) != GetPackageHash({tx_child, tx_child}));
         BOOST_CHECK(!IsChildWithParents({}));
-        BOOST_CHECK(!IsChildWithParentsTree({}));
     }
 
     // 24 Parents and 1 Child
@@ -310,7 +308,6 @@ BOOST_AUTO_TEST_CASE(noncontextual_package_tests)
         PackageValidationState state;
         BOOST_CHECK(IsWellFormedPackage(package, state, /*require_sorted=*/true));
         BOOST_CHECK(IsChildWithParents(package));
-        BOOST_CHECK(IsChildWithParentsTree(package));
 
         package.erase(package.begin());
         BOOST_CHECK(IsChildWithParents(package));
@@ -343,7 +340,6 @@ BOOST_AUTO_TEST_CASE(noncontextual_package_tests)
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_parent_also_child}));
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_child}));
         BOOST_CHECK(IsChildWithParents({tx_parent, tx_parent_also_child, tx_child}));
-        BOOST_CHECK(!IsChildWithParentsTree({tx_parent, tx_parent_also_child, tx_child}));
         // IsChildWithParents does not detect unsorted parents.
         BOOST_CHECK(IsChildWithParents({tx_parent_also_child, tx_parent, tx_child}));
         BOOST_CHECK(IsWellFormedPackage({tx_parent, tx_parent_also_child, tx_child}, state, /*require_sorted=*/true));
