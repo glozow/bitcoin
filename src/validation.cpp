@@ -511,10 +511,10 @@ public:
                             /* m_bypass_limits */ false,
                             /* m_coins_to_uncache */ coins_to_uncache,
                             /* m_test_accept */ true,
-                            /* m_allow_replacement */ false,
+                            /* m_allow_replacement */ true,
                             /* m_allow_sibling_eviction */ false,
                             /* m_package_submission */ false, // not submitting to mempool
-                            /* m_package_feerates */ false,
+                            /* m_package_feerates */ true,
                             /* m_client_maxfeerate */ {}, // checked by caller
                             /* m_allow_carveouts */ false,
             };
@@ -582,7 +582,7 @@ public:
             // If we are using package feerates, we must be doing package submission.
             // It also means carveouts and sibling eviction are not permitted.
             if (m_package_feerates) {
-                Assume(m_package_submission);
+                Assume(m_package_submission || m_test_accept);
                 Assume(!m_allow_carveouts);
                 Assume(!m_allow_sibling_eviction);
             }
@@ -1697,7 +1697,12 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptSubPackage(const std::vector<CTr
     // Clean up m_view and m_viewmempool so that other subpackage evaluations don't have access to
     // coins they shouldn't. Keep some coins in order to minimize re-fetching coins from the UTXO set.
     // Clean up package feerate and rbf calculations
-    ClearSubPackageState();
+    // When doing a test_accept, don't clear coins because they won't be available otherwise.
+    // If anything failed, then validation will halt here and no subpackage state will be used.
+    // Clear it just in case.
+    if (!args.m_test_accept && result.m_state.IsValid()) {
+        ClearSubPackageState();
+    }
 
     return result;
 }
@@ -1832,13 +1837,17 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             }
 
             // Detect that a transaction was successful by looking for it in mempool
-            if (!m_pool.exists(subpackage_wtxid)) {
+            if (!args.m_test_accept && !m_pool.exists(subpackage_wtxid)) {
                 all_accepted = false;
             }
         }
-        if (subpackage_result.m_state.IsInvalid()) package_state_final = subpackage_result.m_state;
-
-        ClearSubPackageState();
+        if (subpackage_result.m_state.IsInvalid()) {
+            package_state_final = subpackage_result.m_state;
+            if (args.m_test_accept) {
+                // If test_accept, then halt immediately.
+                break;
+            }
+        }
 
         // Proceed to next subpackage.
         if (all_accepted) {
@@ -1858,14 +1867,18 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     // Make sure we haven't exceeded max mempool size.
     // Package transactions that were submitted to mempool or already in mempool may be evicted.
     // If mempool contents change, then the m_view cache is dirty. It has already been cleared above.
-    LimitMempoolSize(m_pool, m_active_chainstate.CoinsTip());
+    // If test_accept, nothing was just submitted, and it may be unexpected for mempool contents
+    // to change (e.g. because a recent reorg caused us to be oversize), so skip this step.
+    if (!args.m_test_accept) {
+        LimitMempoolSize(m_pool, m_active_chainstate.CoinsTip());
+    }
 
     for (const auto& tx : package) {
         const auto& wtxid = tx->GetWitnessHash();
         if (const auto it{results_final.find(wtxid)}; it != results_final.end()) {
             // If mempool transaction, check to see if it's still there, as it could have
             // been evicted when LimitMempoolSize() was called.
-            if (it->second.m_result_type != MempoolAcceptResult::ResultType::INVALID && !m_pool.exists(tx->GetHash())) {
+            if (!args.m_test_accept && it->second.m_result_type != MempoolAcceptResult::ResultType::INVALID && !m_pool.exists(tx->GetHash())) {
                 package_state_final.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
                 TxValidationState mempool_full_state;
                 mempool_full_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "mempool full");
@@ -1933,7 +1946,7 @@ PackageMempoolAcceptResult ProcessNewPackage(Chainstate& active_chainstate, CTxM
         AssertLockHeld(cs_main);
         if (test_accept) {
             auto args = MemPoolAccept::ATMPArgs::PackageTestAccept(chainparams, GetTime(), coins_to_uncache);
-            return MemPoolAccept(pool, active_chainstate).AcceptMultipleTransactions(package, args);
+            return MemPoolAccept(pool, active_chainstate).AcceptPackage(package, args);
         } else {
             auto args = MemPoolAccept::ATMPArgs::AnyPackageAccept(chainparams, GetTime(), coins_to_uncache, client_maxfeerate);
             return MemPoolAccept(pool, active_chainstate).AcceptPackage(package, args);

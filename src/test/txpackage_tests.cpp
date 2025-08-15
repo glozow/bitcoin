@@ -1142,11 +1142,11 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
     // fee deltas. This should be taken into account. De-prioritise the parent transaction
     // to bring the package feerate to 0.
     m_node.mempool->PrioritiseTransaction(tx_parent->GetHash(), child_value - coinbase_value);
-    {
+    for (auto test_accept : {true, false}) {
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
         const auto submit_cpfp_deprio = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                   package_cpfp, /*test_accept=*/ false, /*client_maxfeerate=*/{});
-        if (auto err_cpfp_deprio{CheckPackageMempoolAcceptResult(package_cpfp, submit_cpfp_deprio, /*expect_valid=*/false, m_node.mempool.get())}) {
+                                                   package_cpfp, /*test_accept=*/ test_accept, /*client_maxfeerate=*/{});
+        if (auto err_cpfp_deprio{CheckPackageMempoolAcceptResult(package_cpfp, submit_cpfp_deprio, /*expect_valid=*/false, test_accept ? nullptr : m_node.mempool.get())}) {
             BOOST_ERROR(err_cpfp_deprio.value());
         } else {
             BOOST_CHECK_EQUAL(submit_cpfp_deprio.m_state.GetResult(), PackageValidationResult::PCKG_TX);
@@ -1164,18 +1164,18 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
 
     // Package CPFP: Even though the parent's feerate is below the mempool minimum feerate, the
     // child pays enough for the package feerate to meet the threshold.
-    {
+    for (auto test_accept : {true, false}) {
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
         const auto submit_cpfp = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                   package_cpfp, /*test_accept=*/ false, /*client_maxfeerate=*/{});
-        if (auto err_cpfp{CheckPackageMempoolAcceptResult(package_cpfp, submit_cpfp, /*expect_valid=*/true, m_node.mempool.get())}) {
+                                                   package_cpfp, /*test_accept=*/ test_accept, /*client_maxfeerate=*/{});
+        if (auto err_cpfp{CheckPackageMempoolAcceptResult(package_cpfp, submit_cpfp, /*expect_valid=*/true, test_accept ? nullptr : m_node.mempool.get())}) {
             BOOST_ERROR(err_cpfp.value());
         } else {
             auto it_parent = submit_cpfp.m_tx_results.find(tx_parent->GetWitnessHash());
             auto it_child = submit_cpfp.m_tx_results.find(tx_child->GetWitnessHash());
-            BOOST_CHECK(it_parent->second.m_result_type == MempoolAcceptResult::ResultType::VALID);
+            BOOST_CHECK_MESSAGE(it_parent->second.m_result_type == MempoolAcceptResult::ResultType::VALID, "failure: " << it_parent->second.m_state.GetRejectReason());
             BOOST_CHECK(it_parent->second.m_base_fees.value() == coinbase_value - parent_value);
-            BOOST_CHECK(it_child->second.m_result_type == MempoolAcceptResult::ResultType::VALID);
+            BOOST_CHECK_MESSAGE(it_child->second.m_result_type == MempoolAcceptResult::ResultType::VALID, "failure: " << it_child->second.m_state.GetRejectReason());
             BOOST_CHECK(it_child->second.m_base_fees.value() == COIN);
 
             const CFeeRate expected_feerate(coinbase_value - child_value,
@@ -1187,7 +1187,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
             BOOST_CHECK(it_child->second.m_wtxids_fee_calculations.value() == expected_wtxids);
             BOOST_CHECK(expected_feerate.GetFeePerK() > 1000);
         }
-        expected_pool_size += 2;
+        expected_pool_size += test_accept ? 0 : 2;
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
     }
 
@@ -1217,10 +1217,10 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
     BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 
     // Cheap package should fail for being too low fee.
-    {
+    for (auto test_accept : {true, false}) {
         const auto submit_package_too_low = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                   package_still_too_low, /*test_accept=*/false, /*client_maxfeerate=*/{});
-        if (auto err_package_too_low{CheckPackageMempoolAcceptResult(package_still_too_low, submit_package_too_low, /*expect_valid=*/false, m_node.mempool.get())}) {
+                                                   package_still_too_low, /*test_accept=*/test_accept, /*client_maxfeerate=*/{});
+        if (auto err_package_too_low{CheckPackageMempoolAcceptResult(package_still_too_low, submit_package_too_low, /*expect_valid=*/false, test_accept ? nullptr : m_node.mempool.get())}) {
             BOOST_ERROR(err_package_too_low.value());
         } else {
             // Package feerate of parent + child is too low.
@@ -1242,10 +1242,10 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
     // This means a child with its fee delta from prioritisetransaction can pay for a parent.
     m_node.mempool->PrioritiseTransaction(tx_child_cheap->GetHash(), 1 * COIN);
     // Now that the child's fees have "increased" by 1 BTC, the cheap package should succeed.
-    {
+    for (auto test_accept : {true, false}) {
         const auto submit_prioritised_package = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                                  package_still_too_low, /*test_accept=*/false, /*client_maxfeerate=*/{});
-        if (auto err_prioritised{CheckPackageMempoolAcceptResult(package_still_too_low, submit_prioritised_package, /*expect_valid=*/true, m_node.mempool.get())}) {
+                                                                  package_still_too_low, /*test_accept=*/test_accept, /*client_maxfeerate=*/{});
+        if (auto err_prioritised{CheckPackageMempoolAcceptResult(package_still_too_low, submit_prioritised_package, /*expect_valid=*/true, test_accept ? nullptr : m_node.mempool.get())}) {
             BOOST_ERROR(err_prioritised.value());
         } else {
             const CFeeRate expected_feerate(1 * COIN + parent_fee + child_fee,
@@ -1263,7 +1263,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
             BOOST_CHECK(it_parent->second.m_wtxids_fee_calculations.value() == expected_wtxids);
             BOOST_CHECK(it_child->second.m_wtxids_fee_calculations.value() == expected_wtxids);
         }
-        expected_pool_size += 2;
+        expected_pool_size += test_accept ? 0 : 2;
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
     }
 
@@ -1289,11 +1289,11 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
     package_rich_parent.push_back(tx_child_poor);
 
     // Parent pays 1 BTC and child pays below mempool minimum feerate. The parent should be accepted without the child.
-    {
+    for (auto test_accept : {true, false}) {
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
         const auto submit_rich_parent = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool,
-                                                          package_rich_parent, /*test_accept=*/false, /*client_maxfeerate=*/{});
-        if (auto err_rich_parent{CheckPackageMempoolAcceptResult(package_rich_parent, submit_rich_parent, /*expect_valid=*/false, m_node.mempool.get())}) {
+                                                          package_rich_parent, /*test_accept=*/test_accept, /*client_maxfeerate=*/{});
+        if (auto err_rich_parent{CheckPackageMempoolAcceptResult(package_rich_parent, submit_rich_parent, /*expect_valid=*/false, test_accept ? nullptr : m_node.mempool.get())}) {
             BOOST_ERROR(err_rich_parent.value());
         } else {
             // The child would have been validated on its own and failed.
@@ -1312,53 +1312,56 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
             BOOST_CHECK_EQUAL(it_child->second.m_state.GetResult(), TxValidationResult::TX_RECONSIDERABLE);
             BOOST_CHECK(it_child->second.m_state.GetRejectReason() == "mempool min fee not met");
         }
-        expected_pool_size += 1;
+        expected_pool_size += test_accept ? 0 : 1;
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
     }
 
-    {
-        // Package in which one of the transactions replaces something (by itself, without requiring
-        // package RBF).
-        const CAmount low_fee{1000};
-        const CAmount med_fee{2000};
-        const CAmount high_fee{3000};
-        CTransactionRef txA_mempool = MakeTransactionRef(CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[3], /*input_vout=*/0,
-                                                                                       /*input_height=*/102, /*input_signing_key=*/coinbaseKey,
-                                                                                       /*output_destination=*/parent_spk,
-                                                                                       /*output_amount=*/coinbase_value - low_fee, /*submit=*/true));
-        expected_pool_size += 1;
-        BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
+    // Package in which one of the transactions replaces something (by itself, without requiring
+    // package RBF).
+    const CAmount low_fee{1000};
+    const CAmount med_fee{2000};
+    const CAmount high_fee{3000};
+    CTransactionRef txA_mempool = MakeTransactionRef(CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[3], /*input_vout=*/0,
+                                                                                    /*input_height=*/102, /*input_signing_key=*/coinbaseKey,
+                                                                                    /*output_destination=*/parent_spk,
+                                                                                    /*output_amount=*/coinbase_value - low_fee, /*submit=*/true));
+    expected_pool_size += 1;
+    BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 
-        Package package_with_rbf;
-        // Conflicts with txA_mempool and can replace it.
-        CTransactionRef txA_package = MakeTransactionRef(CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[3], /*input_vout=*/0,
-                                                                                       /*input_height=*/102, /*input_signing_key=*/coinbaseKey,
-                                                                                       /*output_destination=*/parent_spk,
-                                                                                       /*output_amount=*/coinbase_value - med_fee, /*submit=*/false));
-        CTransactionRef txB_package = MakeTransactionRef(CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[4], /*input_vout=*/0,
-                                                                                       /*input_height=*/102, /*input_signing_key=*/coinbaseKey,
-                                                                                       /*output_destination=*/parent_spk,
-                                                                                       /*output_amount=*/coinbase_value - low_fee, /*submit=*/false));
-        package_with_rbf.emplace_back(txA_package);
-        package_with_rbf.emplace_back(txB_package);
+    Package package_with_rbf;
+    // Conflicts with txA_mempool and can replace it.
+    CTransactionRef txA_package = MakeTransactionRef(CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[3], /*input_vout=*/0,
+                                                                                    /*input_height=*/102, /*input_signing_key=*/coinbaseKey,
+                                                                                    /*output_destination=*/parent_spk,
+                                                                                    /*output_amount=*/coinbase_value - med_fee, /*submit=*/false));
+    CTransactionRef txB_package = MakeTransactionRef(CreateValidMempoolTransaction(/*input_transaction=*/m_coinbase_txns[4], /*input_vout=*/0,
+                                                                                    /*input_height=*/102, /*input_signing_key=*/coinbaseKey,
+                                                                                    /*output_destination=*/parent_spk,
+                                                                                    /*output_amount=*/coinbase_value - low_fee, /*submit=*/false));
+    package_with_rbf.emplace_back(txA_package);
+    package_with_rbf.emplace_back(txB_package);
 
-        CTransactionRef txC_package = MakeTransactionRef(CreateValidMempoolTransaction(/*input_transactions=*/package_with_rbf,
-                                                                                       /*inputs=*/{COutPoint{txA_package->GetHash(), 0},
-                                                                                                   COutPoint{txB_package->GetHash(), 0}},
-                                                                                       /*input_height=*/102,
-                                                                                       /*input_signing_keys=*/{child_key},
-                                                                                       /*outputs=*/{CTxOut{coinbase_value * 2 - low_fee - med_fee - high_fee, child_spk}},
-                                                                                       /*submit=*/false));
-        package_with_rbf.emplace_back(txC_package);
-        const auto result_rbf = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_with_rbf, /*test_accept=*/false, /*client_maxfeerate=*/{});
+    CTransactionRef txC_package = MakeTransactionRef(CreateValidMempoolTransaction(/*input_transactions=*/package_with_rbf,
+                                                                                    /*inputs=*/{COutPoint{txA_package->GetHash(), 0},
+                                                                                                COutPoint{txB_package->GetHash(), 0}},
+                                                                                    /*input_height=*/102,
+                                                                                    /*input_signing_keys=*/{child_key},
+                                                                                    /*outputs=*/{CTxOut{coinbase_value * 2 - low_fee - med_fee - high_fee, child_spk}},
+                                                                                    /*submit=*/false));
+    package_with_rbf.emplace_back(txC_package);
+
+    // FIXME: This case requires subpackages to be split into individual transactions.
+    for (auto test_accept : {false}) {
+        const auto result_rbf = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package_with_rbf, /*test_accept=*/test_accept, /*client_maxfeerate=*/{});
         // Replacement was accepted
-        expected_pool_size += package_with_rbf.size() - 1;
+        expected_pool_size += test_accept ? 0 : package_with_rbf.size() - 1;
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
         BOOST_CHECK_EQUAL(result_rbf.m_tx_results.size(), package_with_rbf.size());
-        BOOST_CHECK(result_rbf.m_state.IsValid());
-        BOOST_CHECK(!m_node.mempool->exists(txA_mempool->GetWitnessHash()));
+        BOOST_CHECK_MESSAGE(result_rbf.m_state.IsValid(),
+            "failure: " << result_rbf.m_state.GetRejectReason() << " with " << result_rbf.m_tx_results.at(txA_package->GetWitnessHash()).m_state.GetRejectReason());
+        BOOST_CHECK_EQUAL(m_node.mempool->exists(txA_mempool->GetWitnessHash()), test_accept);
         for (size_t idx{0}; idx < package_with_rbf.size(); ++idx) {
-            BOOST_CHECK(m_node.mempool->exists(package_with_rbf.at(idx)->GetWitnessHash()));
+            BOOST_CHECK_EQUAL(m_node.mempool->exists(package_with_rbf.at(idx)->GetWitnessHash()), !test_accept);
         }
     }
     // Again, we should accept the incentive-compatible transactions from the package. That could

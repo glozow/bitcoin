@@ -179,6 +179,7 @@ void MiniGraph::RegisterInfo(const CTransactionRef& tx, CAmount fee, int64_t siz
 
 /** Schedule validation of transactions. Each transaction must either be valid, rejected, or
  * registered. */
+// FIXME: add a CFeeRate for minimum feerate so we can split subpackages into individual transactions.
 void MiniGraph::ScheduleValidation() {
     if (!Assume(m_builder == nullptr)) return;
     // Temporary map to easily look up refs of parents by prevout, discarded at the end of this
