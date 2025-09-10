@@ -179,7 +179,7 @@ class PackageRBFTest(BitcoinTestFramework):
         node.submitpackage(package_hex4)
         self.assert_mempool_contents(expected=package_txns4)
         package_hex5, package_txns5 = self.create_simple_package(coin, parent_fee=DEFAULT_CHILD_FEE + DEFAULT_FEE, child_fee=DEFAULT_CHILD_FEE)
-        pkg_results5 = node.submitpackage(package_hex5)
+        node.submitpackage(package_hex5)
         self.assert_mempool_contents(expected=package_txns5)
 
         self.generate(node, 1)

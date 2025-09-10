@@ -1078,6 +1078,7 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
 BOOST_AUTO_TEST_CASE(package_rbf_tests)
 {
     mineBlocks(5);
+    MockMempoolMinFee(CFeeRate(1000));
     LOCK(::cs_main);
     size_t expected_pool_size = m_node.mempool->size();
     CKey child_key{GenerateRandomKey()};
@@ -1159,16 +1160,19 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
             tx_parent_3, /*input_vout=*/0, /*input_height=*/101,
             child_key, child_spk, coinbase_value - 199 - 1300, /*submit=*/false));
 
+        CTransactionRef tx_parent_4 = MakeTransactionRef(CreateValidMempoolTransaction(
+            m_coinbase_txns[1], /*input_vout=*/0, /*input_height=*/0,
+            coinbaseKey, parent_spk, coinbase_value - 1763, /*submit=*/false));
+        CTransactionRef tx_child_4 = MakeTransactionRef(CreateValidMempoolTransaction(
+            tx_parent_4, /*input_vout=*/0, /*input_height=*/101,
+            child_key, child_spk, coinbase_value - 1763 - 60, /*submit=*/false));
+
         // In all packages, the parents conflict with each other
         BOOST_CHECK(tx_parent_1->GetHash() != tx_parent_2->GetHash() && tx_parent_2->GetHash() != tx_parent_3->GetHash());
 
         // 1 parent paying 200sat, 1 child paying 200sat.
         Package package1{tx_parent_1, tx_child_1};
-        // 1 parent paying 800sat, 1 child paying 200sat.
-        Package package2{tx_parent_2, tx_child_2};
-        // 1 parent paying 199sat, 1 child paying 1300sat.
-        Package package3{tx_parent_3, tx_child_3};
-
+        {
         const auto submit1 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package1, false, std::nullopt);
         if (auto err_1{CheckPackageMempoolAcceptResult(package1, submit1, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_1.value());
@@ -1177,11 +1181,20 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
         auto it_child_1 = submit1.m_tx_results.find(tx_child_1->GetWitnessHash());
         BOOST_CHECK_EQUAL(it_parent_1->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
         BOOST_CHECK_EQUAL(it_child_1->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
+        // Both validated individually.
+        BOOST_CHECK_EQUAL(it_parent_1->second.m_wtxids_fee_calculations.value().size(), 1);
+        BOOST_CHECK_EQUAL(it_parent_1->second.m_wtxids_fee_calculations.value().front(), tx_parent_1->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_child_1->second.m_wtxids_fee_calculations.value().size(), 1);
+        BOOST_CHECK_EQUAL(it_child_1->second.m_wtxids_fee_calculations.value().front(), tx_child_1->GetWitnessHash());
+        }
         expected_pool_size += 2;
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 
         // This replacement is actually not package rbf; the parent carries enough fees
         // to replace the entire package on its own.
+        // 1 parent paying 800sat, 1 child paying 200sat.
+        Package package2{tx_parent_2, tx_child_2};
+        {
         const auto submit2 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package2, false, std::nullopt);
         if (auto err_2{CheckPackageMempoolAcceptResult(package2, submit2, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_2.value());
@@ -1190,8 +1203,17 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
         auto it_child_2 = submit2.m_tx_results.find(tx_child_2->GetWitnessHash());
         BOOST_CHECK_EQUAL(it_parent_2->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
         BOOST_CHECK_EQUAL(it_child_2->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
+        // Both validated individually.
+        BOOST_CHECK_EQUAL(it_parent_2->second.m_wtxids_fee_calculations.value().size(), 1);
+        BOOST_CHECK_EQUAL(it_parent_2->second.m_wtxids_fee_calculations.value().front(), tx_parent_2->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_child_2->second.m_wtxids_fee_calculations.value().size(), 1);
+        BOOST_CHECK_EQUAL(it_child_2->second.m_wtxids_fee_calculations.value().front(), tx_child_2->GetWitnessHash());
+        }
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 
+        // 1 parent paying 199sat, 1 child paying 1300sat.
+        Package package3{tx_parent_3, tx_child_3};
+        {
         // Package RBF, in which the replacement transaction's child sponsors the fees to meet RBF feerate rules
         const auto submit3 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package3, false, std::nullopt);
         if (auto err_3{CheckPackageMempoolAcceptResult(package3, submit3, /*expect_valid=*/true, m_node.mempool.get())}) {
@@ -1212,27 +1234,91 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
         BOOST_CHECK(it_child_3->second.m_wtxids_fee_calculations.value() == expected_package3_wtxids);
         BOOST_CHECK_EQUAL(it_parent_3->second.m_effective_feerate.value().GetFee(package3_total_vsize), 199 + 1300);
         BOOST_CHECK_EQUAL(it_child_3->second.m_effective_feerate.value().GetFee(package3_total_vsize), 199 + 1300);
-
+        }
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 
         // Finally, check that we can prioritise tx_child_1 to get package1 into the mempool.
         // It should not be possible to resubmit package1 and get it in without prioritisation.
+        // 1 parent paying 200sat, 1 child paying 200sat.
+        Package package4{package1};
+        {
         const auto submit4 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package1, false, std::nullopt);
-        if (auto err_4{CheckPackageMempoolAcceptResult(package1, submit4, /*expect_valid=*/false, m_node.mempool.get())}) {
+        if (auto err_4{CheckPackageMempoolAcceptResult(package4, submit4, /*expect_valid=*/false, m_node.mempool.get())}) {
             BOOST_ERROR(err_4.value());
         }
+        }
+
+        // 1 parent paying 200sat, 1 child paying 1563sat.
+        Package package5{package1};
         m_node.mempool->PrioritiseTransaction(tx_child_1->GetHash(), 1363);
-        const auto submit5 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package1, false, std::nullopt);
-        if (auto err_5{CheckPackageMempoolAcceptResult(package1, submit5, /*expect_valid=*/true, m_node.mempool.get())}) {
+        {
+        const auto submit5 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package5, false, std::nullopt);
+        if (auto err_5{CheckPackageMempoolAcceptResult(package5, submit5, /*expect_valid=*/true, m_node.mempool.get())}) {
             BOOST_ERROR(err_5.value());
         }
-        it_parent_1 = submit5.m_tx_results.find(tx_parent_1->GetWitnessHash());
-        it_child_1 = submit5.m_tx_results.find(tx_child_1->GetWitnessHash());
-        BOOST_CHECK_EQUAL(it_parent_1->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
-        BOOST_CHECK_EQUAL(it_child_1->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
-        LOCK(m_node.mempool->cs);
-        BOOST_CHECK(m_node.mempool->GetIter(tx_parent_1->GetHash()).has_value());
-        BOOST_CHECK(m_node.mempool->GetIter(tx_child_1->GetHash()).has_value());
+        auto it_parent_5 = submit5.m_tx_results.find(tx_parent_1->GetWitnessHash());
+        auto it_child_5 = submit5.m_tx_results.find(tx_child_1->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_parent_5->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
+        BOOST_CHECK_EQUAL(it_child_5->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
+        // Validated together.
+        const auto expected_wtxids_5 = std::vector<Wtxid>({tx_parent_1->GetWitnessHash(), tx_child_1->GetWitnessHash()});
+        BOOST_CHECK(it_parent_5->second.m_wtxids_fee_calculations.value() == expected_wtxids_5);
+        BOOST_CHECK(it_child_5->second.m_wtxids_fee_calculations.value() == expected_wtxids_5);
+        const CFeeRate feerate_parent_child_5(1363 + 200 + 200, GetVirtualTransactionSize(*tx_parent_1) + GetVirtualTransactionSize(*tx_child_1));
+        BOOST_CHECK(it_parent_5->second.m_effective_feerate.value() == feerate_parent_child_5);
+        BOOST_CHECK(it_child_5->second.m_effective_feerate.value() == feerate_parent_child_5);
+        }
+        BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
+
+        // Check that the grouping for package RBF does not allow a parent to pay for a child below mempool minimum feerate.
+        // This parent cannot pay for its own replacement, and can get assistance from the child, but the child should
+        // not be eligible for submission at all.
+        // 1 parent paying 1763sat, 1 child paying 60sat.
+        Package package6{tx_parent_4, tx_child_4};
+        {
+        const auto submit6 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package6, false, std::nullopt);
+        if (auto err_6{CheckPackageMempoolAcceptResult(package6, submit6, /*expect_valid=*/false, m_node.mempool.get())}) {
+            BOOST_ERROR(err_6.value());
+        }
+        auto it_parent_6 = submit6.m_tx_results.find(tx_parent_4->GetWitnessHash());
+        auto it_child_6 = submit6.m_tx_results.find(tx_child_4->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_parent_6->second.m_result_type, MempoolAcceptResult::ResultType::INVALID);
+        BOOST_CHECK_EQUAL(it_child_6->second.m_result_type, MempoolAcceptResult::ResultType::INVALID);
+        // Parent does not meet rule 4
+        BOOST_CHECK_EQUAL(it_parent_6->second.m_state.GetResult(), TxValidationResult::TX_RECONSIDERABLE);
+        BOOST_CHECK_EQUAL(it_parent_6->second.m_state.GetRejectReason(), "insufficient fee");
+        // Child needs parent's output
+        BOOST_CHECK_EQUAL(it_child_6->second.m_state.GetResult(), TxValidationResult::TX_MISSING_INPUTS);
+        BOOST_CHECK_EQUAL(it_child_6->second.m_state.GetRejectReason(), "bad-txns-inputs-missingorspent");
+        }
+        BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
+
+        // It is ok if the child pays fewer fees but subsidizes the parent's replacement cost, as long as the child meets the mempool minimum feerate.
+        // 1 parent paying 1763sat, 1 child paying 160sat.
+        // Even though the parent has a higher feerate, this isn't "parent pays for child" because the child meets the mempool minimum feerate.
+        Package package7{package6};
+        m_node.mempool->PrioritiseTransaction(tx_child_4->GetHash(), 100);
+        {
+        const auto submit7 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package7, false, std::nullopt);
+        if (auto err_7{CheckPackageMempoolAcceptResult(package7, submit7, /*expect_valid=*/true, m_node.mempool.get())}) {
+            BOOST_ERROR(err_7.value());
+        }
+        auto it_parent_7 = submit7.m_tx_results.find(tx_parent_4->GetWitnessHash());
+        auto it_child_7 = submit7.m_tx_results.find(tx_child_4->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_parent_7->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
+        BOOST_CHECK_EQUAL(it_child_7->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
+        // The two transactions were validated together.
+        BOOST_CHECK_EQUAL(it_parent_7->second.m_wtxids_fee_calculations.value().size(), 2);
+        BOOST_CHECK_EQUAL(it_parent_7->second.m_wtxids_fee_calculations.value().front(), tx_parent_4->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_parent_7->second.m_wtxids_fee_calculations.value().back(), tx_child_4->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_child_7->second.m_wtxids_fee_calculations.value().size(), 2);
+        BOOST_CHECK_EQUAL(it_child_7->second.m_wtxids_fee_calculations.value().front(), tx_parent_4->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_child_7->second.m_wtxids_fee_calculations.value().back(), tx_child_4->GetWitnessHash());
+        const CFeeRate feerate_parent_child_7(1763 + 160, GetVirtualTransactionSize(*tx_parent_4) + GetVirtualTransactionSize(*tx_child_4));
+        BOOST_CHECK(it_parent_7->second.m_effective_feerate.value() == feerate_parent_child_7);
+        BOOST_CHECK(it_child_7->second.m_effective_feerate.value() == feerate_parent_child_7);
+        }
+        BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
     }
 }
 BOOST_AUTO_TEST_SUITE_END()
