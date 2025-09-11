@@ -106,17 +106,15 @@ std::optional<std::string> CheckPackageMempoolAcceptResult(const Package& txns,
             return strprintf("tx %s result should %shave m_other_wtxid", wtxid.ToString(), diff_witness ? "" : "not ");
         }
 
-        // m_effective_feerate and m_wtxids_fee_calculations should exist iff the result was valid
-        // or if the failure was TX_RECONSIDERABLE
+        // m_effective_feerate and m_wtxids_fee_calculations should exist if the result was valid
+        // or if the failure was TX_RECONSIDERABLE. It may also be present in other failure cases, but is not guaranteed.
         const bool valid_or_reconsiderable{atmp_result.m_result_type == MempoolAcceptResult::ResultType::VALID ||
                     atmp_result.m_state.GetResult() == TxValidationResult::TX_RECONSIDERABLE};
-        if (atmp_result.m_effective_feerate.has_value() != valid_or_reconsiderable) {
-            return strprintf("tx %s result should %shave m_effective_feerate",
-                                    wtxid.ToString(), valid ? "" : "not ");
+        if (valid_or_reconsiderable && !atmp_result.m_effective_feerate.has_value()) {
+            return strprintf("tx %s result should have m_effective_feerate", wtxid.ToString());
         }
-        if (atmp_result.m_subpackage_wtxids.has_value() != valid_or_reconsiderable) {
-            return strprintf("tx %s result should %shave m_effective_feerate",
-                                    wtxid.ToString(), valid ? "" : "not ");
+        if (valid_or_reconsiderable && !atmp_result.m_subpackage_wtxids.has_value()) {
+            return strprintf("tx %s result should have m_subpackage_wtxids", wtxid.ToString());
         }
 
         if (mempool) {
