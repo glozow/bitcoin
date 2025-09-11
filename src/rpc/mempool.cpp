@@ -235,7 +235,7 @@ static RPCHelpMan testmempoolaccept()
                         fees.pushKV("base", ValueFromAmount(fee));
                         fees.pushKV("effective-feerate", ValueFromAmount(tx_result.m_effective_feerate.value().GetFeePerK()));
                         UniValue effective_includes_res(UniValue::VARR);
-                        for (const auto& wtxid : tx_result.m_wtxids_fee_calculations.value()) {
+                        for (const auto& wtxid : tx_result.m_subpackage_wtxids.value()) {
                             effective_includes_res.push_back(wtxid.ToString());
                         }
                         fees.pushKV("effective-includes", std::move(effective_includes_res));
@@ -1107,7 +1107,7 @@ static RPCHelpMan submitpackage()
                         // feerate was used when it was originally submitted.
                         fees.pushKV("effective-feerate", ValueFromAmount(tx_result.m_effective_feerate.value().GetFeePerK()));
                         UniValue effective_includes_res(UniValue::VARR);
-                        for (const auto& wtxid : tx_result.m_wtxids_fee_calculations.value()) {
+                        for (const auto& wtxid : tx_result.m_subpackage_wtxids.value()) {
                             effective_includes_res.push_back(wtxid.ToString());
                         }
                         fees.pushKV("effective-includes", std::move(effective_includes_res));
