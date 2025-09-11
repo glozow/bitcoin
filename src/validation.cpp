@@ -631,6 +631,9 @@ private:
          * m_replaced_transactions) include a sibling in addition to txns with conflicting inputs. */
         bool m_sibling_eviction{false};
 
+        /** Whether feerate is known: UTXOs have been loaded to check the fees and the sigop-adjusted vsize. */
+        bool m_have_feerate{false};
+
         /** Virtual size of the transaction as used by the mempool, calculated using serialized size
          * of the transaction and sigops. */
         int64_t m_vsize;
@@ -921,6 +924,8 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     ws.m_modified_fees = ws.m_tx_handle->GetModifiedFee();
 
     ws.m_vsize = ws.m_tx_handle->GetTxSize();
+
+    ws.m_have_feerate = true;
 
     // Enforces 0-fee for dust transactions, no incentive to be mined alone
     if (m_pool.m_opts.require_standard) {
@@ -1324,8 +1329,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
     const std::vector<Wtxid> single_wtxid{ws.m_ptx->GetWitnessHash()};
 
     if (!PreChecks(args, ws)) {
-        if (ws.m_state.GetResult() == TxValidationResult::TX_RECONSIDERABLE) {
-            // Failed for fee reasons. Provide the effective feerate and which tx was included.
+        if (ws.m_have_feerate) {
             return MempoolAcceptResult::Failure(ws.m_state, CFeeRate(ws.m_modified_fees, ws.m_vsize), single_wtxid);
         }
         return MempoolAcceptResult::Failure(ws.m_state);
@@ -1348,11 +1352,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
     }
 
     if (m_subpackage.m_rbf && !ReplacementChecks(ws)) {
-        if (ws.m_state.GetResult() == TxValidationResult::TX_RECONSIDERABLE) {
-            // Failed for incentives-based fee reasons. Provide the effective feerate and which tx was included.
-            return MempoolAcceptResult::Failure(ws.m_state, CFeeRate(ws.m_modified_fees, ws.m_vsize), single_wtxid);
-        }
-        return MempoolAcceptResult::Failure(ws.m_state);
+        return MempoolAcceptResult::Failure(ws.m_state, CFeeRate(ws.m_modified_fees, ws.m_vsize), single_wtxid);
     }
 
     // Check if the transaction would exceed the cluster size limit.
@@ -1493,7 +1493,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
         !CheckFeeRate(m_subpackage.m_total_vsize, m_subpackage.m_total_modified_fees, placeholder_state)) {
         package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
         return PackageMempoolAcceptResult(package_state, {{workspaces.back().m_ptx->GetWitnessHash(),
-            MempoolAcceptResult::Failure(placeholder_state, CFeeRate(m_subpackage.m_total_modified_fees, m_subpackage.m_total_vsize), all_package_wtxids)}});
+            MempoolAcceptResult::Failure(placeholder_state, package_feerate, all_package_wtxids)}});
     }
 
     // Apply package mempool ancestor/descendant limits. Skip if there is only one transaction,
@@ -1514,7 +1514,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
         Wtxid child_wtxid;
         if (!CheckEphemeralSpends(txns, m_pool.m_opts.dust_relay_feerate, m_pool, child_state, child_wtxid)) {
             package_state.Invalid(PackageValidationResult::PCKG_TX, "unspent-dust");
-            results.emplace(child_wtxid, MempoolAcceptResult::Failure(child_state));
+            results.emplace(child_wtxid, MempoolAcceptResult::Failure(child_state, package_feerate, all_package_wtxids));
             return PackageMempoolAcceptResult(package_state, std::move(results));
         }
     }
@@ -1524,7 +1524,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
         if (!PolicyScriptChecks(args, ws)) {
             // Exit early to avoid doing pointless work. Update the failed tx result; the rest are unfinished.
             package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
-            results.emplace(ws.m_ptx->GetWitnessHash(), MempoolAcceptResult::Failure(ws.m_state));
+            results.emplace(ws.m_ptx->GetWitnessHash(), MempoolAcceptResult::Failure(ws.m_state, package_feerate, all_package_wtxids));
             return PackageMempoolAcceptResult(package_state, std::move(results));
         }
         if (args.m_test_accept) {
@@ -1728,7 +1728,8 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
                 package_state_final.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
                 TxValidationState mempool_full_state;
                 mempool_full_state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "mempool full");
-                results_final.emplace(wtxid, MempoolAcceptResult::Failure(mempool_full_state));
+                // Copy over the original effective feerate and subpackage wtxids from when the transaction was submitted.
+                results_final.emplace(wtxid, MempoolAcceptResult::Failure(mempool_full_state, *txresult.m_effective_feerate, *txresult.m_subpackage_wtxids));
             } else {
                 results_final.emplace(wtxid, txresult);
             }
