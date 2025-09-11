@@ -177,7 +177,7 @@ void CheckATMPInvariants(const MempoolAcceptResult& res, bool txid_in_mempool, b
         Assert(res.m_vsize);
         Assert(res.m_base_fees);
         Assert(res.m_effective_feerate);
-        Assert(res.m_wtxids_fee_calculations);
+        Assert(res.m_subpackage_wtxids);
         Assert(!res.m_other_wtxid);
         break;
     }
@@ -193,7 +193,7 @@ void CheckATMPInvariants(const MempoolAcceptResult& res, bool txid_in_mempool, b
         // Fee information is provided if the failure is TX_RECONSIDERABLE.
         // In other cases, validation may be unable or unwilling to calculate the fees.
         Assert(res.m_effective_feerate.has_value() == is_reconsiderable);
-        Assert(res.m_wtxids_fee_calculations.has_value() == is_reconsiderable);
+        Assert(res.m_subpackage_wtxids.has_value() == is_reconsiderable);
         Assert(!res.m_other_wtxid);
         break;
     }

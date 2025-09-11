@@ -230,12 +230,12 @@ BOOST_AUTO_TEST_CASE(package_validation_tests)
         auto it_child = result_parent_child.m_tx_results.find(tx_child->GetWitnessHash());
 
         BOOST_CHECK(it_parent->second.m_effective_feerate.value().GetFee(GetVirtualTransactionSize(*tx_parent)) == COIN);
-        BOOST_CHECK_EQUAL(it_parent->second.m_wtxids_fee_calculations.value().size(), 1);
-        BOOST_CHECK_EQUAL(it_parent->second.m_wtxids_fee_calculations.value().front(), tx_parent->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_parent->second.m_subpackage_wtxids.value().size(), 1);
+        BOOST_CHECK_EQUAL(it_parent->second.m_subpackage_wtxids.value().front(), tx_parent->GetWitnessHash());
 
         BOOST_CHECK(it_child->second.m_effective_feerate.value().GetFee(GetVirtualTransactionSize(*tx_child)) == COIN);
-        BOOST_CHECK_EQUAL(it_child->second.m_wtxids_fee_calculations.value().size(), 1);
-        BOOST_CHECK_EQUAL(it_child->second.m_wtxids_fee_calculations.value().front(), tx_child->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_child->second.m_subpackage_wtxids.value().size(), 1);
+        BOOST_CHECK_EQUAL(it_child->second.m_subpackage_wtxids.value().front(), tx_child->GetWitnessHash());
     }
     // A single, giant transaction submitted through ProcessNewPackage fails on single tx policy.
     CTransactionRef giant_ptx = create_placeholder_tx(999, 999);
@@ -457,11 +457,11 @@ BOOST_AUTO_TEST_CASE(package_submission_tests)
         BOOST_CHECK(it_parent != submit_parent_child.m_tx_results.end());
         BOOST_CHECK(it_parent->second.m_state.IsValid());
         BOOST_CHECK(it_parent->second.m_effective_feerate == CFeeRate(1 * COIN, GetVirtualTransactionSize(*tx_parent)));
-        BOOST_CHECK_EQUAL(it_parent->second.m_wtxids_fee_calculations.value().size(), 1);
-        BOOST_CHECK_EQUAL(it_parent->second.m_wtxids_fee_calculations.value().front(), tx_parent->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_parent->second.m_subpackage_wtxids.value().size(), 1);
+        BOOST_CHECK_EQUAL(it_parent->second.m_subpackage_wtxids.value().front(), tx_parent->GetWitnessHash());
         BOOST_CHECK(it_child->second.m_effective_feerate == CFeeRate(1 * COIN, GetVirtualTransactionSize(*tx_child)));
-        BOOST_CHECK_EQUAL(it_child->second.m_wtxids_fee_calculations.value().size(), 1);
-        BOOST_CHECK_EQUAL(it_child->second.m_wtxids_fee_calculations.value().front(), tx_child->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_child->second.m_subpackage_wtxids.value().size(), 1);
+        BOOST_CHECK_EQUAL(it_child->second.m_subpackage_wtxids.value().front(), tx_child->GetWitnessHash());
 
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
     }
@@ -579,8 +579,8 @@ BOOST_AUTO_TEST_CASE(package_single_tx)
         auto it_parent = result_just_parent.m_tx_results.find(tx_parent->GetWitnessHash());
         BOOST_CHECK_MESSAGE(it_parent->second.m_state.IsValid(), it_parent->second.m_state.ToString());
         BOOST_CHECK(it_parent->second.m_effective_feerate.value().GetFee(GetVirtualTransactionSize(*tx_parent)) == high_fee);
-        BOOST_CHECK_EQUAL(it_parent->second.m_wtxids_fee_calculations.value().size(), 1);
-        BOOST_CHECK_EQUAL(it_parent->second.m_wtxids_fee_calculations.value().front(), tx_parent->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_parent->second.m_subpackage_wtxids.value().size(), 1);
+        BOOST_CHECK_EQUAL(it_parent->second.m_subpackage_wtxids.value().front(), tx_parent->GetWitnessHash());
     }
     expected_pool_size += 1;
     BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
@@ -600,8 +600,8 @@ BOOST_AUTO_TEST_CASE(package_single_tx)
         auto it_child = result_just_child.m_tx_results.find(tx_child->GetWitnessHash());
         BOOST_CHECK_MESSAGE(it_child->second.m_state.IsValid(), it_child->second.m_state.ToString());
         BOOST_CHECK(it_child->second.m_effective_feerate.value().GetFee(GetVirtualTransactionSize(*tx_child)) == high_fee);
-        BOOST_CHECK_EQUAL(it_child->second.m_wtxids_fee_calculations.value().size(), 1);
-        BOOST_CHECK_EQUAL(it_child->second.m_wtxids_fee_calculations.value().front(), tx_child->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_child->second.m_subpackage_wtxids.value().size(), 1);
+        BOOST_CHECK_EQUAL(it_child->second.m_subpackage_wtxids.value().front(), tx_child->GetWitnessHash());
     }
     expected_pool_size += 1;
     BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
@@ -858,8 +858,8 @@ BOOST_AUTO_TEST_CASE(package_witness_swap_tests)
             BOOST_CHECK(it_parent3->second.m_effective_feerate.value() == expected_feerate);
             BOOST_CHECK(it_child->second.m_effective_feerate.value() == expected_feerate);
             std::vector<Wtxid> expected_wtxids({ptx_parent3->GetWitnessHash(), ptx_mixed_child->GetWitnessHash()});
-            BOOST_CHECK(it_parent3->second.m_wtxids_fee_calculations.value() == expected_wtxids);
-            BOOST_CHECK(it_child->second.m_wtxids_fee_calculations.value() == expected_wtxids);
+            BOOST_CHECK(it_parent3->second.m_subpackage_wtxids.value() == expected_wtxids);
+            BOOST_CHECK(it_child->second.m_subpackage_wtxids.value() == expected_wtxids);
         }
     }
 }
@@ -940,8 +940,8 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
             BOOST_CHECK(it_parent->second.m_effective_feerate.value() == expected_feerate);
             BOOST_CHECK(it_child->second.m_effective_feerate.value() == expected_feerate);
             std::vector<Wtxid> expected_wtxids({tx_parent->GetWitnessHash(), tx_child->GetWitnessHash()});
-            BOOST_CHECK(it_parent->second.m_wtxids_fee_calculations.value() == expected_wtxids);
-            BOOST_CHECK(it_child->second.m_wtxids_fee_calculations.value() == expected_wtxids);
+            BOOST_CHECK(it_parent->second.m_subpackage_wtxids.value() == expected_wtxids);
+            BOOST_CHECK(it_child->second.m_subpackage_wtxids.value() == expected_wtxids);
             BOOST_CHECK(expected_feerate.GetFeePerK() > 1000);
         }
         expected_pool_size += 2;
@@ -1018,8 +1018,8 @@ BOOST_AUTO_TEST_CASE(package_cpfp_tests)
             BOOST_CHECK(it_child->second.m_base_fees.value() == child_fee);
             BOOST_CHECK(it_child->second.m_effective_feerate.value() == expected_feerate);
             std::vector<Wtxid> expected_wtxids({tx_parent_cheap->GetWitnessHash(), tx_child_cheap->GetWitnessHash()});
-            BOOST_CHECK(it_parent->second.m_wtxids_fee_calculations.value() == expected_wtxids);
-            BOOST_CHECK(it_child->second.m_wtxids_fee_calculations.value() == expected_wtxids);
+            BOOST_CHECK(it_parent->second.m_subpackage_wtxids.value() == expected_wtxids);
+            BOOST_CHECK(it_child->second.m_subpackage_wtxids.value() == expected_wtxids);
         }
         expected_pool_size += 2;
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
@@ -1208,8 +1208,8 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
 
         std::vector<Wtxid> expected_package3_wtxids({tx_parent_3->GetWitnessHash(), tx_child_3->GetWitnessHash()});
         const auto package3_total_vsize{GetVirtualTransactionSize(*tx_parent_3) + GetVirtualTransactionSize(*tx_child_3)};
-        BOOST_CHECK(it_parent_3->second.m_wtxids_fee_calculations.value() == expected_package3_wtxids);
-        BOOST_CHECK(it_child_3->second.m_wtxids_fee_calculations.value() == expected_package3_wtxids);
+        BOOST_CHECK(it_parent_3->second.m_subpackage_wtxids.value() == expected_package3_wtxids);
+        BOOST_CHECK(it_child_3->second.m_subpackage_wtxids.value() == expected_package3_wtxids);
         BOOST_CHECK_EQUAL(it_parent_3->second.m_effective_feerate.value().GetFee(package3_total_vsize), 199 + 1300);
         BOOST_CHECK_EQUAL(it_child_3->second.m_effective_feerate.value().GetFee(package3_total_vsize), 199 + 1300);
 
