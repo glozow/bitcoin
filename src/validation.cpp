@@ -1326,7 +1326,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
     if (!PreChecks(args, ws)) {
         if (ws.m_state.GetResult() == TxValidationResult::TX_RECONSIDERABLE) {
             // Failed for fee reasons. Provide the effective feerate and which tx was included.
-            return MempoolAcceptResult::FeeFailure(ws.m_state, CFeeRate(ws.m_modified_fees, ws.m_vsize), single_wtxid);
+            return MempoolAcceptResult::Failure(ws.m_state, CFeeRate(ws.m_modified_fees, ws.m_vsize), single_wtxid);
         }
         return MempoolAcceptResult::Failure(ws.m_state);
     }
@@ -1350,7 +1350,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
     if (m_subpackage.m_rbf && !ReplacementChecks(ws)) {
         if (ws.m_state.GetResult() == TxValidationResult::TX_RECONSIDERABLE) {
             // Failed for incentives-based fee reasons. Provide the effective feerate and which tx was included.
-            return MempoolAcceptResult::FeeFailure(ws.m_state, CFeeRate(ws.m_modified_fees, ws.m_vsize), single_wtxid);
+            return MempoolAcceptResult::Failure(ws.m_state, CFeeRate(ws.m_modified_fees, ws.m_vsize), single_wtxid);
         }
         return MempoolAcceptResult::Failure(ws.m_state);
     }
@@ -1386,7 +1386,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
         if (!m_pool.exists(ws.m_hash)) {
             // The tx no longer meets our (new) mempool minimum feerate but could be reconsidered in a package.
             ws.m_state.Invalid(TxValidationResult::TX_RECONSIDERABLE, "mempool full");
-            return MempoolAcceptResult::FeeFailure(ws.m_state, CFeeRate(ws.m_modified_fees, ws.m_vsize), {ws.m_ptx->GetWitnessHash()});
+            return MempoolAcceptResult::Failure(ws.m_state, CFeeRate(ws.m_modified_fees, ws.m_vsize), {ws.m_ptx->GetWitnessHash()});
         }
     }
 
@@ -1493,7 +1493,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
         !CheckFeeRate(m_subpackage.m_total_vsize, m_subpackage.m_total_modified_fees, placeholder_state)) {
         package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
         return PackageMempoolAcceptResult(package_state, {{workspaces.back().m_ptx->GetWitnessHash(),
-            MempoolAcceptResult::FeeFailure(placeholder_state, CFeeRate(m_subpackage.m_total_modified_fees, m_subpackage.m_total_vsize), all_package_wtxids)}});
+            MempoolAcceptResult::Failure(placeholder_state, CFeeRate(m_subpackage.m_total_modified_fees, m_subpackage.m_total_vsize), all_package_wtxids)}});
     }
 
     // Apply package mempool ancestor/descendant limits. Skip if there is only one transaction,
