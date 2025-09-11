@@ -116,8 +116,8 @@ void PruneBlockFilesManual(Chainstate& active_chainstate, int nManualPruneHeight
 *| m_state                   | yes, IsValid() | yes, IsInvalid()  | yes, IsInvalid() | yes, IsValid() | yes, IsValid()    |
 *| m_vsize                   | yes            | no                | no               | yes            | no                |
 *| m_base_fees               | yes            | no                | no               | yes            | no                |
-*| m_effective_feerate       | yes            | yes               | no               | no             | no                |
-*| m_subpackage_wtxids | yes            | yes               | no               | no             | no                |
+*| m_effective_feerate       | yes            | yes               | sometimes        | no             | no                |
+*| m_subpackage_wtxids       | yes            | yes               | sometimes        | no             | no                |
 *| m_other_wtxid             | no             | no                | no               | no             | yes               |
 *+---------------------------+----------------+-------------------+------------------+----------------+-------------------+
 * (*) Individual transaction acceptance doesn't return MEMPOOL_ENTRY and DIFFERENT_WITNESS. It returns
