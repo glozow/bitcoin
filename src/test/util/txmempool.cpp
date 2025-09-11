@@ -77,7 +77,7 @@ std::optional<std::string> CheckPackageMempoolAcceptResult(const Package& txns,
 
         // Replacements can't happen for subpackages larger than 2
         if (!atmp_result.m_replaced_transactions.empty() &&
-            atmp_result.m_wtxids_fee_calculations.has_value() && atmp_result.m_wtxids_fee_calculations.value().size() > 2) {
+            atmp_result.m_subpackage_wtxids.has_value() && atmp_result.m_subpackage_wtxids.value().size() > 2) {
              return strprintf("tx %s was part of a too-large package RBF subpackage",
                                 wtxid.ToString());
         }
@@ -85,7 +85,7 @@ std::optional<std::string> CheckPackageMempoolAcceptResult(const Package& txns,
         if (!atmp_result.m_replaced_transactions.empty() && mempool) {
             LOCK(mempool->cs);
             // If replacements occurred and it used 2 transactions, this is a package RBF and should result in a cluster of size 2
-            if (atmp_result.m_wtxids_fee_calculations.has_value() && atmp_result.m_wtxids_fee_calculations.value().size() == 2) {
+            if (atmp_result.m_subpackage_wtxids.has_value() && atmp_result.m_subpackage_wtxids.value().size() == 2) {
                 const auto cluster = mempool->GatherClusters({tx->GetHash()});
                 if (cluster.size() != 2) return strprintf("tx %s has too many ancestors or descendants for a package rbf", wtxid.ToString());
             }
@@ -114,7 +114,7 @@ std::optional<std::string> CheckPackageMempoolAcceptResult(const Package& txns,
             return strprintf("tx %s result should %shave m_effective_feerate",
                                     wtxid.ToString(), valid ? "" : "not ");
         }
-        if (atmp_result.m_wtxids_fee_calculations.has_value() != valid_or_reconsiderable) {
+        if (atmp_result.m_subpackage_wtxids.has_value() != valid_or_reconsiderable) {
             return strprintf("tx %s result should %shave m_effective_feerate",
                                     wtxid.ToString(), valid ? "" : "not ");
         }
