@@ -1076,6 +1076,7 @@ static RPCHelpMan submitpackage()
         RPCResult{
             RPCResult::Type::OBJ, "", "",
             {
+                {RPCResult::Type::NUM, "error_code", "Error code. 0 = success, 1 = package is malformed, 2 = invalid and not reconsiderable, 3 = invalid but reconsiderable, 4 = user preference"},
                 {RPCResult::Type::STR, "package_msg", "The transaction package result message. \"success\" indicates all transactions were accepted into or are already in the mempool."},
                 {RPCResult::Type::OBJ_DYN, "tx-results", "The transaction results keyed by wtxid. An entry is returned for every submitted wtxid.",
                 {
@@ -1150,6 +1151,7 @@ static RPCHelpMan submitpackage()
             const auto package_result = WITH_LOCK(::cs_main, return ProcessNewPackage(chainstate, mempool, txns, /*test_accept=*/ false, client_maxfeerate));
 
             std::string package_msg = "success";
+            uint32_t error_code = 0;
 
             // First catch package-wide errors, continue if we can
             switch(package_result.m_state.GetResult()) {
@@ -1173,6 +1175,19 @@ static RPCHelpMan submitpackage()
                 {
                     // Package-wide error we want to return, but we also want to return individual responses
                     package_msg = package_result.m_state.ToString();
+                    if (package_result.m_state.GetResult() == PackageValidationResult::PCKG_POLICY && package_result.m_tx_results.empty()) {
+                        error_code = 1;
+                    } else if (std::any_of(package_result.m_tx_results.begin(), package_result.m_tx_results.end(), [](const auto& tx_result) {
+                        return tx_result.second.m_state.GetResult() == TxValidationResult::TX_RECONSIDERABLE;
+                    })) {
+                        error_code = 3;
+                    } else if (std::any_of(package_result.m_tx_results.begin(), package_result.m_tx_results.end(), [](const auto& tx_result) {
+                        return tx_result.second.m_state.GetRejectReason() == "max feerate exceeded";
+                    })) {
+                        error_code = 4;
+                    } else {
+                        error_code = 2;
+                    }
                     CHECK_NONFATAL(package_result.m_tx_results.size() == txns.size() ||
                             package_result.m_tx_results.empty());
                     break;
@@ -1199,6 +1214,7 @@ static RPCHelpMan submitpackage()
 
             UniValue rpc_result{UniValue::VOBJ};
             rpc_result.pushKV("package_msg", package_msg);
+            rpc_result.pushKV("error_code", error_code);
             UniValue tx_result_map{UniValue::VOBJ};
             std::set<Txid> replaced_txids;
             for (const auto& tx : txns) {
