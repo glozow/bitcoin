@@ -1085,7 +1085,8 @@ static RPCHelpMan submitpackage()
                         {RPCResult::Type::NUM, "vsize", /*optional=*/true, "Sigops-adjusted virtual transaction size."},
                         {RPCResult::Type::OBJ, "fees", /*optional=*/true, "Transaction fees", {
                             {RPCResult::Type::STR_AMOUNT, "base", "transaction fee in " + CURRENCY_UNIT},
-                            {RPCResult::Type::STR_AMOUNT, "effective-feerate", /*optional=*/true, "if the transaction was not already in the mempool, the effective feerate in " + CURRENCY_UNIT + " per KvB. For example, the package feerate and/or feerate with modified fees from prioritisetransaction."},
+                            {RPCResult::Type::STR_AMOUNT, "effective-feerate", /*optional=*/true, "if the transaction was not already in the mempool, the effective feerate in " + CURRENCY_UNIT +
+                                " per KvB. For example, the package feerate and/or feerate with modified fees from prioritisetransaction. Not the same thing as chunk feerate."},
                             {RPCResult::Type::ARR, "effective-includes", /*optional=*/true, "if effective-feerate is provided, the wtxids of the transactions whose fees and vsizes are included in effective-feerate.",
                                 {{RPCResult::Type::STR_HEX, "", "transaction wtxid in hex"},
                             }},
@@ -1235,6 +1236,8 @@ static RPCHelpMan submitpackage()
                     UniValue fees(UniValue::VOBJ);
                     fees.pushKV("base", ValueFromAmount(it->second.m_base_fees.value()));
                     if (tx_result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+                        // Effective feerate (the feerate used at the time of validation) is not the same thing as chunk
+                        // feerate (which is determined after adding the transaction to mempool).
                         // Effective feerate is not provided for MEMPOOL_ENTRY transactions even
                         // though modified fees is known, because it is unknown whether package
                         // feerate was used when it was originally submitted.
