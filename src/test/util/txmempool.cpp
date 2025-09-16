@@ -37,7 +37,7 @@ CTxMemPoolEntry TestMemPoolEntryHelper::FromTx(const CMutableTransaction& tx) co
 
 CTxMemPoolEntry TestMemPoolEntryHelper::FromTx(const CTransactionRef& tx) const
 {
-    return CTxMemPoolEntry{tx, nFee, TicksSinceEpoch<std::chrono::seconds>(time), nHeight, m_sequence, spendsCoinbase, sigOpCost, lp};
+    return CTxMemPoolEntry{TxGraph::Ref(), tx, nFee, TicksSinceEpoch<std::chrono::seconds>(time), nHeight, m_sequence, spendsCoinbase, sigOpCost, lp};
 }
 
 std::optional<std::string> CheckPackageMempoolAcceptResult(const Package& txns,
@@ -77,7 +77,7 @@ std::optional<std::string> CheckPackageMempoolAcceptResult(const Package& txns,
 
         // Replacements can't happen for subpackages larger than 2
         if (!atmp_result.m_replaced_transactions.empty() &&
-            atmp_result.m_wtxids_fee_calculations.has_value() && atmp_result.m_wtxids_fee_calculations.value().size() > 2) {
+            atmp_result.m_subpackage_wtxids.has_value() && atmp_result.m_subpackage_wtxids.value().size() > 2) {
              return strprintf("tx %s was part of a too-large package RBF subpackage",
                                 wtxid.ToString());
         }
@@ -85,7 +85,7 @@ std::optional<std::string> CheckPackageMempoolAcceptResult(const Package& txns,
         if (!atmp_result.m_replaced_transactions.empty() && mempool) {
             LOCK(mempool->cs);
             // If replacements occurred and it used 2 transactions, this is a package RBF and should result in a cluster of size 2
-            if (atmp_result.m_wtxids_fee_calculations.has_value() && atmp_result.m_wtxids_fee_calculations.value().size() == 2) {
+            if (atmp_result.m_subpackage_wtxids.has_value() && atmp_result.m_subpackage_wtxids.value().size() == 2) {
                 const auto cluster = mempool->GatherClusters({tx->GetHash()});
                 if (cluster.size() != 2) return strprintf("tx %s has too many ancestors or descendants for a package rbf", wtxid.ToString());
             }
@@ -106,17 +106,15 @@ std::optional<std::string> CheckPackageMempoolAcceptResult(const Package& txns,
             return strprintf("tx %s result should %shave m_other_wtxid", wtxid.ToString(), diff_witness ? "" : "not ");
         }
 
-        // m_effective_feerate and m_wtxids_fee_calculations should exist iff the result was valid
-        // or if the failure was TX_RECONSIDERABLE
+        // m_effective_feerate and m_wtxids_fee_calculations should exist if the result was valid
+        // or if the failure was TX_RECONSIDERABLE. It may also be present in other failure cases, but is not guaranteed.
         const bool valid_or_reconsiderable{atmp_result.m_result_type == MempoolAcceptResult::ResultType::VALID ||
                     atmp_result.m_state.GetResult() == TxValidationResult::TX_RECONSIDERABLE};
-        if (atmp_result.m_effective_feerate.has_value() != valid_or_reconsiderable) {
-            return strprintf("tx %s result should %shave m_effective_feerate",
-                                    wtxid.ToString(), valid ? "" : "not ");
+        if (valid_or_reconsiderable && !atmp_result.m_effective_feerate.has_value()) {
+            return strprintf("tx %s result should have m_effective_feerate", wtxid.ToString());
         }
-        if (atmp_result.m_wtxids_fee_calculations.has_value() != valid_or_reconsiderable) {
-            return strprintf("tx %s result should %shave m_effective_feerate",
-                                    wtxid.ToString(), valid ? "" : "not ");
+        if (valid_or_reconsiderable && !atmp_result.m_subpackage_wtxids.has_value()) {
+            return strprintf("tx %s result should have m_subpackage_wtxids", wtxid.ToString());
         }
 
         if (mempool) {
@@ -157,7 +155,7 @@ void CheckMempoolEphemeralInvariants(const CTxMemPool& tx_pool)
         Assert(entry.GetFee() == 0 && entry.GetModifiedFee() == 0);
 
         // Transaction has single dust; make sure it's swept or will not be mined
-        const auto& children = entry.GetMemPoolChildrenConst();
+        const auto& children = tx_pool.GetChildren(entry);
 
         // Multiple children should never happen as non-dust-spending child
         // can get mined as package
@@ -183,38 +181,42 @@ void CheckMempoolTRUCInvariants(const CTxMemPool& tx_pool)
     LOCK(tx_pool.cs);
     for (const auto& tx_info : tx_pool.infoAll()) {
         const auto& entry = *Assert(tx_pool.GetEntry(tx_info.tx->GetHash()));
+        size_t desc_count, desc_size, anc_count, anc_size;
+        CAmount desc_fees, anc_fees;
+        tx_pool.CalculateDescendantData(entry, desc_count, desc_size, desc_fees);
+        tx_pool.CalculateAncestorData(entry, anc_count, anc_size, anc_fees);
+
         if (tx_info.tx->version == TRUC_VERSION) {
             // Check that special maximum virtual size is respected
             Assert(entry.GetTxSize() <= TRUC_MAX_VSIZE);
 
             // Check that special TRUC ancestor/descendant limits and rules are always respected
-            Assert(entry.GetCountWithDescendants() <= TRUC_DESCENDANT_LIMIT);
-            Assert(entry.GetCountWithAncestors() <= TRUC_ANCESTOR_LIMIT);
-            Assert(entry.GetSizeWithDescendants() <= TRUC_MAX_VSIZE + TRUC_CHILD_MAX_VSIZE);
-            Assert(entry.GetSizeWithAncestors() <= TRUC_MAX_VSIZE + TRUC_CHILD_MAX_VSIZE);
-
+            Assert(desc_count <= TRUC_DESCENDANT_LIMIT);
+            Assert(anc_count <= TRUC_ANCESTOR_LIMIT);
+            Assert(desc_size <= TRUC_MAX_VSIZE + TRUC_CHILD_MAX_VSIZE);
+            Assert(anc_size <= TRUC_MAX_VSIZE + TRUC_CHILD_MAX_VSIZE);
             // If this transaction has at least 1 ancestor, it's a "child" and has restricted weight.
-            if (entry.GetCountWithAncestors() > 1) {
+            if (anc_count > 1) {
                 Assert(entry.GetTxSize() <= TRUC_CHILD_MAX_VSIZE);
                 // All TRUC transactions must only have TRUC unconfirmed parents.
-                const auto& parents = entry.GetMemPoolParentsConst();
+                const auto& parents = tx_pool.GetParents(entry);
                 Assert(parents.begin()->get().GetSharedTx()->version == TRUC_VERSION);
             }
-        } else if (entry.GetCountWithAncestors() > 1) {
+        } else if (anc_count > 1) {
             // All non-TRUC transactions must only have non-TRUC unconfirmed parents.
-            for (const auto& parent : entry.GetMemPoolParentsConst()) {
+            for (const auto& parent : tx_pool.GetParents(entry)) {
                 Assert(parent.get().GetSharedTx()->version != TRUC_VERSION);
             }
         }
     }
 }
 
-void AddToMempool(CTxMemPool& tx_pool, const CTxMemPoolEntry& entry)
+void TryAddToMempool(CTxMemPool& tx_pool, const CTxMemPoolEntry& entry)
 {
     LOCK2(cs_main, tx_pool.cs);
     auto changeset = tx_pool.GetChangeSet();
     changeset->StageAddition(entry.GetSharedTx(), entry.GetFee(),
             entry.GetTime().count(), entry.GetHeight(), entry.GetSequence(),
             entry.GetSpendsCoinbase(), entry.GetSigOpCost(), entry.GetLockPoints());
-    changeset->Apply();
+    if (changeset->CheckMemPoolPolicyLimits()) changeset->Apply();
 }
