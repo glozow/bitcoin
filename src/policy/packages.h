@@ -77,14 +77,12 @@ class MiniGraph
 
     struct Tx : public TxGraph::Ref {
         CTransactionRef m_tx;
-        // When true, subchunking is not allowed. While the transaction may have a sufficient feerate, it is
-        // insufficient to pay for its replacement(s).
-        bool m_needs_package_rbf{false};
-
-        Tx(TxGraph::Ref&& ref, const CTransactionRef& tx, bool needs_package_rbf)
+        std::optional<CAmount> m_fees_with_conflicts;
+        bool m_remove_from_graph{false};
+        Tx(TxGraph::Ref&& ref, const CTransactionRef& tx, std::optional<CAmount> fees_with_conflicts)
             : TxGraph::Ref(std::move(ref)),
               m_tx{tx},
-              m_needs_package_rbf{needs_package_rbf}
+              m_fees_with_conflicts{fees_with_conflicts}
             {}
     };
 
@@ -135,7 +133,7 @@ public:
 
     /** Register feerate information for a transaction. Overwrites previous data if called
      * multiple times for the same transaction. Only allowed before linearization. */
-    void RegisterInfo(const CTransactionRef& tx, CAmount fee, int64_t size, bool needs_package_rbf);
+    void RegisterInfo(const CTransactionRef& tx, CAmount fee, int64_t size, CAmount conflicting_fees);
 
     /** Schedule validation of transactions. Each transaction must either be valid, rejected, or
      * registered. Only allowed if linearization has not happened yet. */
@@ -156,6 +154,11 @@ public:
      * validation schedule. If validation schedule has already been created, these transactions'
      * cluster will be excluded from further calls to GetCurrentSubpackage. */
     void MarkRejected(const std::vector<CTransactionRef>& subpackage);
+
+    /** Remove these transactions and any subsequent ones from the graph, preparing for a second round of linearization
+     * where the feerates are discounted for conflicts so we don't have an accurate view of their feerate.
+     * FIXME: this can be absorbed into GetCurrentSubpackage() since we know the minimum feerate. */
+    void PruneLowFeerate();
 };
 
 class PackageValidationState : public ValidationState<PackageValidationResult> {};

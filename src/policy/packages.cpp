@@ -175,30 +175,51 @@ MiniGraph::MiniGraph(const std::vector<CTransactionRef>& txns_in, CFeeRate min_f
     m_graph = MakeTxGraph(txns_in.size(), MAX_PACKAGE_WEIGHT, 100000);
 }
 
-void MiniGraph::RegisterInfo(const CTransactionRef& tx, CAmount fee, int64_t size, bool needs_package_rbf) {
+void MiniGraph::RegisterInfo(const CTransactionRef& tx, CAmount fee, int64_t size, CAmount fees_with_conflicts) {
     // Changing any transaction's feerate would change the linearization, so we don't permit this action after
     // Linearize() has been called.
     if (!Assume(!Linearized())) return;
 
+    // Don't include the conflicting fees here; they should not affect the linearization.
+    // Save the information for later use if we need to linearize with RBF.
     TxGraph::Ref ref = m_graph->AddTransaction(FeePerWeight{fee, static_cast<int32_t>(size)});
-    m_info.emplace(tx->GetHash(), Tx(std::move(ref), tx, needs_package_rbf));
+    m_info.emplace(tx->GetHash(), Tx(std::move(ref), tx, fees_with_conflicts));
 }
 
 void MiniGraph::ScheduleValidation() {
-    if (!Assume(!Linearized())) return;
-
     // Client-side bug if we forgot to RegisterInfo for some transactions
     Assume(m_info.size() + m_num_skip_linearization == m_txns.size());
 
-    // Populate TxGraph
-    for (const auto& tx : m_txns) {
-        auto it = m_info.find(tx->GetHash());
-        if (it != m_info.end()) {
-            auto& child = it->second;
-            // Add dependencies with previous transactions. This works because the package is required to be topological.
-            for (const auto& input : child.m_tx->vin) {
-                if (auto it_parent = m_info.find(input.prevout.hash); it_parent != m_info.end()) {
-                    m_graph->AddDependency(it_parent->second, child);
+    // If it's the second linearization, use the fees with conflicts.
+    if (Linearized()) {
+        m_builder.reset();
+        // Remove all transactions that have already succeeded.
+        // Set the fees with conflicts.
+        bool any_conflicts{false};
+        for (const auto& [_, tx] : m_info) {
+            if (tx.m_remove_from_graph) {
+                m_graph->RemoveTransaction(tx);
+            } else if (tx.m_fees_with_conflicts) {
+                m_graph->SetTransactionFee(tx, tx.m_fees_with_conflicts.value());
+                any_conflicts = true;
+            }
+        }
+        // Second linearization will not help.
+        if (!any_conflicts) {
+            m_current_chunk = std::nullopt;
+            return;
+        }
+    } else {
+        // Populate TxGraph
+        for (const auto& tx : m_txns) {
+            auto it = m_info.find(tx->GetHash());
+            if (it != m_info.end()) {
+                auto& child = it->second;
+                // Add dependencies with previous transactions. This works because the package is required to be topological.
+                for (const auto& input : child.m_tx->vin) {
+                    if (auto it_parent = m_info.find(input.prevout.hash); it_parent != m_info.end()) {
+                        m_graph->AddDependency(it_parent->second, child);
+                    }
                 }
             }
         }
@@ -233,16 +254,14 @@ void MiniGraph::UpdateCurrentChunk() {
     m_current_chunk->subchunk_len = 0;
     m_current_chunk->feerate = FeePerWeight{0, 0};
 
-    bool allow_subchunking{true};
     while (!m_current_chunk->EndOfChunk()) {
         auto next = static_cast<const Tx*>(m_current_chunk->chunk.first[m_current_chunk->start_index + m_current_chunk->subchunk_len++]);
         m_current_chunk->feerate += m_graph->GetIndividualFeerate(*next);
 
-        // Subchunking can prevent package RBF from being applied, so disable it if package RBF is needed.
-        allow_subchunking &= !next->m_needs_package_rbf;
-
-        // Subchunking: use the smallest possible subset of the chunk that meets the minimum feerate.
-        if (allow_subchunking && m_current_chunk->feerate >= m_min_feerate) {
+        // Allow returning singular transaction (chunk prefix of size 1) if it meets the minimum feerate.
+        // We don't allow longer subchunks because they might not be connected and might not be a true package, i.e.
+        // where transactions legally supplement the fees of ancestors.
+        if (m_current_chunk->subchunk_len == 1 && m_current_chunk->feerate >= m_min_feerate) {
             break;
         }
     }
@@ -266,6 +285,12 @@ std::optional<std::pair<std::vector<CTransactionRef>, FeePerWeight>> MiniGraph::
 void MiniGraph::MarkValid(const std::vector<CTransactionRef>& subpackage) {
     if (Linearized()) {
         m_builder->Include();
+        // Mark every transaction in this chunk as valid. They should be removed from the graph if we do a second round
+        // of linearization. Analogy: these transactions were mined in block 1, so the builder shouldn't include them in block 2.
+        for (size_t i = m_current_chunk->start_index; i < m_current_chunk->start_index + m_current_chunk->subchunk_len; ++i) {
+            auto tx = static_cast<Tx*>(m_current_chunk->chunk.first[i]);
+            tx->m_remove_from_graph = true;
+        }
         UpdateCurrentChunk();
     } else {
         m_num_skip_linearization += 1;
@@ -282,5 +307,19 @@ void MiniGraph::MarkRejected(const std::vector<CTransactionRef>& subpackage) {
         UpdateCurrentChunk();
     } else {
         m_num_skip_linearization += 1;
+    }
+}
+
+void MiniGraph::PruneLowFeerate() {
+    if (!Assume(Linearized())) return;
+
+    while (m_current_chunk) {
+        // Proceed to the next chunk. Use Include() so nothing gets skipped.
+        m_builder->Include();
+        for (size_t i = m_current_chunk->start_index; i < m_current_chunk->start_index + m_current_chunk->subchunk_len; ++i) {
+            auto tx = static_cast<Tx*>(m_current_chunk->chunk.first[i]);
+            tx->m_remove_from_graph = true;
+        }
+        UpdateCurrentChunk();
     }
 }
