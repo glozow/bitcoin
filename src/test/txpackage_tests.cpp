@@ -1853,7 +1853,7 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
             coinbaseKey, parent_spk, coinbase_value - 1763, /*submit=*/false));
         CTransactionRef tx_child_4 = MakeTransactionRef(CreateValidMempoolTransaction(
             tx_parent_4, /*input_vout=*/0, /*input_height=*/101,
-            child_key, child_spk, coinbase_value - 1763 - 90, /*submit=*/false));
+            child_key, child_spk, coinbase_value - 1763 - 60, /*submit=*/false));
 
         // In all packages, the parents conflict with each other
         BOOST_CHECK(tx_parent_1->GetHash() != tx_parent_2->GetHash() && tx_parent_2->GetHash() != tx_parent_3->GetHash());
@@ -1961,7 +1961,7 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
         // Check that the grouping for package RBF does not allow a parent to pay for a child below mempool minimum feerate.
         // The parent cannot pay for its own replacement, and can get assistance from the child, but the child should
         // not be eligble for submission at all.
-        // 1 parent paying 1763sat, 1 child paying 90sat.
+        // 1 parent paying 1763sat, 1 child paying 60sat.
         Package package6{tx_parent_4, tx_child_4};
         {
         const auto submit6 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package6, false, std::nullopt);
@@ -1981,7 +1981,7 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 
         // It is ok if the child pays fewer fees but subsidizes the parent's replacement cost, as long as the child meets the mempool minimum feerate.
-        // 1 parent paying 1763sat, 1 child paying 190sat.
+        // 1 parent paying 1763sat, 1 child paying 160sat.
         Package package7{package6};
         m_node.mempool->PrioritiseTransaction(tx_child_4->GetHash(), 100);
         {

@@ -134,6 +134,9 @@ class MiniGraph
     // MarkRejected to update m_current_chunk for the next call to GetCurrentSubpackage.
     void UpdateCurrentChunk();
 
+    /** Erase all transactions in m_to_remove from m_info. If needed, CommitStaging and reset the builder to apply removals to m_graph.  */
+    void ApplyRemovals();
+
 public:
     MiniGraph(const std::vector<CTransactionRef>& txns_in, CFeeRate min_feerate);
 

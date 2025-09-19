@@ -412,14 +412,10 @@ void MiniGraph::ReconsiderBestChunk() {
     }
 }
 
-
-std::optional<std::vector<CTransactionRef>> MiniGraph::MaybeReconsiderBestChunk() {
-    if (m_status != Status::LINEARIZED_RECONSIDERABLE) return std::nullopt;
-
+void MiniGraph::ApplyRemovals() {
     m_builder.reset();
     if (m_graph->HaveStaging()) m_graph->CommitStaging();
     m_current_chunk = std::nullopt;
-
     Assume(m_graph->GetTransactionCount(TxGraph::Level::MAIN) + m_to_remove.size() == m_info.size());
     for (const auto& txid : m_to_remove) {
         Assume(m_info.find(txid) != m_info.end());
@@ -428,15 +424,37 @@ std::optional<std::vector<CTransactionRef>> MiniGraph::MaybeReconsiderBestChunk(
     m_to_remove.clear();
     Assume(m_graph->GetTransactionCount(TxGraph::Level::MAIN) == m_info.size());
     Assume(!m_graph->HaveStaging());
-    m_graph->SanityCheck();
-    m_graph->DoWork(100000);
+}
 
-    // No point in reconsidering if there are fewer than 2 transactions left.
+
+std::optional<std::vector<CTransactionRef>> MiniGraph::MaybeReconsiderBestChunk() {
+    if (m_status != Status::LINEARIZED_RECONSIDERABLE) return std::nullopt;
+
+    // Apply removal of transactions that succeeded in the first round or can't be reconsidered.
+    ApplyRemovals();
+
+    // Using the first linearization, prune transactions from the back whose chunk feerates are below minimum feerate.
+    // We are going to alter the feerates of some transactions, so we need to do this now. If we dip below 2
+    // transactions at any point, we don't need to continue.
+    while (m_graph->GetTransactionCount(TxGraph::Level::MAIN) > 2) {
+        auto worst_chunk = m_graph->GetWorstMainChunk();
+        if (worst_chunk.second >= m_min_feerate) {
+            break;
+        }
+        for (auto ref : worst_chunk.first) {
+            m_to_remove.emplace_back(static_cast<const Tx*>(ref)->m_tx->GetHash());
+            m_graph->RemoveTransaction(*ref);
+        }
+    }
+    ApplyRemovals();
+
+    // No point in reconsidering if there are fewer than 2 transactions left. You need at least 2 to do package RBF.
     if (m_graph->GetTransactionCount(TxGraph::Level::MAIN) < 2) {
         m_status = Status::FINAL;
         return std::nullopt;
     }
 
+    // Set the feerates of transactions that need package RBF to 0.
     for (const auto& [_, tx] : m_info) {
         if (tx.m_needs_package_rbf) {
             m_graph->SetTransactionFee(tx, 0);
@@ -444,7 +462,10 @@ std::optional<std::vector<CTransactionRef>> MiniGraph::MaybeReconsiderBestChunk(
     }
 
     // Move on to the second linearization.
+    m_graph->DoWork(100000);
     m_builder = m_graph->GetBlockBuilder();
+
+    // Get the best chunk.
     if (auto builder_chunk{m_builder->GetCurrentChunk()}) {
         std::vector<CTransactionRef> result;
         result.reserve(builder_chunk->first.size());

@@ -1792,6 +1792,10 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
 
     // Maybe get a bonus chunk to validate.
     if (const auto subpackage{package_sorter.MaybeReconsiderBestChunk()}) {
+        for (const auto& tx : subpackage.value()) {
+            Assume(!m_pool.exists(tx->GetWitnessHash()));
+            results_final.erase(tx->GetWitnessHash());
+        }
         const auto subpackage_result = AcceptSubPackage(subpackage.value(), args);
 
         // Copy over subpackage results into results_final.
@@ -1800,6 +1804,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             auto subpackage_it = subpackage_result.m_tx_results.find(subpackage_wtxid);
             if (subpackage_it != subpackage_result.m_tx_results.end()) {
                 // This may overwrite a previous result.
+                results_final.erase(subpackage_wtxid);
                 results_final.emplace(subpackage_wtxid, subpackage_it->second);
             }
         }
