@@ -212,6 +212,31 @@ void MiniGraph::ScheduleValidation() {
     UpdateCurrentChunk();
 }
 
+void MiniGraph::ReconsiderBestChunk() {
+    // Clean up the first linearization, cut the graph down to our remaining transactions.
+    m_builder.reset();
+    m_graph->CommitStaging();
+    m_current_chunk = std::nullopt;
+
+    // Prune from the end to ensure we don't include any transactions below min feerate from the end.
+    while (m_graph->GetTransactionCount(TxGraph::Level::MAIN) > 0) {
+        const auto& [worst_chunk, feerate] = m_graph->GetWorstMainChunk();
+        if (feerate >= m_min_feerate) break;
+        for (auto ref : worst_chunk) {
+            m_info.erase(static_cast<const Tx*>(ref)->m_tx->GetHash());
+            m_graph->RemoveTransaction(*ref);
+        }
+    }
+
+    // Move on to the second linearization.
+    m_builder = m_graph->GetBlockBuilder();
+    // The current chunk = first connected component.
+    if (auto builder_chunk{m_builder->GetCurrentChunk()}) {
+        auto first_connected_component = m_graph->GetCluster(builder_chunk->first[0], TxGraph::Level::MAIN);
+        m_current_chunk = ChunkCache(std::move(first_connected_component));
+    }
+}
+
 void MiniGraph::UpdateCurrentChunk() {
     if (m_status != Status::LINEARIZED) return;
 
@@ -221,7 +246,12 @@ void MiniGraph::UpdateCurrentChunk() {
             m_current_chunk = ChunkCache(std::move(*builder_chunk));
         } else {
             m_current_chunk = std::nullopt;
-            m_status = Status::FINAL;
+            if (m_status == Status::LINEARIZED_RECONSIDERABLE) {
+                ReconsiderBestChunk();
+                m_status = Status::LINEARIZED_AGAIN;
+            } else {
+                m_status = Status::FINAL;
+            }
             return;
         }
     }
@@ -234,7 +264,8 @@ void MiniGraph::UpdateCurrentChunk() {
     m_current_chunk->subchunk_len = 0;
     m_current_chunk->feerate = FeePerWeight{0, 0};
 
-    bool allow_subchunking{true};
+    // Only allow subchunking in the first linearization.
+    bool allow_subchunking{m_status == Status::LINEARIZED || m_status == Status::LINEARIZED_RECONSIDERABLE};
     while (!m_current_chunk->EndOfChunk()) {
         auto next = static_cast<const Tx*>(m_current_chunk->chunk.first[m_current_chunk->start_index + m_current_chunk->subchunk_len++]);
         m_current_chunk->feerate += m_graph->GetIndividualFeerate(*next);
@@ -265,41 +296,82 @@ std::optional<std::pair<std::vector<CTransactionRef>, FeePerWeight>> MiniGraph::
 }
 
 void MiniGraph::MarkValid(const std::vector<CTransactionRef>& subpackage) {
-    if (m_status == Status::LINEARIZED && Assert(m_current_chunk)) {
-        // Stage removal of these transactions.
-        if (!m_graph->HaveStaging()) m_graph->StartStaging();
-        for (auto ref : m_current_chunk->chunk.first) {
-            m_graph->RemoveTransaction(*ref);
+    switch (m_status) {
+        case Status::REGISTRATION:
+        {
+            m_num_skip_linearization += 1;
+            break;
         }
+        case Status::LINEARIZED:
+        case Status::LINEARIZED_RECONSIDERABLE:
+        {
+            // Stage removal of these transactions.
+            if (!m_graph->HaveStaging()) m_graph->StartStaging();
+            for (auto ref : m_current_chunk->chunk.first) {
+                m_info.erase(static_cast<const Tx*>(ref)->m_tx->GetHash());
+                m_graph->RemoveTransaction(*ref);
+            }
 
-        m_builder->Include();
-        UpdateCurrentChunk();
-    } else {
-        m_num_skip_linearization += 1;
+            m_builder->Include();
+            UpdateCurrentChunk();
+            break;
+        }
+        case Status::LINEARIZED_AGAIN:
+        {
+            m_current_chunk = std::nullopt;
+            m_status = Status::FINAL;
+            break;
+        }
+        case Status::FINAL:
+        {
+            break;
+        }
     }
 }
 
 void MiniGraph::MarkRejected(const std::vector<CTransactionRef>& subpackage, bool reconsiderable) {
-    if (m_status == Status::LINEARIZED && Assert(m_current_chunk)) {
-        // Stage removal of these transactions and their descendants.
-        // Reconsiderable transactions are not removed from the graph, as we may want to try them again later.
-        if (!reconsiderable) {
-            if (!m_graph->HaveStaging()) m_graph->StartStaging();
-
-            const auto& refs_subset = std::span(m_current_chunk->chunk.first).subspan(m_current_chunk->start_index, m_current_chunk->subchunk_len);
-            const auto descendants_union = m_graph->GetDescendantsUnion(refs_subset, TxGraph::Level::MAIN);
-            for (auto ref : descendants_union) {
-                m_graph->RemoveTransaction(*ref);
-            }
+    switch (m_status) {
+        case Status::REGISTRATION:
+        {
+            m_num_skip_linearization += 1;
+            break;
         }
+        case Status::LINEARIZED:
+        case Status::LINEARIZED_RECONSIDERABLE:
+        {
+            // Stage removal of these transactions and their descendants.
+            // Reconsiderable transactions are not removed from the graph, as we may want to try them again later.
+            if (reconsiderable) {
+                m_status = Status::LINEARIZED_RECONSIDERABLE;
+            } else {
+                if (!m_graph->HaveStaging()) m_graph->StartStaging();
 
-        // Don't continue with the rest of the chunk (no effect if we aren't subchunking).
-        m_current_chunk = std::nullopt;
+                const auto& refs_subset = std::span(m_current_chunk->chunk.first).subspan(m_current_chunk->start_index, m_current_chunk->subchunk_len);
+                const auto descendants_union = m_graph->GetDescendantsUnion(refs_subset, TxGraph::Level::MAIN);
+                for (auto ref : descendants_union) {
+                    m_info.erase(static_cast<const Tx*>(ref)->m_tx->GetHash());
+                    m_graph->RemoveTransaction(*ref);
+                }
+            }
 
-        // The builder will automatically not serve transactions in the same cluster.
-        m_builder->Skip();
-        UpdateCurrentChunk();
-    } else {
-        m_num_skip_linearization += 1;
+            // Don't continue with the rest of the chunk (no effect if we aren't subchunking).
+            // Any of the skipped transactions will be reconsidered later.
+            m_current_chunk = std::nullopt;
+
+            // The builder will automatically not serve transactions in the same cluster.
+            m_builder->Skip();
+            UpdateCurrentChunk();
+            break;
+        }
+        case Status::LINEARIZED_AGAIN:
+        {
+            m_current_chunk = std::nullopt;
+            m_status = Status::FINAL;
+            break;
+        }
+        case Status::FINAL:
+        {
+            break;
+        }
     }
 }

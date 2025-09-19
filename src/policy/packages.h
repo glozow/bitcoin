@@ -71,6 +71,8 @@ class MiniGraph
     enum class Status {
         REGISTRATION = 0,
         LINEARIZED,
+        LINEARIZED_RECONSIDERABLE,
+        LINEARIZED_AGAIN,
         FINAL,
     };
 
@@ -157,6 +159,9 @@ public:
      * validation schedule. If validation schedule has already been created, these transactions'
      * cluster will be excluded from further calls to GetCurrentSubpackage. */
     void MarkRejected(const std::vector<CTransactionRef>& subpackage, bool reconsiderable);
+
+    /** Linearize remaining transactions and determine 1 bonus chunk to validate. */
+    void ReconsiderBestChunk();
 };
 
 class PackageValidationState : public ValidationState<PackageValidationResult> {};
