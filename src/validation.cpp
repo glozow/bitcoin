@@ -663,7 +663,7 @@ private:
     bool PreChecks(ATMPArgs& args, Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Run checks for mempool replace-by-fee, only used in AcceptSingleTransaction.
-    bool ReplacementChecks(Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
+    bool ReplacementChecks(Workspace& ws, bool diagram_check) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Enforce package mempool ancestor/descendant limits (distinct from individual
     // ancestor/descendant limits done in PreChecks) and run Package RBF checks.
@@ -999,7 +999,7 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     return true;
 }
 
-bool MemPoolAccept::ReplacementChecks(Workspace& ws)
+bool MemPoolAccept::ReplacementChecks(Workspace& ws, bool diagram_check)
 {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
@@ -1037,10 +1037,12 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
         m_subpackage.m_changeset->StageRemoval(it);
     }
 
-    // This check also applies CheckMemPoolPolicyLimits. FIXME: this is expensive. Maybe skip it in preloop?
-    if (const auto err_string{ImprovesFeerateDiagram(*m_subpackage.m_changeset)}) {
-        // If we can't calculate a feerate, it's because the cluster size limits were hit.
-        return state.Invalid(TxValidationResult::TX_RECONSIDERABLE, "replacement-failed", err_string->second);
+    // This check also applies CheckMemPoolPolicyLimits and is potentially expensive.
+    if (diagram_check) {
+        if (const auto err_string{ImprovesFeerateDiagram(*m_subpackage.m_changeset)}) {
+            // If we can't calculate a feerate, it's because the cluster size limits were hit.
+            return state.Invalid(TxValidationResult::TX_RECONSIDERABLE, "replacement-failed", err_string->second);
+        }
     }
 
     return true;
@@ -1346,7 +1348,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
         }
     }
 
-    if (m_subpackage.m_rbf && !ReplacementChecks(ws)) {
+    if (m_subpackage.m_rbf && !ReplacementChecks(ws, /*diagram_check=*/true)) {
         return MempoolAcceptResult::Failure(ws.m_state, CFeeRate(ws.m_modified_fees, ws.m_vsize), single_wtxid);
     }
 
@@ -1664,7 +1666,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             // the changeset, so be sure to clear the subpackage state.
             const bool prechecks_passed{PreChecks(single_args, ws)};
             if (prechecks_passed && !ws.m_conflicts.empty()) {
-                ReplacementChecks(ws);
+                ReplacementChecks(ws, /*diagram_check=*/false);
             }
 
             // Register information with package_sorter.
