@@ -68,12 +68,13 @@ class MiniGraph
     // full chunk.
     const FeePerWeight m_min_feerate;
 
-    enum class TxStatus {
-        UNKNOWN = 0,
-        REJECTED,
-        REGISTERED,
-        VALID,
+    enum class Status {
+        REGISTRATION = 0,
+        LINEARIZED,
+        FINAL,
     };
+
+    Status m_status{Status::REGISTRATION};
 
     struct Tx : public TxGraph::Ref {
         CTransactionRef m_tx;

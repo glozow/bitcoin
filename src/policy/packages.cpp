@@ -178,14 +178,14 @@ MiniGraph::MiniGraph(const std::vector<CTransactionRef>& txns_in, CFeeRate min_f
 void MiniGraph::RegisterInfo(const CTransactionRef& tx, CAmount fee, int64_t size, bool needs_package_rbf) {
     // Changing any transaction's feerate would change the linearization, so we don't permit this action after
     // Linearize() has been called.
-    if (!Assume(!Linearized())) return;
+    if (m_status != Status::REGISTRATION) return;
 
     TxGraph::Ref ref = m_graph->AddTransaction(FeePerWeight{fee, static_cast<int32_t>(size)});
     m_info.emplace(tx->GetHash(), Tx(std::move(ref), tx, needs_package_rbf));
 }
 
 void MiniGraph::ScheduleValidation() {
-    if (!Assume(!Linearized())) return;
+    if (m_status != Status::REGISTRATION) return;
 
     // Client-side bug if we forgot to RegisterInfo for some transactions
     Assume(m_info.size() + m_num_skip_linearization == m_txns.size());
@@ -206,14 +206,14 @@ void MiniGraph::ScheduleValidation() {
 
     // Determine the validation schedule building a "block" out of its transactions.
     m_builder = m_graph->GetBlockBuilder();
-    m_graph->SanityCheck();
+    m_status = Status::LINEARIZED;
 
     // Initialize current chunk.
     UpdateCurrentChunk();
 }
 
 void MiniGraph::UpdateCurrentChunk() {
-    if (!Assume(Linearized())) return;
+    if (m_status != Status::LINEARIZED) return;
 
     // If needed, ask the builder for another chunk. If it is nullopt, there is nothing left to validate.
     if (!m_current_chunk || m_current_chunk->EndOfChunk()) {
@@ -221,6 +221,7 @@ void MiniGraph::UpdateCurrentChunk() {
             m_current_chunk = ChunkCache(std::move(*builder_chunk));
         } else {
             m_current_chunk = std::nullopt;
+            m_status = Status::FINAL;
             return;
         }
     }
@@ -264,7 +265,7 @@ std::optional<std::pair<std::vector<CTransactionRef>, FeePerWeight>> MiniGraph::
 }
 
 void MiniGraph::MarkValid(const std::vector<CTransactionRef>& subpackage) {
-    if (Linearized() && Assert(m_current_chunk)) {
+    if (m_status == Status::LINEARIZED && Assert(m_current_chunk)) {
         // Stage removal of these transactions.
         if (!m_graph->HaveStaging()) m_graph->StartStaging();
         for (auto ref : m_current_chunk->chunk.first) {
@@ -279,7 +280,7 @@ void MiniGraph::MarkValid(const std::vector<CTransactionRef>& subpackage) {
 }
 
 void MiniGraph::MarkRejected(const std::vector<CTransactionRef>& subpackage, bool reconsiderable) {
-    if (Linearized() && Assert(m_current_chunk)) {
+    if (m_status == Status::LINEARIZED && Assert(m_current_chunk)) {
         // Stage removal of these transactions and their descendants.
         // Reconsiderable transactions are not removed from the graph, as we may want to try them again later.
         if (!reconsiderable) {
