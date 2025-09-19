@@ -12,6 +12,8 @@
 #include <iterator>
 #include <memory>
 #include <numeric>
+#include <span>
+#include <utility>
 
 /** IsTopoSortedPackage where a set of txids has been pre-populated. The set is assumed to be correct and
  * is mutated within this function (even if return value is false). */
@@ -215,30 +217,39 @@ void MiniGraph::ScheduleValidation() {
 void MiniGraph::ReconsiderBestChunk() {
     // Clean up the first linearization, cut the graph down to our remaining transactions.
     m_builder.reset();
-    m_graph->CommitStaging();
+    if (m_graph->HaveStaging()) m_graph->CommitStaging();
     m_current_chunk = std::nullopt;
 
-    // Prune from the end to ensure we don't include any transactions below min feerate from the end.
-    while (m_graph->GetTransactionCount(TxGraph::Level::MAIN) > 0) {
-        const auto& [worst_chunk, feerate] = m_graph->GetWorstMainChunk();
-        if (feerate >= m_min_feerate) break;
-        for (auto ref : worst_chunk) {
-            m_info.erase(static_cast<const Tx*>(ref)->m_tx->GetHash());
-            m_graph->RemoveTransaction(*ref);
-        }
+    Assume(m_graph->GetTransactionCount(TxGraph::Level::MAIN) + m_to_remove.size() == m_info.size());
+    for (const auto& txid : m_to_remove) {
+        m_info.erase(txid);
     }
+    m_to_remove.clear();
+    Assume(m_graph->GetTransactionCount(TxGraph::Level::MAIN) == m_info.size());
+
+    // No point in reconsidering if there are fewer than 2 transactions left.
+    if (m_graph->GetTransactionCount(TxGraph::Level::MAIN) < 2) {
+        m_status = Status::FINAL;
+        return;
+    }
+
+    // for (const auto& [_, tx] : m_info) {
+    //     if (tx.m_needs_package_rbf) {
+    //         m_graph->SetTransactionFee(tx, 0);
+    //     }
+    // }
 
     // Move on to the second linearization.
     m_builder = m_graph->GetBlockBuilder();
     // The current chunk = first connected component.
     if (auto builder_chunk{m_builder->GetCurrentChunk()}) {
-        auto first_connected_component = m_graph->GetCluster(builder_chunk->first[0], TxGraph::Level::MAIN);
-        m_current_chunk = ChunkCache(std::move(first_connected_component));
+        m_current_chunk = ChunkCache(std::move(*builder_chunk));
     }
 }
 
 void MiniGraph::UpdateCurrentChunk() {
-    if (m_status != Status::LINEARIZED) return;
+    // Shouldn't be called in LINEARIZED_AGAIN because we only allow 1 bonus chunk.
+    if (m_status != Status::LINEARIZED && m_status != Status::LINEARIZED_RECONSIDERABLE) return;
 
     // If needed, ask the builder for another chunk. If it is nullopt, there is nothing left to validate.
     if (!m_current_chunk || m_current_chunk->EndOfChunk()) {
@@ -246,6 +257,7 @@ void MiniGraph::UpdateCurrentChunk() {
             m_current_chunk = ChunkCache(std::move(*builder_chunk));
         } else {
             m_current_chunk = std::nullopt;
+            // We have run out of chunks. If we can reconsider, do so. Otherwise, we are done.
             if (m_status == Status::LINEARIZED_RECONSIDERABLE) {
                 ReconsiderBestChunk();
                 m_status = Status::LINEARIZED_AGAIN;
@@ -305,10 +317,20 @@ void MiniGraph::MarkValid(const std::vector<CTransactionRef>& subpackage) {
         case Status::LINEARIZED:
         case Status::LINEARIZED_RECONSIDERABLE:
         {
-            // Stage removal of these transactions.
-            if (!m_graph->HaveStaging()) m_graph->StartStaging();
+            // First collect all transactions to remove
+            std::vector<std::pair<Txid, TxGraph::Ref*>> to_remove;
+            to_remove.reserve(m_current_chunk->chunk.first.size());
             for (auto ref : m_current_chunk->chunk.first) {
-                m_info.erase(static_cast<const Tx*>(ref)->m_tx->GetHash());
+                auto tx = static_cast<const Tx*>(ref);
+                to_remove.emplace_back(tx->m_tx->GetHash(), ref);
+            }
+
+            // Stage removal of these transactions
+            if (!m_graph->HaveStaging()) m_graph->StartStaging();
+
+            // Remove transactions and update tracking
+            for (const auto& [txid, ref] : to_remove) {
+                m_to_remove.push_back(txid);
                 m_graph->RemoveTransaction(*ref);
             }
 
@@ -319,6 +341,7 @@ void MiniGraph::MarkValid(const std::vector<CTransactionRef>& subpackage) {
         case Status::LINEARIZED_AGAIN:
         {
             m_current_chunk = std::nullopt;
+            // We only allow 1 bonus chunk.
             m_status = Status::FINAL;
             break;
         }
@@ -347,9 +370,9 @@ void MiniGraph::MarkRejected(const std::vector<CTransactionRef>& subpackage, boo
                 if (!m_graph->HaveStaging()) m_graph->StartStaging();
 
                 const auto& refs_subset = std::span(m_current_chunk->chunk.first).subspan(m_current_chunk->start_index, m_current_chunk->subchunk_len);
-                const auto descendants_union = m_graph->GetDescendantsUnion(refs_subset, TxGraph::Level::MAIN);
+                const auto descendants_union = m_graph->GetDescendantsUnion(refs_subset, TxGraph::Level::TOP);
                 for (auto ref : descendants_union) {
-                    m_info.erase(static_cast<const Tx*>(ref)->m_tx->GetHash());
+                    m_to_remove.emplace_back(static_cast<const Tx*>(ref)->m_tx->GetHash());
                     m_graph->RemoveTransaction(*ref);
                 }
             }
@@ -366,6 +389,7 @@ void MiniGraph::MarkRejected(const std::vector<CTransactionRef>& subpackage, boo
         case Status::LINEARIZED_AGAIN:
         {
             m_current_chunk = std::nullopt;
+            // We only allow 1 bonus chunk.
             m_status = Status::FINAL;
             break;
         }

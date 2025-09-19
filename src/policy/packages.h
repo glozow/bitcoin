@@ -93,6 +93,7 @@ class MiniGraph
 
     /** Main data structure. */
     std::map<Txid, Tx> m_info;
+    std::vector<Txid> m_to_remove;
 
     std::unique_ptr<TxGraph> m_graph;
     /** Used to construct validation schedule. */
