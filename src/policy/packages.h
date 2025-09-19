@@ -155,7 +155,7 @@ public:
     /** Mark that transaction(s) were rejected from mempool. These transactions will not be included in the
      * validation schedule. If validation schedule has already been created, these transactions'
      * cluster will be excluded from further calls to GetCurrentSubpackage. */
-    void MarkRejected(const std::vector<CTransactionRef>& subpackage);
+    void MarkRejected(const std::vector<CTransactionRef>& subpackage, bool reconsiderable);
 };
 
 class PackageValidationState : public ValidationState<PackageValidationResult> {};

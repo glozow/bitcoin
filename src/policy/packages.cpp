@@ -264,7 +264,13 @@ std::optional<std::pair<std::vector<CTransactionRef>, FeePerWeight>> MiniGraph::
 }
 
 void MiniGraph::MarkValid(const std::vector<CTransactionRef>& subpackage) {
-    if (Linearized()) {
+    if (Linearized() && Assert(m_current_chunk)) {
+        // Stage removal of these transactions.
+        if (!m_graph->HaveStaging()) m_graph->StartStaging();
+        for (auto ref : m_current_chunk->chunk.first) {
+            m_graph->RemoveTransaction(*ref);
+        }
+
         m_builder->Include();
         UpdateCurrentChunk();
     } else {
@@ -272,12 +278,24 @@ void MiniGraph::MarkValid(const std::vector<CTransactionRef>& subpackage) {
     }
 }
 
-void MiniGraph::MarkRejected(const std::vector<CTransactionRef>& subpackage) {
-    if (Linearized()) {
+void MiniGraph::MarkRejected(const std::vector<CTransactionRef>& subpackage, bool reconsiderable) {
+    if (Linearized() && Assert(m_current_chunk)) {
+        // Stage removal of these transactions and their descendants.
+        // Reconsiderable transactions are not removed from the graph, as we may want to try them again later.
+        if (!reconsiderable) {
+            if (!m_graph->HaveStaging()) m_graph->StartStaging();
+
+            const auto& refs_subset = std::span(m_current_chunk->chunk.first).subspan(m_current_chunk->start_index, m_current_chunk->subchunk_len);
+            const auto descendants_union = m_graph->GetDescendantsUnion(refs_subset, TxGraph::Level::MAIN);
+            for (auto ref : descendants_union) {
+                m_graph->RemoveTransaction(*ref);
+            }
+        }
+
         // Don't continue with the rest of the chunk (no effect if we aren't subchunking).
         m_current_chunk = std::nullopt;
 
-        // The builder will automatically not serve descendants.
+        // The builder will automatically not serve transactions in the same cluster.
         m_builder->Skip();
         UpdateCurrentChunk();
     } else {

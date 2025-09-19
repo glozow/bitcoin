@@ -1696,7 +1696,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
                     // package that failed due to feerate), don't run package validation. Note that this
                     // decision might not make sense if different types of packages are allowed in the
                     // future.
-                    package_sorter.MarkRejected({tx});
+                    package_sorter.MarkRejected({tx}, /*reconsiderable=*/false);
                     if (ws.m_have_feerate) {
                         individual_results_nonfinal.emplace(wtxid,
                             MempoolAcceptResult::Failure(ws.m_state, CFeeRate(ws.m_modified_fees, ws.m_vsize), {tx->GetWitnessHash()}));
@@ -1741,6 +1741,10 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
 
         // Copy over subpackage results into results_final.
         bool all_accepted{subpackage_result.m_state.IsValid()};
+        // Try package RBF if:
+        // - The subpackage has size 1 and failed due to RBF rules.
+        // - TODO: After relaxing the 1p1c rule, also allow higher sizes when it failed due to PCKG_POLICY package RBF rules.
+        bool try_package_rbf{subpackage.size() == 1};
         for (const auto& subpackage_tx : subpackage) {
             const auto& subpackage_wtxid = subpackage_tx->GetWitnessHash();
 
@@ -1750,6 +1754,9 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             auto subpackage_it = subpackage_result.m_tx_results.find(subpackage_wtxid);
             if (subpackage_it != subpackage_result.m_tx_results.end()) {
                 results_final.emplace(subpackage_wtxid, subpackage_it->second);
+                const auto& subpackage_state = subpackage_it->second.m_state;
+                try_package_rbf &= subpackage_state.GetResult() == TxValidationResult::TX_RECONSIDERABLE &&
+                    subpackage_state.GetRejectReason() == "insufficient fee";
             } else {
                 all_accepted = false;
                 continue;
@@ -1771,7 +1778,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
             } else {
                 package_state_final.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
             }
-            package_sorter.MarkRejected(subpackage);
+            package_sorter.MarkRejected(subpackage, try_package_rbf);
         }
         next_subpackage = package_sorter.GetCurrentSubpackage();
     }
