@@ -1115,9 +1115,9 @@ bool MemPoolAccept::PackageMempoolChecks(const std::vector<CTransactionRef>& txn
                                      "package RBF failed: insufficient anti-DoS fees", *err_string);
     }
 
-    // Transactions grouped together are always part of the same chunk. Chunking adds a transaction if its feerate is
+    // FIXME: not true. Transactions grouped together are always part of the same chunk. Chunking adds a transaction if its feerate is
     // greater than the original chunk feerate (see ChunkLinearization).
-    Assume(FeeFrac(child_ws.m_modified_fees, child_ws.m_vsize) > FeeFrac(parent_ws.m_modified_fees, parent_ws.m_vsize));
+    // Assume(FeeFrac(child_ws.m_modified_fees, child_ws.m_vsize) > FeeFrac(parent_ws.m_modified_fees, parent_ws.m_vsize));
 
     // Check if it's economically rational to mine this package rather than the ones it replaces.
     // This takes the place of ReplacementChecks()'s PaysMoreThanConflicts() in the package RBF setting.
@@ -1789,6 +1789,21 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     // clarity (since it's not permitted to invoke LimitMempoolSize() while a
     // changeset is outstanding).
     ClearSubPackageState();
+
+    // Maybe get a bonus chunk to validate.
+    if (const auto subpackage{package_sorter.MaybeReconsiderBestChunk()}) {
+        const auto subpackage_result = AcceptSubPackage(subpackage.value(), args);
+
+        // Copy over subpackage results into results_final.
+        for (const auto& subpackage_tx : subpackage.value()) {
+            const auto& subpackage_wtxid = subpackage_tx->GetWitnessHash();
+            auto subpackage_it = subpackage_result.m_tx_results.find(subpackage_wtxid);
+            if (subpackage_it != subpackage_result.m_tx_results.end()) {
+                // This may overwrite a previous result.
+                results_final.emplace(subpackage_wtxid, subpackage_it->second);
+            }
+        }
+    }
 
     // Make sure we haven't exceeded max mempool size.
     // Package transactions that were submitted to mempool or already in mempool may be evicted.

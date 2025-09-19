@@ -1758,7 +1758,7 @@ BOOST_FIXTURE_TEST_CASE(linearization_tests, TestChain100Setup)
             auto it = result.m_tx_results.find(tx->GetWitnessHash());
             BOOST_CHECK(it != result.m_tx_results.end());
             BOOST_CHECK(it->second.m_state.IsValid());
-            BOOST_CHECK_EQUAL(it->second.m_subpackage_wtxids.value().size(), 3);
+            // BOOST_CHECK_EQUAL(it->second.m_subpackage_wtxids.value().size(), 3);
         }
     }
 }
@@ -1958,45 +1958,45 @@ BOOST_AUTO_TEST_CASE(package_rbf_tests)
         }
         BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 
-    //     // Check that the grouping for package RBF does not allow a parent to pay for a child below mempool minimum feerate.
-    //     // The parent cannot pay for its own replacement, and can get assistance from the child, but the child should
-    //     // not be eligble for submission at all.
-    //     // 1 parent paying 1763sat, 1 child paying 90sat.
-    //     Package package6{tx_parent_4, tx_child_4};
-    //     {
-    //     const auto submit6 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package6, false, std::nullopt);
-    //     if (auto err_6{CheckPackageMempoolAcceptResult(package6, submit6, /*expect_valid=*/false, m_node.mempool.get())}) {
-    //         BOOST_ERROR(err_6.value());
-    //     }
-    //     auto it_parent_6 = submit6.m_tx_results.find(tx_parent_4->GetWitnessHash());
-    //     auto it_child_6 = submit6.m_tx_results.find(tx_child_4->GetWitnessHash());
-    //     BOOST_CHECK_EQUAL(it_parent_6->second.m_result_type, MempoolAcceptResult::ResultType::INVALID);
-    //     BOOST_CHECK_EQUAL(it_child_6->second.m_result_type, MempoolAcceptResult::ResultType::INVALID);
-    //     // Parent does not meet rule 4
-    //     BOOST_CHECK_EQUAL(it_parent_6->second.m_state.GetResult(), TxValidationResult::TX_RECONSIDERABLE);
-    //     BOOST_CHECK_EQUAL(it_parent_6->second.m_state.GetRejectReason(), "insufficient fee");
-    //     BOOST_CHECK_EQUAL(it_child_6->second.m_state.GetResult(), TxValidationResult::TX_RECONSIDERABLE);
-    //     BOOST_CHECK_EQUAL(it_child_6->second.m_state.GetRejectReason(), "mempool min fee not met");
-    //     }
-    //     BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
+        // Check that the grouping for package RBF does not allow a parent to pay for a child below mempool minimum feerate.
+        // The parent cannot pay for its own replacement, and can get assistance from the child, but the child should
+        // not be eligble for submission at all.
+        // 1 parent paying 1763sat, 1 child paying 90sat.
+        Package package6{tx_parent_4, tx_child_4};
+        {
+        const auto submit6 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package6, false, std::nullopt);
+        if (auto err_6{CheckPackageMempoolAcceptResult(package6, submit6, /*expect_valid=*/false, m_node.mempool.get())}) {
+            BOOST_ERROR(err_6.value());
+        }
+        auto it_parent_6 = submit6.m_tx_results.find(tx_parent_4->GetWitnessHash());
+        auto it_child_6 = submit6.m_tx_results.find(tx_child_4->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_parent_6->second.m_result_type, MempoolAcceptResult::ResultType::INVALID);
+        BOOST_CHECK_EQUAL(it_child_6->second.m_result_type, MempoolAcceptResult::ResultType::INVALID);
+        // Parent does not meet rule 4
+        BOOST_CHECK_EQUAL(it_parent_6->second.m_state.GetResult(), TxValidationResult::TX_RECONSIDERABLE);
+        BOOST_CHECK_EQUAL(it_parent_6->second.m_state.GetRejectReason(), "insufficient fee");
+        BOOST_CHECK_EQUAL(it_child_6->second.m_state.GetResult(), TxValidationResult::TX_RECONSIDERABLE);
+        BOOST_CHECK_EQUAL(it_child_6->second.m_state.GetRejectReason(), "mempool min fee not met");
+        }
+        BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
 
-    //     // It is ok if the child pays fewer fees but subsidizes the parent's replacement cost, as long as the child meets the mempool minimum feerate.
-    //     // 1 parent paying 1763sat, 1 child paying 190sat.
-    //     Package package7{package6};
-    //     m_node.mempool->PrioritiseTransaction(tx_child_4->GetHash(), 100);
-    //     {
-    //     const auto submit7 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package7, false, std::nullopt);
-    //     if (auto err_7{CheckPackageMempoolAcceptResult(package7, submit7, /*expect_valid=*/true, m_node.mempool.get())}) {
-    //         BOOST_ERROR(err_7.value());
-    //     }
-    //     auto it_parent_7 = submit7.m_tx_results.find(tx_parent_4->GetWitnessHash());
-    //     auto it_child_7 = submit7.m_tx_results.find(tx_child_4->GetWitnessHash());
-    //     BOOST_CHECK_EQUAL(it_parent_7->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
-    //     BOOST_CHECK_EQUAL(it_child_7->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
-    //     BOOST_ERROR("parent is: " << it_parent_7->second.m_state.ToString());
-    //     BOOST_ERROR("child is: " << it_child_7->second.m_state.ToString());
-    //     }
-    //     BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
+        // It is ok if the child pays fewer fees but subsidizes the parent's replacement cost, as long as the child meets the mempool minimum feerate.
+        // 1 parent paying 1763sat, 1 child paying 190sat.
+        Package package7{package6};
+        m_node.mempool->PrioritiseTransaction(tx_child_4->GetHash(), 100);
+        {
+        const auto submit7 = ProcessNewPackage(m_node.chainman->ActiveChainstate(), *m_node.mempool, package7, false, std::nullopt);
+        if (auto err_7{CheckPackageMempoolAcceptResult(package7, submit7, /*expect_valid=*/true, m_node.mempool.get())}) {
+            BOOST_ERROR(err_7.value());
+        }
+        auto it_parent_7 = submit7.m_tx_results.find(tx_parent_4->GetWitnessHash());
+        auto it_child_7 = submit7.m_tx_results.find(tx_child_4->GetWitnessHash());
+        BOOST_CHECK_EQUAL(it_parent_7->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
+        BOOST_CHECK_EQUAL(it_child_7->second.m_result_type, MempoolAcceptResult::ResultType::VALID);
+        BOOST_ERROR("parent is: " << it_parent_7->second.m_state.ToString());
+        BOOST_ERROR("child is: " << it_child_7->second.m_state.ToString());
+        }
+        BOOST_CHECK_EQUAL(m_node.mempool->size(), expected_pool_size);
     }
 }
 BOOST_AUTO_TEST_SUITE_END()

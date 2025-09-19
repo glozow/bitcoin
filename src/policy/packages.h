@@ -163,6 +163,9 @@ public:
 
     /** Linearize remaining transactions and determine 1 bonus chunk to validate. */
     void ReconsiderBestChunk();
+
+    /** After the first round of linearization, maybe get a bonus chunk to validate. */
+    std::optional<std::vector<CTransactionRef>> MaybeReconsiderBestChunk();
 };
 
 class PackageValidationState : public ValidationState<PackageValidationResult> {};

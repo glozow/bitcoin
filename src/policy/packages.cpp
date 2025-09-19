@@ -214,39 +214,6 @@ void MiniGraph::ScheduleValidation() {
     UpdateCurrentChunk();
 }
 
-void MiniGraph::ReconsiderBestChunk() {
-    // Clean up the first linearization, cut the graph down to our remaining transactions.
-    m_builder.reset();
-    if (m_graph->HaveStaging()) m_graph->CommitStaging();
-    m_current_chunk = std::nullopt;
-
-    Assume(m_graph->GetTransactionCount(TxGraph::Level::MAIN) + m_to_remove.size() == m_info.size());
-    for (const auto& txid : m_to_remove) {
-        m_info.erase(txid);
-    }
-    m_to_remove.clear();
-    Assume(m_graph->GetTransactionCount(TxGraph::Level::MAIN) == m_info.size());
-
-    // No point in reconsidering if there are fewer than 2 transactions left.
-    if (m_graph->GetTransactionCount(TxGraph::Level::MAIN) < 2) {
-        m_status = Status::FINAL;
-        return;
-    }
-
-    // for (const auto& [_, tx] : m_info) {
-    //     if (tx.m_needs_package_rbf) {
-    //         m_graph->SetTransactionFee(tx, 0);
-    //     }
-    // }
-
-    // Move on to the second linearization.
-    m_builder = m_graph->GetBlockBuilder();
-    // The current chunk = first connected component.
-    if (auto builder_chunk{m_builder->GetCurrentChunk()}) {
-        m_current_chunk = ChunkCache(std::move(*builder_chunk));
-    }
-}
-
 void MiniGraph::UpdateCurrentChunk() {
     // Shouldn't be called in LINEARIZED_AGAIN because we only allow 1 bonus chunk.
     if (m_status != Status::LINEARIZED && m_status != Status::LINEARIZED_RECONSIDERABLE) return;
@@ -258,12 +225,12 @@ void MiniGraph::UpdateCurrentChunk() {
         } else {
             m_current_chunk = std::nullopt;
             // We have run out of chunks. If we can reconsider, do so. Otherwise, we are done.
-            if (m_status == Status::LINEARIZED_RECONSIDERABLE) {
-                ReconsiderBestChunk();
-                m_status = Status::LINEARIZED_AGAIN;
-            } else {
-                m_status = Status::FINAL;
-            }
+            // if (m_status == Status::LINEARIZED_RECONSIDERABLE) {
+            //     ReconsiderBestChunk();
+            //     m_status = Status::LINEARIZED_AGAIN;
+            // } else {
+            //     m_status = Status::FINAL;
+            // }
             return;
         }
     }
@@ -398,4 +365,95 @@ void MiniGraph::MarkRejected(const std::vector<CTransactionRef>& subpackage, boo
             break;
         }
     }
+}
+
+void MiniGraph::ReconsiderBestChunk() {
+    // Clean up the first linearization, cut the graph down to our remaining transactions.
+    m_builder.reset();
+    if (m_graph->HaveStaging()) m_graph->CommitStaging();
+    m_current_chunk = std::nullopt;
+
+    Assume(m_graph->GetTransactionCount(TxGraph::Level::MAIN) + m_to_remove.size() == m_info.size());
+    for (const auto& txid : m_to_remove) {
+        Assume(m_info.find(txid) != m_info.end());
+        m_info.erase(txid);
+    }
+    m_to_remove.clear();
+    Assume(m_graph->GetTransactionCount(TxGraph::Level::MAIN) == m_info.size());
+    Assume(!m_graph->HaveStaging());
+    m_graph->SanityCheck();
+    m_graph->DoWork(100000);
+
+    // No point in reconsidering if there are fewer than 2 transactions left.
+    // if (m_graph->GetTransactionCount(TxGraph::Level::MAIN) < 2) {
+    //     m_status = Status::FINAL;
+    //     return;
+    // }
+
+    for (const auto& [_, tx] : m_info) {
+        if (tx.m_needs_package_rbf) {
+            m_graph->SetTransactionFee(tx, 0);
+        }
+    }
+
+    // Move on to the second linearization.
+    m_builder = m_graph->GetBlockBuilder();
+    // The current chunk = first connected component.
+    if (auto builder_chunk{m_builder->GetCurrentChunk()}) {
+        bool someones_needs_package_rbf{false};
+        for (auto ref : builder_chunk->first) {
+            const auto tx = static_cast<const Tx*>(ref);
+            Assume(tx->m_tx != nullptr);
+            someones_needs_package_rbf |= tx->m_needs_package_rbf;
+        }
+        Assume(someones_needs_package_rbf);
+        m_current_chunk = ChunkCache(std::move(*builder_chunk));
+        m_current_chunk = std::nullopt;
+    }
+}
+
+
+std::optional<std::vector<CTransactionRef>> MiniGraph::MaybeReconsiderBestChunk() {
+    if (m_status != Status::LINEARIZED_RECONSIDERABLE) return std::nullopt;
+
+    m_builder.reset();
+    if (m_graph->HaveStaging()) m_graph->CommitStaging();
+    m_current_chunk = std::nullopt;
+
+    Assume(m_graph->GetTransactionCount(TxGraph::Level::MAIN) + m_to_remove.size() == m_info.size());
+    for (const auto& txid : m_to_remove) {
+        Assume(m_info.find(txid) != m_info.end());
+        m_info.erase(txid);
+    }
+    m_to_remove.clear();
+    Assume(m_graph->GetTransactionCount(TxGraph::Level::MAIN) == m_info.size());
+    Assume(!m_graph->HaveStaging());
+    m_graph->SanityCheck();
+    m_graph->DoWork(100000);
+
+    // No point in reconsidering if there are fewer than 2 transactions left.
+    if (m_graph->GetTransactionCount(TxGraph::Level::MAIN) < 2) {
+        m_status = Status::FINAL;
+        return std::nullopt;
+    }
+
+    for (const auto& [_, tx] : m_info) {
+        if (tx.m_needs_package_rbf) {
+            m_graph->SetTransactionFee(tx, 0);
+        }
+    }
+
+    // Move on to the second linearization.
+    m_builder = m_graph->GetBlockBuilder();
+    if (auto builder_chunk{m_builder->GetCurrentChunk()}) {
+        std::vector<CTransactionRef> result;
+        result.reserve(builder_chunk->first.size());
+        for (auto ref : builder_chunk->first) {
+            const auto tx = static_cast<const Tx*>(ref);
+            Assume(tx->m_tx != nullptr);
+            result.emplace_back(tx->m_tx);
+        }
+        return result;
+    }
+    return std::nullopt;
 }
