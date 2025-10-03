@@ -44,13 +44,14 @@ unsupported systems.
 Notable changes
 ===============
 
-P2P and network changes
------------------------
+Breaking RPC changes
+---------------------
+
+Build and dependency changes
+----------------------------
 
 Updated RPCs
 ------------
-
-
 Changes to wallet related RPCs can be found in the Wallet section below.
 
 New RPCs
@@ -61,30 +62,29 @@ Build System
 
 Updated settings
 ----------------
-
-
 Changes to GUI or wallet related settings can be found in the GUI or Wallet section below.
 
 New settings
 ------------
 
+P2P and network changes
+-----------------------
+
+Deprecations
+------------
+
 Tools and Utilities
 -------------------
 
+Low-level changes
+-----------------
+
 Wallet
-------
+======
 
 GUI changes
------------
+===========
 
-Low-level changes
-=================
-
-RPC
----
-
-Tests
------
 
 *version* change log
 ====================
