@@ -10,6 +10,7 @@ from .blocktools import (
 )
 from .messages import (
     COutPoint,
+    COIN,
     CTransaction,
     CTxIn,
     CTxInWitness,
@@ -131,3 +132,15 @@ def create_large_orphan():
     tx.wit.vtxinwit[0].scriptWitness.stack = [CScript(b'X' * 390000)]
     tx.vout = [CTxOut(100, CScript([OP_RETURN, b'a' * 20]))]
     return tx
+
+def assert_equal_feerate_diagram(expected, actual):
+    """Check that expected and actual are equal, handling Decimal values and giving helpful error messages.
+    expected: list of [fee, vsize] pairs where fee is an integer number of satoshis
+    actual: list of { "fee": Decimal, "vsize": int } from the getmempoolfeeratediagram RPC
+    """
+    assert_equal(len(expected), len(actual))
+    for i in range(len(expected)):
+        # We convert the Decimal to an integer number to avoid Decimal comparisons.
+        # For example, Decimal('0') == Decimal('0E-8') and Decimal('0.0001') == Decimal('0.00010000')
+        assert_equal(expected[i][0], int(actual[i]["fee"] * COIN))
+        assert_equal(expected[i][1], actual[i]["vsize"])
