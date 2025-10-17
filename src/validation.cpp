@@ -1048,8 +1048,23 @@ bool MemPoolAccept::PackageMempoolChecks(const std::vector<CTransactionRef>& txn
         return package_state.Invalid(PackageValidationResult::PCKG_POLICY, "package RBF failed: package must be 1-parent-1-child");
     }
 
-    // If the package has in-mempool parents, we won't consider a package RBF
-    // since it would result in a cluster larger than 2.
+    // Use the child as the transaction for attributing errors because it is presumably sponsoring this package RBF.
+    auto& child_ws = workspaces[1];
+    const Txid& child_hash = child_ws.m_ptx->GetHash();
+
+    // Check if this child is eligible to be a sponsor. We allow a child with a lower feerate than that of its
+    // parents (and thus only helping pay for the replacement). However, the child itself must meet the mempool minimum
+    // feerate, otherwise it would sponsor this replacement, potentially using the parents' fees to pay for its entry,
+    // but be immediately evicted next time we trim the mempool.
+    if (!CheckFeeRate(child_ws.m_vsize, child_ws.m_modified_fees, child_ws.m_state)) {
+        // Add the CheckFeeRate error as the debug string.
+        return package_state.Invalid(PackageValidationResult::PCKG_POLICY,
+                                     "package RBF failed: child cannot sponsor because it does not meet mempool minimum feerate",
+                                     child_ws.m_state.ToString());
+    }
+
+
+    // If the package has in-mempool parents, we won't consider a package RBF for now.
     // N.B. To relax this constraint we will need to revisit how CCoinsViewMemPool::PackageAddTransaction
     // is being used inside AcceptMultipleTransactions to track available inputs while processing a package.
     // Specifically we would need to check that the ancestors of the new
@@ -1062,15 +1077,13 @@ bool MemPoolAccept::PackageMempoolChecks(const std::vector<CTransactionRef>& txn
         }
     }
 
+    // The remaining checks are similar to those for a single transaction's replacement(s).
     // Aggregate all conflicts into one set.
     CTxMemPool::setEntries direct_conflict_iters;
     for (Workspace& ws : workspaces) {
         // Aggregate all conflicts into one set.
         direct_conflict_iters.merge(ws.m_iters_conflicting);
     }
-
-    const auto& parent_ws = workspaces[0];
-    const auto& child_ws = workspaces[1];
 
     // Don't consider replacements that would cause us to remove a large number of mempool entries.
     // This limit is not increased in a package RBF. Use the aggregate number of transactions.
@@ -1087,24 +1100,12 @@ bool MemPoolAccept::PackageMempoolChecks(const std::vector<CTransactionRef>& txn
         m_subpackage.m_conflicting_size += it->GetTxSize();
     }
 
-    // Use the child as the transaction for attributing errors to.
-    const Txid& child_hash = child_ws.m_ptx->GetHash();
     if (const auto err_string{PaysForRBF(/*original_fees=*/m_subpackage.m_conflicting_fees,
                                          /*replacement_fees=*/m_subpackage.m_total_modified_fees,
                                          /*replacement_vsize=*/m_subpackage.m_total_vsize,
                                          m_pool.m_opts.incremental_relay_feerate, child_hash)}) {
         return package_state.Invalid(PackageValidationResult::PCKG_POLICY,
                                      "package RBF failed: insufficient anti-DoS fees", *err_string);
-    }
-
-    // Ensure this two transaction package is a "chunk" on its own; we don't want the child
-    // to be only paying anti-DoS fees
-    const CFeeRate parent_feerate(parent_ws.m_modified_fees, parent_ws.m_vsize);
-    const CFeeRate package_feerate(m_subpackage.m_total_modified_fees, m_subpackage.m_total_vsize);
-    if (package_feerate <= parent_feerate) {
-        return package_state.Invalid(PackageValidationResult::PCKG_POLICY,
-                                     "package RBF failed: package feerate is less than or equal to parent feerate",
-                                     strprintf("package feerate %s <= parent feerate is %s", package_feerate.ToString(), parent_feerate.ToString()));
     }
 
     // Check if it's economically rational to mine this package rather than the ones it replaces.
