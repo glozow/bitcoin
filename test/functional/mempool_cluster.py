@@ -108,7 +108,7 @@ class MempoolClusterTest(BitcoinTestFramework):
             target_vsize=target_vsize_per_tx,
             fee_per_output=fee_to_use,
         )
-        assert_raises_rpc_error(-26, "replacement-failed", node.sendrawtransaction, bad_tx_also_replacement["hex"])
+        assert_raises_rpc_error(-26, "too-large-cluster", node.sendrawtransaction, bad_tx_also_replacement["hex"])
 
         # Replace the last transaction. We are extending the cluster by one, but also removing one: 64 + 1 - 1 = 64
         # In the case of vsize, it should similarly cancel out.

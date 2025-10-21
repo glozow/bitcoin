@@ -1019,8 +1019,15 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
         m_subpackage.m_changeset->StageRemoval(it);
     }
 
+    // Run cluster size limit checks and fail if we exceed them.
+    if (!m_subpackage.m_changeset->CheckMemPoolPolicyLimits()) {
+        return state.Invalid(TxValidationResult::TX_MEMPOOL_POLICY, "too-large-cluster", "");
+    }
+
     if (const auto err_string{ImprovesFeerateDiagram(*m_subpackage.m_changeset)}) {
-        // If we can't calculate a feerate, it's because the cluster size limits were hit.
+        // We checked above for the cluster size limits being respected, so a
+        // failure here can only be due to an insufficient fee.
+        Assume(err_string->first == DiagramCheckError::FAILURE);
         return state.Invalid(TxValidationResult::TX_RECONSIDERABLE, "replacement-failed", err_string->second);
     }
 
@@ -1107,9 +1114,14 @@ bool MemPoolAccept::PackageMempoolChecks(const std::vector<CTransactionRef>& txn
                                      strprintf("package feerate %s <= parent feerate is %s", package_feerate.ToString(), parent_feerate.ToString()));
     }
 
+    // Run cluster size limit checks and fail if we exceed them.
+    if (!m_subpackage.m_changeset->CheckMemPoolPolicyLimits()) {
+        return package_state.Invalid(PackageValidationResult::PCKG_POLICY, "too-large-cluster", "");
+    }
+
     // Check if it's economically rational to mine this package rather than the ones it replaces.
-    // This takes the place of ReplacementChecks()'s PaysMoreThanConflicts() in the package RBF setting.
     if (const auto err_tup{ImprovesFeerateDiagram(*m_subpackage.m_changeset)}) {
+        Assume(err_tup->first == DiagramCheckError::FAILURE);
         return package_state.Invalid(PackageValidationResult::PCKG_POLICY,
                                      "package RBF failed: " + err_tup.value().second, "");
     }
