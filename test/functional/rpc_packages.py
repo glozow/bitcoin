@@ -66,7 +66,7 @@ class RPCPackagesTest(BitcoinTestFramework):
             }
 
         self.wallet = MiniWallet(self.nodes[0])
-        self.generate(self.wallet, COINBASE_MATURITY + 100)  # blocks generated for inputs
+        self.generate(self.wallet, COINBASE_MATURITY + 200)  # blocks generated for inputs
 
         self.log.info("Create some transactions")
         # Create some transactions that can be reused throughout the test. Never submit these to mempool.
@@ -83,6 +83,8 @@ class RPCPackagesTest(BitcoinTestFramework):
             "txid": res["txid"], "wtxid": res["wtxid"]} for res in self.independent_txns_testres]
 
         self.test_submitpackage_with_ancestors()
+        self.test_submitpackage_batch_success()
+        self.test_submitpackage_batch_partial_failure()
         self.test_independent(coin)
         self.test_chain()
         self.test_multiple_children()
@@ -552,6 +554,65 @@ class RPCPackagesTest(BitcoinTestFramework):
         peer.wait_for_broadcast([tx["tx"].wtxid_hex for tx in [parent_tx, child_tx, grandchild_tx, ggrandchild_tx]])
         self.generate(node, 1)
 
+    def test_submitpackage_batch_success(self):
+        self.log.info("Test that submitpackage can submit a batch of transactions")
+        node = self.nodes[0]
+
+        batch_txns = []
+
+        # Add 3 pairs of parent and child
+        for _ in range(3):
+            parent_tx = self.wallet.create_self_transfer(fee=0, fee_rate=0, confirmed_only=True, version=3)
+            child_tx = self.wallet.create_self_transfer(utxo_to_spend=parent_tx["new_utxo"], version=3)
+            batch_txns.append(parent_tx)
+            batch_txns.append(child_tx)
+
+        # Add 3 independent transactions
+        for _ in range(3):
+            independent_tx = self.wallet.create_self_transfer(confirmed_only=True)
+            batch_txns.append(independent_tx)
+
+        # Add a package of 10 parents and 1 child, with no fee-bumping involved
+        utxos_to_sweep = []
+        for _ in range(10):
+            parent_tx = self.wallet.create_self_transfer(confirmed_only=True)
+            utxos_to_sweep.append(parent_tx["new_utxo"])
+            batch_txns.append(parent_tx)
+        child_sweep_tx = self.wallet.create_self_transfer_multi(utxos_to_spend=utxos_to_sweep, fee_per_output=5000)
+        batch_txns.append(child_sweep_tx)
+
+        batch_hex = [tx["hex"] for tx in batch_txns]
+
+        # Shuffle the transactions.
+        random.shuffle(batch_hex)
+
+        # Submit the transactions
+        result = node.submitpackage(batch_hex)
+        assert_equal(result["package_msg"], "success")
+        assert_equal(result["error_code"], 0)
+        for tx in batch_txns:
+            assert tx["txid"] in node.getrawmempool()
+            assert tx["wtxid"] in result["tx-results"]
+            assert_equal(result["tx-results"][tx["wtxid"]]["fees"]["base"], tx["fee"])
+
+        self.generate(node, 1)
+    
+    def test_submitpackage_batch_partial_failure(self):
+        node = self.nodes[0]
+
+        batch_txns = []
+
+        # Add 5 pairs of parent and child. They are all v3 except one.
+        for i in range(5):
+            parent_tx = self.wallet.create_self_transfer(fee=0, fee_rate=0, confirmed_only=True, version=3)
+            child_tx = self.wallet.create_self_transfer(utxo_to_spend=parent_tx["new_utxo"], version=3 if i else 2)
+            batch_txns.append(parent_tx)
+            batch_txns.append(child_tx)
+
+        batch_hex = [tx["hex"] for tx in batch_txns]
+
+        # Shuffle the transactions.
+        random.shuffle(batch_hex)
 
 if __name__ == "__main__":
     RPCPackagesTest(__file__).main()
