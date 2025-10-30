@@ -173,6 +173,8 @@ public:
      *  if it exists, and to main otherwise. Returns the list of all removed transactions in
      *  unspecified order. This has no effect unless the relevant graph is oversized. */
     virtual std::vector<Ref*> Trim() noexcept = 0;
+    /** Get a vector of all clusters in the main graph. Each cluster is a vector of Refs in graph order. */
+    virtual std::vector<std::vector<Ref*>> GetAllClusters() noexcept = 0;
 
     /** Interface returned by GetBlockBuilder. */
     class BlockBuilder

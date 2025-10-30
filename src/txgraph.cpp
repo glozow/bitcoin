@@ -771,6 +771,7 @@ public:
     GraphIndex CountDistinctClusters(std::span<const Ref* const> refs, Level level) noexcept final;
     std::pair<std::vector<FeeFrac>, std::vector<FeeFrac>> GetMainStagingDiagrams() noexcept final;
     std::vector<Ref*> Trim() noexcept final;
+    std::vector<std::vector<Ref*>> GetAllClusters() noexcept final;
 
     std::unique_ptr<BlockBuilder> GetBlockBuilder() noexcept final;
     std::pair<std::vector<Ref*>, FeePerWeight> GetWorstMainChunk() noexcept final;
@@ -3432,6 +3433,21 @@ std::vector<TxGraph::Ref*> TxGraphImpl::Trim() noexcept
     clusterset.m_oversized = false;
     Assume(!ret.empty());
     return ret;
+}
+
+std::vector<std::vector<TxGraph::Ref*>> TxGraphImpl::GetAllClusters() noexcept
+{
+    MakeAllAcceptable(/*level=*/0);
+    std::vector<std::vector<TxGraph::Ref*>> all_clusters;
+    for (QualityLevel quality : {QualityLevel::OPTIMAL, QualityLevel::ACCEPTABLE}) {
+        for (const auto& cluster : m_main_clusterset.m_clusters[int(quality)]) {
+            std::vector<TxGraph::Ref*> cluster_refs(cluster->GetTxCount());
+            cluster->GetClusterRefs(*this, cluster_refs, 0);
+            all_clusters.emplace_back(std::move(cluster_refs));
+        }
+    }
+
+    return all_clusters;
 }
 
 size_t TxGraphImpl::GetMainMemoryUsage() noexcept
