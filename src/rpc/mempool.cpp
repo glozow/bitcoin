@@ -1144,130 +1144,137 @@ static RPCHelpMan submitpackage()
                 txns.emplace_back(MakeTransactionRef(std::move(mtx)));
             }
             CHECK_NONFATAL(!txns.empty());
-            if (txns.size() > 1 && !IsChildWithParentsTree(txns)) {
-                throw JSONRPCTransactionError(TransactionError::INVALID_PACKAGE, "package topology disallowed. not child-with-parents or parents depend on each other.");
-            }
 
             NodeContext& node = EnsureAnyNodeContext(request.context);
             CTxMemPool& mempool = EnsureMemPool(node);
             Chainstate& chainstate = EnsureChainman(node).ActiveChainstate();
-            const auto package_result = WITH_LOCK(::cs_main, return ProcessNewPackage(chainstate, mempool, txns, /*test_accept=*/ false, client_maxfeerate));
 
+            auto packages = SortTransactions(txns);
+            UniValue rpc_result{UniValue::VOBJ};
+            UniValue replaced_list(UniValue::VARR);
             std::string package_msg = "success";
             uint32_t error_code = 0;
-
-            // First catch package-wide errors, continue if we can
-            switch(package_result.m_state.GetResult()) {
-                case PackageValidationResult::PCKG_RESULT_UNSET:
-                {
-                    // Belt-and-suspenders check; everything should be successful here
-                    CHECK_NONFATAL(package_result.m_tx_results.size() == txns.size());
-                    for (const auto& tx : txns) {
-                        CHECK_NONFATAL(mempool.exists(tx->GetHash()));
-                    }
-                    break;
-                }
-                case PackageValidationResult::PCKG_MEMPOOL_ERROR:
-                {
-                    // This only happens with internal bug; user should stop and report
-                    throw JSONRPCTransactionError(TransactionError::MEMPOOL_ERROR,
-                        package_result.m_state.GetRejectReason());
-                }
-                case PackageValidationResult::PCKG_POLICY:
-                case PackageValidationResult::PCKG_TX:
-                {
-                    // Package-wide error we want to return, but we also want to return individual responses
-                    package_msg = package_result.m_state.ToString();
-                    if (package_result.m_state.GetResult() == PackageValidationResult::PCKG_POLICY && package_result.m_tx_results.empty()) {
-                        error_code = 1;
-                    } else if (std::any_of(package_result.m_tx_results.begin(), package_result.m_tx_results.end(), [](const auto& tx_result) {
-                        return tx_result.second.m_state.GetResult() == TxValidationResult::TX_RECONSIDERABLE;
-                    })) {
-                        error_code = 3;
-                    } else if (std::any_of(package_result.m_tx_results.begin(), package_result.m_tx_results.end(), [](const auto& tx_result) {
-                        return tx_result.second.m_state.GetRejectReason() == "max feerate exceeded";
-                    })) {
-                        error_code = 4;
-                    } else {
-                        error_code = 2;
-                    }
-                    CHECK_NONFATAL(package_result.m_tx_results.size() == txns.size() ||
-                            package_result.m_tx_results.empty());
-                    break;
-                }
-            }
-
-            size_t num_broadcast{0};
-            for (const auto& tx : txns) {
-                // We don't want to re-submit the txn for validation in BroadcastTransaction
-                if (!mempool.exists(tx->GetHash())) {
-                    continue;
-                }
-
-                // We do not expect an error here; we are only broadcasting things already/still in mempool
-                std::string err_string;
-                const auto err = BroadcastTransaction(node, tx, err_string, /*max_tx_fee=*/0, /*relay=*/true, /*wait_callback=*/true);
-                if (err != TransactionError::OK) {
-                    throw JSONRPCTransactionError(err,
-                        strprintf("transaction broadcast failed: %s (%d transactions were broadcast successfully)",
-                            err_string, num_broadcast));
-                }
-                num_broadcast++;
-            }
-
-            UniValue rpc_result{UniValue::VOBJ};
-            rpc_result.pushKV("package_msg", package_msg);
-            rpc_result.pushKV("error_code", error_code);
             UniValue tx_result_map{UniValue::VOBJ};
             std::set<Txid> replaced_txids;
-            for (const auto& tx : txns) {
-                UniValue result_inner{UniValue::VOBJ};
-                result_inner.pushKV("txid", tx->GetHash().GetHex());
-                const auto wtxid_hex = tx->GetWitnessHash().GetHex();
-                auto it = package_result.m_tx_results.find(tx->GetWitnessHash());
-                if (it == package_result.m_tx_results.end()) {
-                    // No per-tx result for this wtxid
-                    // Current invariant: per-tx results are all-or-none (every member or empty on package abort).
-                    // If any exist yet this one is missing, it's an unexpected partial map.
-                    CHECK_NONFATAL(package_result.m_tx_results.empty());
-                    result_inner.pushKV("error", "package-not-validated");
-                    tx_result_map.pushKV(wtxid_hex, std::move(result_inner));
-                    continue;
+
+            for (const auto& package : packages) {
+                // While there is no requirement for txns to be topologically sorted or a connected component, each package must be a child-with-parents tree.
+                if (package.size() > 1 && !IsChildWithParentsTree(package)) {
+                    throw JSONRPCTransactionError(TransactionError::INVALID_PACKAGE, "package topology disallowed. not child-with-parents or parents depend on each other.");
                 }
-                const auto& tx_result = it->second;
-                switch(it->second.m_result_type) {
-                case MempoolAcceptResult::ResultType::DIFFERENT_WITNESS:
-                    result_inner.pushKV("other-wtxid", it->second.m_other_wtxid.value().GetHex());
-                    break;
-                case MempoolAcceptResult::ResultType::INVALID:
-                    result_inner.pushKV("error", it->second.m_state.ToString());
-                    break;
-                case MempoolAcceptResult::ResultType::VALID:
-                case MempoolAcceptResult::ResultType::MEMPOOL_ENTRY:
-                    result_inner.pushKV("vsize", int64_t{it->second.m_vsize.value()});
-                    UniValue fees(UniValue::VOBJ);
-                    fees.pushKV("base", ValueFromAmount(it->second.m_base_fees.value()));
-                    if (tx_result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
-                        // Effective feerate is not provided for MEMPOOL_ENTRY transactions even
-                        // though modified fees is known, because it is unknown whether package
-                        // feerate was used when it was originally submitted.
-                        fees.pushKV("effective-feerate", ValueFromAmount(tx_result.m_effective_feerate.value().GetFeePerK()));
-                        UniValue effective_includes_res(UniValue::VARR);
-                        for (const auto& wtxid : tx_result.m_subpackage_wtxids.value()) {
-                            effective_includes_res.push_back(wtxid.ToString());
+
+                const auto package_result = WITH_LOCK(::cs_main, return ProcessNewPackage(chainstate, mempool, package, /*test_accept=*/ false, client_maxfeerate));
+
+                // First catch package-wide errors, continue if we can
+                switch(package_result.m_state.GetResult()) {
+                    case PackageValidationResult::PCKG_RESULT_UNSET:
+                    {
+                        // Belt-and-suspenders check; everything should be successful here
+                        CHECK_NONFATAL(package_result.m_tx_results.size() == package.size());
+                        for (const auto& tx : package) {
+                            CHECK_NONFATAL(mempool.exists(tx->GetHash()));
                         }
-                        fees.pushKV("effective-includes", std::move(effective_includes_res));
+                        break;
                     }
-                    result_inner.pushKV("fees", std::move(fees));
-                    for (const auto& ptx : it->second.m_replaced_transactions) {
-                        replaced_txids.insert(ptx->GetHash());
+                    case PackageValidationResult::PCKG_MEMPOOL_ERROR:
+                    {
+                        // This only happens with internal bug; user should stop and report
+                        throw JSONRPCTransactionError(TransactionError::MEMPOOL_ERROR,
+                            package_result.m_state.GetRejectReason());
                     }
-                    break;
+                    case PackageValidationResult::PCKG_POLICY:
+                    case PackageValidationResult::PCKG_TX:
+                    {
+                        // Package-wide error we want to return, but we also want to return individual responses
+                        package_msg = package_result.m_state.ToString();
+                        if (package_result.m_state.GetResult() == PackageValidationResult::PCKG_POLICY && package_result.m_tx_results.empty()) {
+                            error_code = 1;
+                        } else if (std::any_of(package_result.m_tx_results.begin(), package_result.m_tx_results.end(), [](const auto& tx_result) {
+                            return tx_result.second.m_state.GetResult() == TxValidationResult::TX_RECONSIDERABLE;
+                        })) {
+                            error_code = 3;
+                        } else if (std::any_of(package_result.m_tx_results.begin(), package_result.m_tx_results.end(), [](const auto& tx_result) {
+                            return tx_result.second.m_state.GetRejectReason() == "max feerate exceeded";
+                        })) {
+                            error_code = 4;
+                        } else {
+                            error_code = 2;
+                        }
+                        CHECK_NONFATAL(package_result.m_tx_results.size() == package.size() ||
+                                package_result.m_tx_results.empty());
+                        break;
+                    }
                 }
-                tx_result_map.pushKV(wtxid_hex, std::move(result_inner));
+
+                size_t num_broadcast{0};
+                for (const auto& tx : package) {
+                    // We don't want to re-submit the txn for validation in BroadcastTransaction
+                    if (!mempool.exists(tx->GetHash())) {
+                        continue;
+                    }
+
+                    // We do not expect an error here; we are only broadcasting things already/still in mempool
+                    std::string err_string;
+                    const auto err = BroadcastTransaction(node, tx, err_string, /*max_tx_fee=*/0, /*relay=*/true, /*wait_callback=*/true);
+                    if (err != TransactionError::OK) {
+                        throw JSONRPCTransactionError(err,
+                            strprintf("transaction broadcast failed: %s (%d transactions were broadcast successfully)",
+                                err_string, num_broadcast));
+                    }
+                    num_broadcast++;
+                }
+
+                for (const auto& tx : package) {
+                    UniValue result_inner{UniValue::VOBJ};
+                    result_inner.pushKV("txid", tx->GetHash().GetHex());
+                    const auto wtxid_hex = tx->GetWitnessHash().GetHex();
+                    auto it = package_result.m_tx_results.find(tx->GetWitnessHash());
+                    if (it == package_result.m_tx_results.end()) {
+                        // No per-tx result for this wtxid
+                        // Current invariant: per-tx results are all-or-none (every member or empty on package abort).
+                        // If any exist yet this one is missing, it's an unexpected partial map.
+                        CHECK_NONFATAL(package_result.m_tx_results.empty());
+                        result_inner.pushKV("error", "package-not-validated");
+                        tx_result_map.pushKV(wtxid_hex, std::move(result_inner));
+                        continue;
+                    }
+                    const auto& tx_result = it->second;
+                    switch(it->second.m_result_type) {
+                    case MempoolAcceptResult::ResultType::DIFFERENT_WITNESS:
+                        result_inner.pushKV("other-wtxid", it->second.m_other_wtxid.value().GetHex());
+                        break;
+                    case MempoolAcceptResult::ResultType::INVALID:
+                        result_inner.pushKV("error", it->second.m_state.ToString());
+                        break;
+                    case MempoolAcceptResult::ResultType::VALID:
+                    case MempoolAcceptResult::ResultType::MEMPOOL_ENTRY:
+                        result_inner.pushKV("vsize", int64_t{it->second.m_vsize.value()});
+                        UniValue fees(UniValue::VOBJ);
+                        fees.pushKV("base", ValueFromAmount(it->second.m_base_fees.value()));
+                        if (tx_result.m_result_type == MempoolAcceptResult::ResultType::VALID) {
+                            // Effective feerate is not provided for MEMPOOL_ENTRY transactions even
+                            // though modified fees is known, because it is unknown whether package
+                            // feerate was used when it was originally submitted.
+                            fees.pushKV("effective-feerate", ValueFromAmount(tx_result.m_effective_feerate.value().GetFeePerK()));
+                            UniValue effective_includes_res(UniValue::VARR);
+                            for (const auto& wtxid : tx_result.m_subpackage_wtxids.value()) {
+                                effective_includes_res.push_back(wtxid.ToString());
+                            }
+                            fees.pushKV("effective-includes", std::move(effective_includes_res));
+                        }
+                        result_inner.pushKV("fees", std::move(fees));
+                        for (const auto& ptx : it->second.m_replaced_transactions) {
+                            replaced_txids.insert(ptx->GetHash());
+                        }
+                        break;
+                    }
+                    tx_result_map.pushKV(wtxid_hex, std::move(result_inner));
+                }
             }
+
+            rpc_result.pushKV("package_msg", package_msg);
+            rpc_result.pushKV("error_code", error_code);
             rpc_result.pushKV("tx-results", std::move(tx_result_map));
-            UniValue replaced_list(UniValue::VARR);
             for (const auto& txid : replaced_txids) replaced_list.push_back(txid.ToString());
             rpc_result.pushKV("replaced-transactions", std::move(replaced_list));
             return rpc_result;
