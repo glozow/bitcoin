@@ -444,6 +444,8 @@ public:
     {
     }
 
+    CTxMemPool& m_pool;
+
     // We put the arguments we're handed into a struct, so we can pass them
     // around easier.
     struct ATMPArgs {
@@ -719,7 +721,6 @@ private:
     }
 
 private:
-    CTxMemPool& m_pool;
 
     /** Holds a cached view of available coins from the UTXO set, mempool, and artificial temporary coins (to enable package validation).
      * The view doesn't track whether a coin previously existed but has now been spent. We detect conflicts in other ways:
