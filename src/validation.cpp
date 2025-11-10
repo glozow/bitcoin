@@ -600,7 +600,7 @@ public:
     * conflict with each other, and the transactions cannot already be in the mempool. Parents must
     * come before children if any dependencies exist.
     */
-    PackageMempoolAcceptResult AcceptMultipleTransactions(const std::vector<CTransactionRef>& txns, ATMPArgs& args) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+    PackageMempoolAcceptResult AcceptMultipleTransactions(const std::vector<CTransactionRef>& txns, ATMPArgs& args) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     /**
      * Submission of a subpackage.
@@ -1519,6 +1519,7 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef
 PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::vector<CTransactionRef>& txns, ATMPArgs& args)
 {
     AssertLockHeld(cs_main);
+    AssertLockHeld(m_pool.cs);
 
     // These context-free package limits can be done before taking the mempool lock.
     PackageValidationState package_state;
@@ -1529,8 +1530,6 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactions(const std::
     std::transform(txns.cbegin(), txns.cend(), std::back_inserter(workspaces),
                    [](const auto& tx) { return Workspace(tx); });
     std::map<Wtxid, MempoolAcceptResult> results;
-
-    LOCK(m_pool.cs);
 
     // Do all PreChecks first and fail fast to avoid running expensive script checks when unnecessary.
     for (Workspace& ws : workspaces) {
@@ -1708,6 +1707,15 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptPackage(const Package& package, 
     AssertLockHeld(cs_main);
     // Used if returning a PackageMempoolAcceptResult directly from this function.
     PackageValidationState package_state_quit_early;
+
+    if (args.m_test_accept) {
+        // If this is a test_accept, just do a single call.  We currently cannot support the extra fee-related policies
+        // during package test acceptance because our logic relies on submitting things individually, seeing if they are
+        // added to the mempool, and then trying again if not.
+        // TODO: This special case can be removed by changing this function to handle test_accept.
+        LOCK(m_pool.cs);
+        return AcceptSubPackage(package, args);
+    }
 
     // There are two topologies we are able to handle through this function:
     // (1) A single transaction
@@ -1900,7 +1908,7 @@ PackageMempoolAcceptResult ProcessNewPackage(Chainstate& active_chainstate, CTxM
         AssertLockHeld(cs_main);
         if (test_accept) {
             auto args = MemPoolAccept::ATMPArgs::PackageTestAccept(chainparams, GetTime(), coins_to_uncache);
-            return MemPoolAccept(pool, active_chainstate).AcceptMultipleTransactions(package, args);
+            return MemPoolAccept(pool, active_chainstate).AcceptPackage(package, args);
         } else {
             auto args = MemPoolAccept::ATMPArgs::PackageChildWithParents(chainparams, GetTime(), coins_to_uncache, client_maxfeerate);
             return MemPoolAccept(pool, active_chainstate).AcceptPackage(package, args);

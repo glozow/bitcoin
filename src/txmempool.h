@@ -824,6 +824,7 @@ public:
     public:
         explicit ChangeSet(CTxMemPool* pool) : m_pool(pool) { m_pool->m_txgraph->StartStaging(); }
         ~ChangeSet() EXCLUSIVE_LOCKS_REQUIRED(m_pool->cs) {
+            AssertLockHeld(m_pool->cs);
             if (m_pool->m_txgraph->HaveStaging()) {
                 m_pool->m_txgraph->AbortStaging();
             }
