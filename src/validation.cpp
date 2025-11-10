@@ -593,7 +593,7 @@ public:
     void CleanupTemporaryCoins() EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Single transaction acceptance
-    MempoolAcceptResult AcceptSingleTransaction(const CTransactionRef& ptx, ATMPArgs& args) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+    MempoolAcceptResult AcceptSingleTransaction(const CTransactionRef& ptx, ATMPArgs& args) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     /**
     * Multiple transaction acceptance. Transactions may or may not be interdependent, but must not
@@ -1427,7 +1427,7 @@ bool MemPoolAccept::SubmitPackage(const ATMPArgs& args, std::vector<Workspace>& 
 MempoolAcceptResult MemPoolAccept::AcceptSingleTransaction(const CTransactionRef& ptx, ATMPArgs& args)
 {
     AssertLockHeld(cs_main);
-    LOCK(m_pool.cs); // mempool "read lock" (held through m_pool.m_opts.signals->TransactionAddedToMempool())
+    AssertLockHeld(m_pool.cs);
 
     Workspace ws(ptx);
     const std::vector<Wtxid> single_wtxid{ws.m_ptx->GetWitnessHash()};
@@ -1865,7 +1865,9 @@ MempoolAcceptResult AcceptToMemoryPool(Chainstate& active_chainstate, const CTra
 
     std::vector<COutPoint> coins_to_uncache;
     auto args = MemPoolAccept::ATMPArgs::SingleAccept(chainparams, accept_time, bypass_limits, coins_to_uncache, test_accept);
-    MempoolAcceptResult result = MemPoolAccept(pool, active_chainstate).AcceptSingleTransaction(tx, args);
+    MemPoolAccept mempool_accept(pool, active_chainstate);
+    LOCK(mempool_accept.m_pool.cs);
+    MempoolAcceptResult result = mempool_accept.AcceptSingleTransaction(tx, args);
     if (result.m_result_type != MempoolAcceptResult::ResultType::VALID) {
         // Remove coins that were not present in the coins cache before calling
         // AcceptSingleTransaction(); this is to prevent memory DoS in case we receive a large
