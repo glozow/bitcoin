@@ -92,6 +92,7 @@ class RPCPackagesTest(BitcoinTestFramework):
         self.test_submitpackage()
         self.test_maxfeerate_submitpackage()
         self.test_maxburn_submitpackage()
+        self.test_single_tx()
 
     def test_independent(self, coin):
         self.log.info("Test multiple independent transactions in a package")
@@ -545,6 +546,25 @@ class RPCPackagesTest(BitcoinTestFramework):
         # The node should announce each transaction.
         peer.wait_for_broadcast([tx["tx"].wtxid_hex for tx in [parent_tx, child_tx, grandchild_tx, ggrandchild_tx]])
         self.generate(node, 1)
+
+    def test_single_tx(self):
+        node = self.nodes[0]
+
+        single_tx = self.wallet.create_self_transfer()
+        node.sendrawtransaction(single_tx["hex"])
+        assert single_tx["txid"] in node.getrawmempool()
+
+        # Sending this already-in-mempool tx through submitpackage is fine.
+        submitpackage_result = node.submitpackage([single_tx["hex"]])
+        assert_equal(submitpackage_result["package_msg"], "success")
+
+        # Sending this already-in-mempool tx through sendrawtransaction is fine.
+        assert_equal(node.sendrawtransaction(single_tx["hex"]), single_tx["txid"])
+
+        # Sending this already-in-mempool tx through testmempoolaccept results in a txn-already-in-mempool error
+        testmempoolaccept_result = node.testmempoolaccept([single_tx["hex"]])
+        assert_equal(testmempoolaccept_result[0]["reject-reason"], "txn-already-in-mempool")
+
 
 
 if __name__ == "__main__":
