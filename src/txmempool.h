@@ -406,9 +406,9 @@ public:
      */
     void UpdateTransactionsFromBlock(const std::vector<Txid>& vHashesToUpdate) EXCLUSIVE_LOCKS_REQUIRED(cs, cs_main) LOCKS_EXCLUDED(m_epoch);
 
-    std::vector<FeePerVSize> GetFeerateDiagram() const EXCLUSIVE_LOCKS_REQUIRED(cs);
-    FeePerVSize GetMainChunkFeerate(const CTxMemPoolEntry& tx) const EXCLUSIVE_LOCKS_REQUIRED(cs) {
-        return ToFeePerVSize(m_txgraph->GetMainChunkFeerate(tx));
+    std::vector<FeePerWeight> GetFeerateDiagram() const EXCLUSIVE_LOCKS_REQUIRED(cs);
+    FeePerWeight GetMainChunkFeerate(const CTxMemPoolEntry& tx) const EXCLUSIVE_LOCKS_REQUIRED(cs) {
+        return m_txgraph->GetMainChunkFeerate(tx);
     }
     std::vector<const CTxMemPoolEntry*> GetCluster(Txid txid) const EXCLUSIVE_LOCKS_REQUIRED(cs) {
         auto tx = GetIter(txid);

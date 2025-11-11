@@ -261,14 +261,14 @@ static RPCHelpMan testmempoolaccept()
 static std::vector<RPCResult> ClusterDescription()
 {
     return {
-        RPCResult{RPCResult::Type::NUM, "vsize", "virtual transaction size as defined in BIP 141. This is different from actual serialized size for witness transactions as witness data is discounted."},
+        RPCResult{RPCResult::Type::NUM, "weight", "total sigops-adjusted weight (as defined in BIP 141 and modified by '-bytespersigop'"},
         RPCResult{RPCResult::Type::NUM, "txcount", "number of transactions"},
         RPCResult{RPCResult::Type::ARR, "txs", "transactions in this cluster in mining order",
             {RPCResult{RPCResult::Type::OBJ, "txentry", "",
                 {
                     RPCResult{RPCResult::Type::STR_HEX, "txid", "the transaction id"},
-                    RPCResult{RPCResult::Type::NUM, "chunk_fee", "fee of the chunk containing this tx"},
-                    RPCResult{RPCResult::Type::NUM, "chunk_vsize", "virtual transaction size (see BIP 141) of the chunk containing this transaction"}
+                    RPCResult{RPCResult::Type::NUM, "chunkfee", "fee of the chunk containing this tx"},
+                    RPCResult{RPCResult::Type::NUM, "chunkweight", "sigops-adjusted weight of the chunk containing this transaction"}
                 }
             }}
         }
@@ -286,7 +286,7 @@ static std::vector<RPCResult> MempoolEntryDescription()
         RPCResult{RPCResult::Type::NUM, "descendantsize", "virtual transaction size of in-mempool descendants (including this one)"},
         RPCResult{RPCResult::Type::NUM, "ancestorcount", "number of in-mempool ancestor transactions (including this one)"},
         RPCResult{RPCResult::Type::NUM, "ancestorsize", "virtual transaction size of in-mempool ancestors (including this one)"},
-        RPCResult{RPCResult::Type::NUM, "chunksize", "virtual transaction size of this transaction's chunk"},
+        RPCResult{RPCResult::Type::NUM, "chunkweight", "sigops-adjusted weight (as defined in BIP 141 and modified by '-bytespersigop') of this transaction's chunk"},
         RPCResult{RPCResult::Type::STR_HEX, "wtxid", "hash of serialized transaction, including witness data"},
         RPCResult{RPCResult::Type::OBJ, "fees", "",
             {
@@ -308,19 +308,19 @@ static std::vector<RPCResult> MempoolEntryDescription()
 static void clusterToJSON(const CTxMemPool& pool, UniValue& info, std::vector<const CTxMemPoolEntry *> cluster) EXCLUSIVE_LOCKS_REQUIRED(pool.cs)
 {
     AssertLockHeld(pool.cs);
-    int total_vsize{0};
+    int total_weight{0};
     for (const auto& tx : cluster) {
-        total_vsize += tx->GetTxSize();
+        total_weight += tx->GetAdjustedWeight();
     }
-    info.pushKV("vsize", total_vsize);
+    info.pushKV("weight", total_weight);
     info.pushKV("txcount", (int)cluster.size());
     UniValue txs(UniValue::VARR);
     for (const auto& tx : cluster) {
         UniValue txentry(UniValue::VOBJ);
         auto feerate = pool.GetMainChunkFeerate(*tx);
         txentry.pushKV("txid", tx->GetTx().GetHash().ToString());
-        txentry.pushKV("chunk_fee", ValueFromAmount((int)feerate.fee));
-        txentry.pushKV("chunk_vsize", feerate.size);
+        txentry.pushKV("chunkfee", ValueFromAmount((int)feerate.fee));
+        txentry.pushKV("chunkweight", feerate.size);
         txs.push_back(txentry);
     }
     info.pushKV("txs", txs);
@@ -343,7 +343,7 @@ static void entryToJSON(const CTxMemPool& pool, UniValue& info, const CTxMemPool
     info.pushKV("ancestorsize", ancestor_size);
     info.pushKV("wtxid", e.GetTx().GetWitnessHash().ToString());
     auto feerate = pool.GetMainChunkFeerate(e);
-    info.pushKV("chunksize", feerate.size);
+    info.pushKV("chunkweight", feerate.size);
 
     UniValue fees(UniValue::VOBJ);
     fees.pushKV("base", ValueFromAmount(e.GetFee()));
@@ -439,7 +439,7 @@ static RPCHelpMan getmempoolfeeratediagram()
                     {
                         RPCResult::Type::OBJ, "", "",
                         {
-                            {RPCResult::Type::NUM, "vsize", "cumulative vsize"},
+                            {RPCResult::Type::NUM, "weight", "cumulative sigops-adjusted weight"},
                             {RPCResult::Type::NUM, "fee", "cumulative fee"}
                         }
                     }
@@ -461,7 +461,7 @@ static RPCHelpMan getmempoolfeeratediagram()
 
             for (auto f : diagram) {
                 UniValue o(UniValue::VOBJ);
-                o.pushKV("vsize", f.size);
+                o.pushKV("weight", f.size);
                 o.pushKV("fee", ValueFromAmount(f.fee));
                 result.push_back(o);
             }
