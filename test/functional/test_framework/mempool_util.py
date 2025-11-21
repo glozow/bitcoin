@@ -10,6 +10,7 @@ from .blocktools import (
 )
 from .messages import (
     COutPoint,
+    COIN,
     CTransaction,
     CTxIn,
     CTxInWitness,
@@ -22,6 +23,7 @@ from .script import (
 from .util import (
     assert_equal,
     assert_greater_than,
+    assert_greater_than_or_equal,
     create_lots_of_big_transactions,
     gen_return_txouts,
 )
@@ -131,3 +133,28 @@ def create_large_orphan():
     tx.wit.vtxinwit[0].scriptWitness.stack = [CScript(b'X' * 390000)]
     tx.vout = [CTxOut(100, CScript([OP_RETURN, b'a' * 20]))]
     return tx
+
+def check_feerate_diagram_monotonically_decreasing(feerate_diagram):
+    """Sanity check the feerate diagram."""
+    last_val = [0, 0]
+    for x in feerate_diagram:
+        # The vsize is always positive, except for the first iteration
+        assert x['weight'] > 0 or x['fee'] == 0
+        # Monotonically decreasing fee per weight
+        assert_greater_than_or_equal(last_val[0] * x['weight'], last_val[1] * x['fee'])
+        last_val = [x['weight'], x['fee']]
+
+def assert_equal_feerate_diagram(expected, actual):
+    """Check that expected and actual are equal, handling Decimal values and giving helpful error messages.
+    expected: list of [fee, weight] pairs where fee is an integer number of satoshis
+    actual: list of { "fee": Decimal, "weight": int } from the getmempoolfeeratediagram RPC
+    Also sanity checks that the actual feerates are monotonically decreasing.
+    """
+    assert_equal(len(expected), len(actual))
+    for i in range(len(expected)):
+        # We convert the Decimal to an integer number to avoid Decimal comparisons.
+        # For example, Decimal('0') == Decimal('0E-8') and Decimal('0.0001') == Decimal('0.00010000')
+        assert_equal(expected[i][0], int(actual[i]["fee"] * COIN))
+        assert_equal(expected[i][1], actual[i]["weight"])
+
+    check_feerate_diagram_monotonically_decreasing(actual)

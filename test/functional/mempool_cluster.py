@@ -7,6 +7,8 @@
 from decimal import Decimal
 
 from test_framework.mempool_util import (
+    assert_equal_feerate_diagram,
+    check_feerate_diagram_monotonically_decreasing,
     DEFAULT_CLUSTER_LIMIT,
     DEFAULT_CLUSTER_SIZE_LIMIT_KVB,
 )
@@ -74,17 +76,6 @@ class MempoolClusterTest(BitcoinTestFramework):
 
         assert node.getmempoolcluster(parent_tx['txid'])['txcount'] == cluster_count
         return all_results
-
-    def check_feerate_diagram(self, node):
-        """Sanity check the feerate diagram."""
-        feeratediagram = node.getmempoolfeeratediagram()
-        last_val = {"weight": 0, "fee": 0}
-        for x in feeratediagram:
-            # The weight is always positive, except for the first iteration
-            assert x['weight'] > 0 or x['fee'] == 0
-            # Monotonically decreasing fee per weight
-            assert_greater_than_or_equal(last_val['fee'] * x['weight'], x['fee'] * last_val['weight'])
-            last_val = x
 
     def test_limit_enforcement(self, cluster_submitted, target_vsize_per_tx=None):
         """
@@ -155,7 +146,7 @@ class MempoolClusterTest(BitcoinTestFramework):
     def test_cluster_count_limit(self, max_cluster_count):
         node = self.nodes[0]
         cluster_submitted = self.add_chain_cluster(node, max_cluster_count)
-        self.check_feerate_diagram(node)
+        check_feerate_diagram_monotonically_decreasing(node.getmempoolfeeratediagram())
         for result in cluster_submitted:
             assert_equal(node.getmempoolcluster(result["txid"])['txcount'], max_cluster_count)
 
@@ -298,6 +289,131 @@ class MempoolClusterTest(BitcoinTestFramework):
         assert tx_replacer_sponsor["txid"] in node.getrawmempool()
         assert_equal(node.getmempoolcluster(tx_replacer["txid"])['txcount'], 2)
 
+    @cleanup
+    def test_feerate_diagram(self):
+        node = self.nodes[0]
+        self.log.info("Test the getfeeratediagram RPC")
+
+        # 1 sat/vB as Decimal BTC/kvB
+        feerate_1000sat_kvb = Decimal(1000) / COIN
+
+        def sats_to_btc(sats):
+            """Convert int sats to Decimal BTC with 8 decimal places"""
+            return Decimal(sats) / Decimal(1e8)
+
+        self.log.debug("Check that in a CPFP, the parent and child are chunked together")
+        # txA (0sat / 500vB) <- txB (1000sat / 500vB)
+        # Use v3 to allow 0 fee
+        txA = self.wallet.create_self_transfer(confirmed_only=True, fee=0, fee_rate=0, version=3, target_vsize=500)
+        txB = self.wallet.create_self_transfer(utxo_to_spend=txA["new_utxo"], fee=sats_to_btc(1000), version=3, target_vsize=500)
+        # Feerate Diagram uses weight, not vsize, to avoid rounding. The wallet bulks transaction vsize using OP_RETURN,
+        # which does not provide weight-based precision.
+        ab_weight = txA["tx"].get_weight() + txB["tx"].get_weight()
+        result_ab = node.submitpackage([txA["hex"], txB["hex"]])
+        assert_equal(result_ab["package_msg"], "success")
+
+        # one cluster, one chunk with feerate 1sat/vB
+        assert_equal(result_ab["tx-results"][txA["wtxid"]]["fees"]["effective-feerate"], feerate_1000sat_kvb)
+        assert_equal(result_ab["tx-results"][txB["wtxid"]]["fees"]["effective-feerate"], feerate_1000sat_kvb)
+        assert_equal(node.getmempoolcluster(txA["txid"])['txcount'], 2)
+        expected_feerate_diagram_ab = [
+            [0, 0],
+            [1000, ab_weight], # [txA, txB] 1sat/vB
+        ]
+        assert_equal_feerate_diagram(expected_feerate_diagram_ab, node.getmempoolfeeratediagram())
+
+        self.log.debug("Check that when chunks have the same feerate, the one with lower weight is sorted first")
+        # txC (0sat / 1000vB) <- txD (2000sat / 1000vB)
+        # Use v3 to allow 0 fee
+        txC = self.wallet.create_self_transfer(confirmed_only=True, fee=0, fee_rate=0, version=3, target_vsize=1000)
+        txD = self.wallet.create_self_transfer(utxo_to_spend=txC["new_utxo"], fee=sats_to_btc(2000), version=3, target_vsize=1000)
+        cd_weight = txC["tx"].get_weight() + txD["tx"].get_weight()
+        result_cd = node.submitpackage([txC["hex"], txD["hex"]])
+
+        # one cluster, one chunks with feerate 1sat/vB
+        assert_equal(result_cd["package_msg"], "success")
+        assert_equal(result_cd["tx-results"][txC["wtxid"]]["fees"]["effective-feerate"], feerate_1000sat_kvb)
+        assert_equal(result_cd["tx-results"][txD["wtxid"]]["fees"]["effective-feerate"], feerate_1000sat_kvb)
+        assert_equal(node.getmempoolcluster(txC["txid"])['txcount'], 2)
+        # Same chunk feerate as [txA, txB], but [txC, txD] has larger weight.
+        expected_feerate_diagram_cd = [
+            [0, 0],
+            [1000, ab_weight], # [txA, txB] 1sat/vB
+            [3000, ab_weight + cd_weight], # [txC, txD] 1sat/vB
+        ]
+        assert_equal_feerate_diagram(expected_feerate_diagram_cd, node.getmempoolfeeratediagram())
+
+        self.log.debug("Test that the feerate diagram uses modified fees when a transaction is prioritised prior to its submission")
+        # txE (800sat / 400vB)
+        # 799sat of fees will come from prioritisetransaction
+        txE = self.wallet.create_self_transfer(confirmed_only=True, fee=sats_to_btc(1), target_vsize=400)
+        e_weight = txE["tx"].get_weight()
+        node.prioritisetransaction(txid=txE["txid"], fee_delta=799)
+        node.sendrawtransaction(txE["hex"])
+        assert_equal(node.getmempoolcluster(txE["txid"])['txcount'], 1)
+        expected_feerate_diagram_e = [
+            [0, 0],
+            [800, e_weight], # [txE] 2sat/vB
+            [1800, e_weight + ab_weight], # [txA, txB] 1sat/vB
+            [3800, e_weight + ab_weight + cd_weight], # [txC, txD] 1sat/vB
+        ]
+        assert_equal_feerate_diagram(expected_feerate_diagram_e, node.getmempoolfeeratediagram())
+
+        self.log.debug("Check that a transaction's chunking can be updated if a new transaction is added to the cluster")
+        # txF (750sat / 500vB) <- txG (6250sat / 500vB)
+        txF = self.wallet.create_self_transfer(confirmed_only=True, fee=sats_to_btc(750), target_vsize=500)
+        f_weight = txF["tx"].get_weight()
+        txG = self.wallet.create_self_transfer(utxo_to_spend=txF["new_utxo"], fee=sats_to_btc(6250), target_vsize=500)
+        g_weight = txG["tx"].get_weight()
+
+        # Submit them individually to see txF's chunk feerate change.
+        node.sendrawtransaction(txF["hex"])
+        assert_equal(node.getmempoolcluster(txF["txid"])['txcount'], 1)
+        # txF has a feerate of 1.5sat/vB, so it's in the middle
+        expected_feerate_diagram_f = [
+            [0, 0],
+            [800, e_weight], # [txE] 2sat/vB
+            [1550, e_weight + f_weight], # [txF] 1.5sat/vB
+            [2550, e_weight + f_weight + ab_weight], # [txA, txB] 1sat/vB
+            [4550, e_weight + f_weight + ab_weight + cd_weight], # [txC, txD] 1sat/vB
+        ]
+        assert_equal_feerate_diagram(expected_feerate_diagram_f, node.getmempoolfeeratediagram())
+
+        # txG bumps txF's chunk feerate to 7sat/vB
+        node.sendrawtransaction(txG["hex"])
+        assert_equal(node.getmempoolcluster(txF["txid"])['txcount'], 2)
+        expected_feerate_diagram_g = [
+            [0, 0],
+            [7000, f_weight + g_weight], # [txF, txG] 7sat/vB
+            [7800, f_weight + g_weight + e_weight], # [txE] 2sat/vB
+            [8800, f_weight + g_weight + e_weight + ab_weight], # [txA, txB] 1sat/vB
+            [10800, f_weight + g_weight + e_weight + ab_weight + cd_weight], # [txC, txD] 1sat/vB
+        ]
+        assert_equal_feerate_diagram(expected_feerate_diagram_g, node.getmempoolfeeratediagram())
+
+        self.log.debug("Test that prioritisetransaction on a mempool entry affects the feerate diagram")
+        # Prioritise txD to make its chunk feerate a little more than 8sat/vB
+        node.prioritisetransaction(txid=txD["txid"], fee_delta=14012)
+        expected_feerate_diagram_d_prio = [
+            [0, 0],
+            [16012, cd_weight], # [txC, txD] 8.006sat/vB
+            [23012, cd_weight + f_weight + g_weight], # [txF, txG] 7sat/vB
+            [23812, cd_weight + f_weight + g_weight + e_weight], # [txE] 2sat/vB
+            [24812, cd_weight + f_weight + g_weight + e_weight + ab_weight], # [txA, txB] 1sat/vB
+        ]
+        assert_equal_feerate_diagram(expected_feerate_diagram_d_prio, node.getmempoolfeeratediagram())
+
+        # De-prioritise txG to split up the chunk, putting txF behind txE and txG at the very end.
+        node.prioritisetransaction(txid=txG["txid"], fee_delta=-6195)
+        expected_feerate_diagram_g_deprio = [
+            [0, 0],
+            [16012, cd_weight], # [txC, txD] 8.006sat/vB
+            [16812, cd_weight + e_weight], # [txE] 2sat/vB
+            [17562, cd_weight + e_weight + f_weight], # [txF] 1.5sat/vB
+            [18562, cd_weight + e_weight + f_weight + ab_weight], # [txA, txB] 1sat/vB
+            [18617, cd_weight + e_weight + f_weight + ab_weight + g_weight], # [txG] 0.11sat/vB
+        ]
+        assert_equal_feerate_diagram(expected_feerate_diagram_g_deprio, node.getmempoolfeeratediagram())
 
     def run_test(self):
         node = self.nodes[0]
@@ -305,6 +421,7 @@ class MempoolClusterTest(BitcoinTestFramework):
         self.generate(self.wallet, 400)
 
         self.test_cluster_limit_rbf(DEFAULT_CLUSTER_LIMIT)
+        self.test_feerate_diagram()
 
         for cluster_size_limit_kvb in [10, 20, 33, 100, DEFAULT_CLUSTER_SIZE_LIMIT_KVB]:
             self.log.info(f"-> Resetting node with -limitclustersize={cluster_size_limit_kvb}")
