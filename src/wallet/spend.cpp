@@ -410,7 +410,9 @@ CoinsResult AvailableCoins(const CWallet& wallet,
                     if (ancestors > 1) continue;
                 } else {
                     if (wtx.tx->version == TRUC_VERSION) continue;
-                    Assume(!wtx.truc_child_in_mempool.has_value());
+                    // A non-TRUC mempool tx usually should not have a TRUC child, but can gain one in a reorg.
+                    // The mempool may allow us to spend this coin, but avoid it.
+                    if (wtx.truc_child_in_mempool.has_value()) continue;
                 }
             }
 
