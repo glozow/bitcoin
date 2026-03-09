@@ -34,7 +34,7 @@ class MempoolLimitTest(BitcoinTestFramework):
 
     def test_mid_package_eviction_success(self):
         node = self.nodes[0]
-        self.log.info("Check a package where each parent passes the current mempoolminfee but a parent could be evicted before getting child's descendant feerate")
+        self.log.info("Check a package where each parent passes the current mempoolminfee but a parent could be evicted before getting child's chunk feerate")
 
         # Clear mempool so it can be filled with minrelay txns
         self.restart_node(0, extra_args=self.extra_args[0] + ["-persistmempool=0"])

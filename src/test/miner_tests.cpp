@@ -108,7 +108,7 @@ static std::unique_ptr<CBlockIndex> CreateBlockIndex(int nHeight, CBlockIndex* a
     return index;
 }
 
-// Test suite for ancestor feerate transaction selection.
+// Test suite for chunk feerate transaction selection.
 // Implemented as an additional function, rather than a separate test case,
 // to allow reusing the blockchain created in CreateNewBlock_validity.
 void MinerTestingSetup::TestPackageSelection(const CScript& scriptPubKey, const std::vector<CTransactionRef>& txFirst)
@@ -136,7 +136,7 @@ void MinerTestingSetup::TestPackageSelection(const CScript& scriptPubKey, const 
     block_template = block_template->waitNext({.timeout = MillisecondsDouble{0}, .fee_threshold = 0});
     BOOST_REQUIRE(block_template);
 
-    // Test the ancestor feerate transaction selection.
+    // Test the chunk feerate transaction selection.
     TestMemPoolEntryHelper entry;
 
     // Test that a medium fee transaction will be selected after a higher fee

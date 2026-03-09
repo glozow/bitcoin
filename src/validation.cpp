@@ -958,9 +958,6 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
                 // Potential sibling eviction. Add the sibling to our list of mempool conflicts to be
                 // included in RBF checks.
                 ws.m_conflicts.insert(err->second->GetHash());
-                // Adding the sibling to m_iters_conflicting here means that it doesn't count towards
-                // RBF Carve Out above. This is correct, since removing to-be-replaced transactions from
-                // the descendant count is done separately in SingleTRUCChecks for TRUC transactions.
                 ws.m_iters_conflicting.insert(m_pool.GetIter(err->second->GetHash()).value());
                 ws.m_sibling_eviction = true;
                 // The sibling will be treated as part of the to-be-replaced set in ReplacementChecks.

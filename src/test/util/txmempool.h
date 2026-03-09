@@ -68,7 +68,7 @@ void CheckMempoolTRUCInvariants(const CTxMemPool& tx_pool);
 void TryAddToMempool(CTxMemPool& tx_pool, const CTxMemPoolEntry& entry);
 
 /** Mock the mempool minimum feerate by adding a transaction and calling TrimToSize(0),
- * simulating the mempool "reaching capacity" and evicting by descendant feerate.  Note that
+ * simulating the mempool "reaching capacity" and evicting by worst chunk feerate.  Note that
  * this clears the mempool, and the new minimum feerate will depend on the maximum feerate of
  * transactions removed, so this must be called while the mempool is empty.
  *
